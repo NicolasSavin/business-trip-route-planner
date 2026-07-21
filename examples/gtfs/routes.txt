@@ -1,0 +1,3 @@
+route_id,agency_id,route_short_name,route_long_name,route_type
+train_msk_ekb,training_rail,016М,Москва — Екатеринбург,2
+bus_msk_nnov,training_bus,МН-10,Москва — Нижний Новгород,3

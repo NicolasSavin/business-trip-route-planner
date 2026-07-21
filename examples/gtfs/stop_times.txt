@@ -1,0 +1,7 @@
+trip_id,arrival_time,departure_time,stop_id,stop_sequence
+train_016m_2026,09:00:00,09:00:00,msk_rail,1
+train_016m_2026,16:10:00,17:00:00,kaz_rail,2
+train_016m_2026,25:30:00,25:30:00,ekb_rail,3
+bus_mn10_2026,07:30:00,07:30:00,msk_bus,1
+bus_mn10_2026,11:00:00,11:15:00,vladimir_bus,2
+bus_mn10_2026,15:00:00,15:00:00,nnov_bus,3
