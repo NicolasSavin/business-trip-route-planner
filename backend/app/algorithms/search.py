@@ -1,23 +1,28 @@
 from app.domain import Route, Transfer, TransportSegment
 from app.graph.builder import TransportGraph
-from app.scoring.service import is_night_transfer_start
+from app.intelligence.transfers import TransferEngine
 
 
 class GraphRouteSearch:
+    def __init__(self, transfer_engine: TransferEngine | None = None):
+        self.transfer_engine = transfer_engine or TransferEngine()
+
     def find_routes(
         self,
         graph: TransportGraph,
-        origin_city: str,
-        destination_city: str,
+        origin_city: str | tuple[str, ...],
+        destination_city: str | tuple[str, ...],
         passengers: int,
         max_transfers: int,
         minimum_transfer_minutes: int,
     ) -> list[Route]:
+        origin_cities = (origin_city,) if isinstance(origin_city, str) else origin_city
+        destination_cities = (destination_city,) if isinstance(destination_city, str) else destination_city
         routes: list[Route] = []
         max_segments = max_transfers + 1
-        starts = [station for station in graph.stations.values() if station.city.name == origin_city]
+        starts = [station for station in graph.stations.values() if station.city.name in origin_cities]
         for station in starts:
-            self._dfs(graph, station.id, destination_city, passengers, max_segments, minimum_transfer_minutes, [], routes)
+            self._dfs(graph, station.id, destination_cities, passengers, max_segments, minimum_transfer_minutes, [], routes)
         return routes
 
     def _dfs(self, graph, station_id, destination_city, passengers, max_segments, min_transfer, path, routes):
@@ -33,7 +38,7 @@ class GraphRouteSearch:
                 if path and not self._can_transfer(path[-1], segment, min_transfer):
                     continue
                 new_path = [*path, segment]
-                if segment.destination_city.name == destination_city:
+                if segment.destination_city.name in destination_city:
                     route = self._build_route(new_path)
                     routes.append(route)
                 self._dfs(graph, segment.destination_station.id, destination_city, passengers, max_segments, min_transfer, new_path, routes)
@@ -49,6 +54,5 @@ class GraphRouteSearch:
     def _build_route(self, segments: list[TransportSegment]) -> Route:
         transfers: list[Transfer] = []
         for first, second in zip(segments, segments[1:]):
-            minutes = int((second.departure_datetime - first.arrival_datetime).total_seconds() // 60)
-            transfers.append(Transfer(first, second, minutes, first.destination_city, is_night_transfer_start(first.arrival_datetime.hour)))
+            transfers.append(self.transfer_engine.build_transfer(first, second))
         return Route(tuple(segments), tuple(transfers))

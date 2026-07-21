@@ -35,6 +35,11 @@ class RouteOption(BaseModel):
     total_duration_minutes: int
     transfers_count: int
     is_available_for_group: bool
+    score: float | None = None
+    rank: int | None = None
+    explanation: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    advantages: list[str] = Field(default_factory=list)
 
 
 class RouteSearchResponse(BaseModel):
