@@ -21,6 +21,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { demoResponse } from "@/lib/demoData";
+import { LocationAutocomplete, type SelectedLocation } from "@/components/LocationAutocomplete";
 import {
   checkSavedSearch,
   createSavedSearch,
@@ -54,6 +55,8 @@ type ViewMode = "search" | "requests";
 type FormState = {
   origin: string;
   destination: string;
+  originLocation: SelectedLocation;
+  destinationLocation: SelectedLocation;
   departure_date: string;
   passengers: number;
   transport: "both" | TransportType;
@@ -64,6 +67,8 @@ type FormState = {
 const initialForm: FormState = {
   origin: "Москва",
   destination: "Санкт-Петербург",
+  originLocation: { id: "city:c213", provider_code: "c213", type: "city" },
+  destinationLocation: { id: "city:c2", provider_code: "c2", type: "city" },
   departure_date: "2026-08-10",
   passengers: 2,
   transport: "both",
@@ -191,6 +196,8 @@ export default function Home() {
       ...current,
       origin: current.destination,
       destination: current.origin,
+      originLocation: current.destinationLocation,
+      destinationLocation: current.originLocation,
     }));
   }
 
@@ -531,24 +538,22 @@ export default function Home() {
               </button>
             </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <label className="space-y-2 text-sm font-semibold text-ink">
-                Откуда
-                <input
-                  className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10"
-                  value={formState.origin}
-                  onChange={(e) => updateField("origin", e.target.value)}
-                  required
-                />
-              </label>
-              <label className="space-y-2 text-sm font-semibold text-ink">
-                Куда
-                <input
-                  className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10"
-                  value={formState.destination}
-                  onChange={(e) => updateField("destination", e.target.value)}
-                  required
-                />
-              </label>
+              <LocationAutocomplete
+                label="Откуда"
+                value={formState.origin}
+                selected={formState.originLocation}
+                onChange={(value) => updateField("origin", value)}
+                onSelect={(location, displayName) => setFormState((current) => ({ ...current, origin: displayName, originLocation: location }))}
+                required
+              />
+              <LocationAutocomplete
+                label="Куда"
+                value={formState.destination}
+                selected={formState.destinationLocation}
+                onChange={(value) => updateField("destination", value)}
+                onSelect={(location, displayName) => setFormState((current) => ({ ...current, destination: displayName, destinationLocation: location }))}
+                required
+              />
               <label className="space-y-2 text-sm font-semibold text-ink">
                 Дата
                 <input
@@ -855,6 +860,12 @@ function buildPayload(formState: FormState) {
   return {
     origin: formState.origin,
     destination: formState.destination,
+    origin_location_id: formState.originLocation?.id ?? null,
+    origin_provider_code: formState.originLocation?.provider_code ?? null,
+    origin_location_type: formState.originLocation?.type ?? null,
+    destination_location_id: formState.destinationLocation?.id ?? null,
+    destination_provider_code: formState.destinationLocation?.provider_code ?? null,
+    destination_location_type: formState.destinationLocation?.type ?? null,
     departure_date: formState.departure_date,
     passengers: formState.passengers,
     allowed_transport,

@@ -21,6 +21,12 @@ class RouteSearchService:
             require_group_together=request.require_group_together,
             allow_split_group=request.allow_split_group,
             include_unavailable=include_unavailable,
+            origin_location_id=request.origin_location_id,
+            origin_provider_code=request.origin_provider_code,
+            origin_location_type=request.origin_location_type,
+            destination_location_id=request.destination_location_id,
+            destination_provider_code=request.destination_provider_code,
+            destination_location_type=request.destination_location_type,
         )
         # Preserve the original public API behavior: returned route options are usable
         # for the requested group, while each item now also carries optional details.

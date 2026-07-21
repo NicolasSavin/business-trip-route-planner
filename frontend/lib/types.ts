@@ -53,9 +53,18 @@ export type DecisionAnalyzeResponse = { summaries: DecisionSummary[]; best_route
 export type DecisionCriterion = { name: string; left: string; right: string; winner: string | null; difference: string };
 export type DecisionCompareResponse = { winner_route_id: string | null; criteria: DecisionCriterion[]; differences: string[]; recommendations: DecisionReason[]; left_summary: DecisionSummary; right_summary: DecisionSummary };
 export type RouteSearchResponse = { routes: RouteOption[] };
+export type LocationType = "city" | "station" | "bus_station" | "railway_station" | "settlement";
+export type LocationSuggestion = { id: string; name: string; display_name: string; type: LocationType; provider_code: string | null; region: string | null; country: string | null };
+export type LocationSuggestResponse = { items: LocationSuggestion[] };
 export type RouteSearchPayload = {
   origin: string;
   destination: string;
+  origin_location_id?: string | null;
+  origin_provider_code?: string | null;
+  origin_location_type?: LocationType | null;
+  destination_location_id?: string | null;
+  destination_provider_code?: string | null;
+  destination_location_type?: LocationType | null;
   departure_date: string;
   passengers: number;
   allowed_transport: TransportType[];

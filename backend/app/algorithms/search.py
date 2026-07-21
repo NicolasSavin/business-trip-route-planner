@@ -15,17 +15,22 @@ class GraphRouteSearch:
         passengers: int,
         max_transfers: int,
         minimum_transfer_minutes: int,
+        origin_station_id: str | None = None,
+        destination_station_id: str | None = None,
     ) -> list[Route]:
         origin_cities = (origin_city,) if isinstance(origin_city, str) else origin_city
         destination_cities = (destination_city,) if isinstance(destination_city, str) else destination_city
         routes: list[Route] = []
         max_segments = max_transfers + 1
-        starts = [station for station in graph.stations.values() if station.city.name in origin_cities]
+        if origin_station_id:
+            starts = [station for station in graph.stations.values() if station.id == origin_station_id or station.id.lower() == origin_station_id.lower()]
+        else:
+            starts = [station for station in graph.stations.values() if station.city.name in origin_cities]
         for station in starts:
-            self._dfs(graph, station.id, destination_cities, passengers, max_segments, minimum_transfer_minutes, [], routes)
+            self._dfs(graph, station.id, destination_cities, passengers, max_segments, minimum_transfer_minutes, [], routes, destination_station_id)
         return routes
 
-    def _dfs(self, graph, station_id, destination_city, passengers, max_segments, min_transfer, path, routes):
+    def _dfs(self, graph, station_id, destination_city, passengers, max_segments, min_transfer, path, routes, destination_station_id=None):
         if len(path) >= max_segments:
             return
         candidate_station_ids = [station_id]
@@ -38,10 +43,13 @@ class GraphRouteSearch:
                 if path and not self._can_transfer(path[-1], segment, min_transfer):
                     continue
                 new_path = [*path, segment]
-                if segment.destination_city.name in destination_city:
+                destination_matches = segment.destination_city.name in destination_city
+                if destination_station_id:
+                    destination_matches = segment.destination_station.id == destination_station_id or segment.destination_station.id.lower() == destination_station_id.lower()
+                if destination_matches:
                     route = self._build_route(new_path)
                     routes.append(route)
-                self._dfs(graph, segment.destination_station.id, destination_city, passengers, max_segments, min_transfer, new_path, routes)
+                self._dfs(graph, segment.destination_station.id, destination_city, passengers, max_segments, min_transfer, new_path, routes, destination_station_id)
 
     def _can_transfer(self, first: TransportSegment, second: TransportSegment, minimum_transfer_minutes: int) -> bool:
         same_city = first.destination_city.name == second.origin_city.name
