@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-from app.availability.models import AvailabilityPolicy, AvailabilityResult
+from app.availability.models import AvailabilityPolicy, RouteAvailability, SegmentAvailability
 from app.domain import Route
 
 
 class AvailabilityValidator:
-    def validate(self, route: Route, result: AvailabilityResult, policy: AvailabilityPolicy) -> tuple[str, ...]:
+    def validate(self, route: Route, results: tuple[SegmentAvailability, ...] | RouteAvailability, policy: AvailabilityPolicy) -> tuple[str, ...]:
+        if isinstance(results, RouteAvailability):
+            results = results.segment_results
         warnings: list[str] = []
-        if len(route.segments) != len(result.segment_results):
+        if len(route.segments) != len(results):
             warnings.append("availability result does not cover every segment")
-        checked_ids = {item.segment_id for item in result.segment_results}
+        checked_ids = {item.segment_id for item in results}
         for segment in route.segments:
             if segment.id not in checked_ids:
                 warnings.append(f"segment {segment.id} was not checked")
-        for transfer in route.transfers:
-            if transfer.duration_minutes < 0:
-                warnings.append("transfer has negative duration")
-            if transfer.to_segment.departure_datetime < transfer.from_segment.arrival_datetime:
-                warnings.append("transfer departs before previous segment arrives")
-        if result.total_available_seats < policy.passengers and policy.group_must_travel_together:
+        if policy.require_group_together and any(result.available_seats < policy.passengers for result in results):
             warnings.append("route does not have enough seats for the full group")
+        if any(result.is_stale for result in results):
+            warnings.append("availability data is stale")
         return tuple(warnings)

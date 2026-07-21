@@ -46,3 +46,24 @@ def test_filters_by_transport_type():
 def test_respects_minimum_transfer_minutes():
     routes = RouteSearchService(MockTransportProvider()).search(make_request(minimum_transfer_minutes=181))
     assert "Нижний Новгород" not in {route.transfer_city for route in routes if route.transfer_city}
+
+
+def test_search_request_keeps_backward_compatibility_without_availability_fields():
+    request = RouteSearchRequest.model_validate({
+        "origin": "Москва",
+        "destination": "Екатеринбург",
+        "departure_date": date(2026, 8, 10),
+        "passengers": 2,
+        "allowed_transport": [TransportType.TRAIN, TransportType.BUS],
+    })
+    routes = RouteSearchService(MockTransportProvider()).search(request)
+    assert routes
+    assert routes[0].availability is not None
+
+
+def test_route_search_serializes_availability_block():
+    route = RouteSearchService(MockTransportProvider()).search(make_request())[0]
+    payload = route.model_dump()
+    assert payload["availability"]["is_available"] is True
+    assert payload["availability"]["requested_passengers"] == 2
+    assert payload["availability"]["segments"]

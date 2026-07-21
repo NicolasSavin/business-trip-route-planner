@@ -12,6 +12,9 @@ class RouteSearchRequest(BaseModel):
     allowed_transport: list[TransportType] = Field(min_length=1)
     max_transfers: Literal[0, 1, 2] = 1
     minimum_transfer_minutes: int = Field(default=30, ge=0)
+    preferred_classes: list[TransportClass] = Field(default_factory=list)
+    require_group_together: bool = True
+    allow_split_group: bool = False
 
 
 class RouteSegment(BaseModel):
@@ -29,20 +32,35 @@ class SegmentAvailability(BaseModel):
     segment_id: str
     is_available: bool
     available_seats: int
-    transport_class: TransportClass
+    requested_passengers: int
+    transport_class: TransportClass | None
     checked_at: datetime
     source: str
+    reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    stale_after_seconds: int | None = None
+    is_stale: bool = False
 
 
 class RouteAvailability(BaseModel):
     is_available: bool
-    total_available_seats: int
-    min_available_seats: int
+    requested_passengers: int
+    minimum_available_seats: int
     checked_at: datetime
-    source: str
     segment_results: list[SegmentAvailability]
+    segments: list[SegmentAvailability] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    stale_after_seconds: int | None = None
+    is_stale: bool = False
+
+    @property
+    def total_available_seats(self) -> int:
+        return self.minimum_available_seats
+
+    @property
+    def min_available_seats(self) -> int:
+        return self.minimum_available_seats
 
 
 class RouteOption(BaseModel):

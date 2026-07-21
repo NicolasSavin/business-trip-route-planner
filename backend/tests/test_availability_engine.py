@@ -67,3 +67,48 @@ def test_availability_validator_checks_segments_transfers_and_total_seats():
     result = AvailabilityEngine().check(route_option, AvailabilityPolicy.for_group(2))
     warnings = AvailabilityValidator().validate(route_option.route, result, AvailabilityPolicy.for_group(2))
     assert "route does not have enough seats for the full group" in warnings
+
+
+def test_mock_provider_reports_no_seats():
+    result = AvailabilityEngine(MockAvailabilityProvider(overrides={"ab": 0})).check(option(seg("ab", seats=5)), AvailabilityPolicy.for_group(1))
+    assert not result.is_available
+    assert "нет мест" in result.reasons[0]
+
+
+def test_policy_rejects_incompatible_class():
+    result = AvailabilityEngine().check(option(seg("ab", seats=5, klass=TransportClass.SEATED)), AvailabilityPolicy.coupe_only(2))
+    assert not result.is_available
+    assert "выбранном классе" in result.reasons[0]
+
+
+def test_requires_same_class_for_all_segments():
+    route_option = option(seg("ab", seats=5, klass=TransportClass.COUPE), seg("bc", "B", "C", dt(10), dt(11), seats=5, klass=TransportClass.SEATED))
+    policy = AvailabilityPolicy(passengers=2, require_same_class_for_all_segments=True)
+    result = AvailabilityEngine().check(route_option, policy)
+    assert not result.is_available
+    assert "разные классы" in result.reasons[0]
+
+
+def test_group_can_travel_only_when_split_allowed():
+    route_option = option(seg("ab", seats=2))
+    together = AvailabilityEngine().check(route_option, AvailabilityPolicy.for_group(3))
+    split = AvailabilityEngine().check(route_option, AvailabilityPolicy.split_group(3))
+    assert not together.is_available
+    assert split.is_available
+
+
+def test_missing_and_stale_availability_data():
+    old = datetime(2026, 7, 20)
+    provider = MockAvailabilityProvider(overrides={"ab": None}, checked_at_overrides={"ab": old}, stale_after_seconds=1)
+    result = AvailabilityEngine(provider).check(option(seg("ab", seats=5)), AvailabilityPolicy.for_group(1))
+    assert not result.is_available
+    assert result.segment_results[0].is_stale
+    assert "недоступны" in result.reasons[0]
+
+
+def test_availability_engine_does_not_mutate_route_option():
+    route_option = option(seg("ab", seats=5))
+    checked = AvailabilityEngine().attach(route_option, AvailabilityPolicy.for_group(2))
+    assert route_option.availability is None
+    assert checked.availability is not None
+    assert checked.route is route_option.route
