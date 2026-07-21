@@ -7,6 +7,17 @@ def at(day: date, hour: int, minute: int = 0, day_offset: int = 0) -> datetime:
     return datetime.combine(day + timedelta(days=day_offset), time(hour=hour % 24, minute=minute))
 
 
+
+MOCK_STATIONS: dict[str, dict[TransportType, tuple[str, str]]] = {
+    "Москва": {TransportType.TRAIN: ("moscow-kazansky", "Казанский вокзал"), TransportType.BUS: ("moscow-salaryevo", "Саларьево")},
+    "Краснодар": {TransportType.TRAIN: ("krasnodar-rail", "Краснодар-1 ЖД вокзал"), TransportType.BUS: ("krasnodar-bus", "Краснодар автовокзал")},
+    "Екатеринбург": {TransportType.TRAIN: ("ekb-rail", "Екатеринбург-Пассажирский ЖД вокзал"), TransportType.BUS: ("ekb-north-bus", "Северный автовокзал")},
+    "Санкт-Петербург": {TransportType.TRAIN: ("spb-moskovsky", "Московский вокзал"), TransportType.BUS: ("spb-bus-2", "Автовокзал №2")},
+    "Новороссийск": {TransportType.TRAIN: ("novorossiysk-rail", "Новороссийск ЖД вокзал"), TransportType.BUS: ("novorossiysk-bus", "Новороссийск автовокзал")},
+    "Анапа": {TransportType.TRAIN: ("anapa-rail", "Анапа ЖД вокзал"), TransportType.BUS: ("anapa-bus", "Анапа автовокзал")},
+    "Геленджик": {TransportType.BUS: ("gelendzhik-bus", "Геленджик автовокзал")},
+}
+
 CITIES = [
     "Москва", "Санкт-Петербург", "Нижний Новгород", "Казань", "Самара", "Уфа", "Екатеринбург", "Челябинск", "Пермь", "Тюмень",
     "Омск", "Новосибирск", "Красноярск", "Иркутск", "Ростов-на-Дону", "Воронеж", "Волгоград", "Краснодар", "Сочи", "Ярославль",
@@ -60,9 +71,9 @@ class MockTransportProvider(TransportProvider):
             transport_class=transport_class,
             vehicle_number=("Поезд " if ttype == TransportType.TRAIN else "Автобус ") + (number or f"{idx:03d}"),
             origin_city=origin_city,
-            origin_station=Station(f"{origin}-{station_suffix}", f"{origin} {'вокзал' if ttype == TransportType.TRAIN else 'автовокзал'}", origin_city),
+            origin_station=self._station(origin_city, ttype, station_suffix),
             destination_city=destination_city,
-            destination_station=Station(f"{destination}-{station_suffix}", f"{destination} {'вокзал' if ttype == TransportType.TRAIN else 'автовокзал'}", destination_city),
+            destination_station=self._station(destination_city, ttype, station_suffix),
             departure_datetime=dep,
             arrival_datetime=arr,
             duration_minutes=int((arr - dep).total_seconds() // 60),
@@ -70,3 +81,9 @@ class MockTransportProvider(TransportProvider):
             price=1200 + idx * 17,
             metadata={"mock": True},
         )
+
+    def _station(self, city: City, ttype: TransportType, station_suffix: str) -> Station:
+        station = MOCK_STATIONS.get(city.name, {}).get(ttype)
+        if station:
+            return Station(station[0], station[1], city)
+        return Station(f"{city.name}-{station_suffix}", f"{city.name} {'вокзал' if ttype == TransportType.TRAIN else 'автовокзал'}", city)

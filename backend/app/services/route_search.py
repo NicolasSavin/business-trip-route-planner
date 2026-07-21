@@ -46,4 +46,9 @@ class RouteSearchService:
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
             is_available_for_group=all(segment.available_seats >= passengers for segment in route.segments),
+            score=option.score,
+            rank=option.rank,
+            explanation=option.explanation,
+            warnings=list(option.warnings),
+            advantages=list(option.advantages),
         )

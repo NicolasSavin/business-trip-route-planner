@@ -70,6 +70,11 @@ class Transfer:
     duration_minutes: int
     city: City
     is_night: bool = False
+    transfer_type: str = "unknown"
+    estimated_transfer_minutes: int = 0
+    warnings: tuple[str, ...] = ()
+    station_change: bool = False
+    city_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,7 +99,31 @@ class Route:
 class RouteOption:
     route: Route
     score: float
+    rank: int = 0
+    explanation: str = ""
+    warnings: tuple[str, ...] = ()
+    advantages: tuple[str, ...] = ()
 
 
 class TransportProvider(Protocol):
     def get_segments(self, *args: Any, **kwargs: Any) -> list[TransportSegment]: ...
+
+
+class StationResolverProtocol(Protocol):
+    def resolve_city_names(self, query: str, segments: list[TransportSegment]) -> tuple[str, ...]: ...
+
+
+class NearbyCityResolverProtocol(Protocol):
+    def alternatives_for(self, city: str) -> tuple[str, ...]: ...
+
+
+class TransferEngineProtocol(Protocol):
+    def build_transfer(self, first: TransportSegment, second: TransportSegment) -> Transfer: ...
+
+
+class ExplanationServiceProtocol(Protocol):
+    def explain(self, route: Route, score: float, rank: int, best_score: float | None = None) -> tuple[str, tuple[str, ...], tuple[str, ...]]: ...
+
+
+class RouteComparatorProtocol(Protocol):
+    def rank(self, routes: list[Route]) -> list[RouteOption]: ...
