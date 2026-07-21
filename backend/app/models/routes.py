@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 from pydantic import BaseModel, Field
-from app.domain import TransportType
+from app.domain import TransportClass, TransportType
 
 
 class RouteSearchRequest(BaseModel):
@@ -25,6 +25,26 @@ class RouteSegment(BaseModel):
     available_seats: int
 
 
+class SegmentAvailability(BaseModel):
+    segment_id: str
+    is_available: bool
+    available_seats: int
+    transport_class: TransportClass
+    checked_at: datetime
+    source: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RouteAvailability(BaseModel):
+    is_available: bool
+    total_available_seats: int
+    min_available_seats: int
+    checked_at: datetime
+    source: str
+    segment_results: list[SegmentAvailability]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RouteOption(BaseModel):
     id: str
     origin: str
@@ -40,6 +60,7 @@ class RouteOption(BaseModel):
     explanation: str | None = None
     warnings: list[str] = Field(default_factory=list)
     advantages: list[str] = Field(default_factory=list)
+    availability: RouteAvailability | None = None
 
 
 class RouteSearchResponse(BaseModel):

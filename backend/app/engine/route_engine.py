@@ -1,5 +1,6 @@
 from datetime import date
 from app.algorithms.search import GraphRouteSearch
+from app.availability import AvailabilityEngine, AvailabilityPolicy
 from app.domain import TransportProvider, TransportType
 from app.graph.builder import GraphBuilder
 from app.intelligence import NearbyCityResolver, RouteComparator, StationResolver, TransferEngine
@@ -18,6 +19,7 @@ class RouteEngine:
         nearby_city_resolver: NearbyCityResolver | None = None,
         route_comparator: RouteComparator | None = None,
         transfer_engine: TransferEngine | None = None,
+        availability_engine: AvailabilityEngine | None = None,
     ):
         self.provider = provider
         self.graph_builder = graph_builder or GraphBuilder()
@@ -28,6 +30,7 @@ class RouteEngine:
         self.transfer_engine = transfer_engine or TransferEngine(minimum_transfer_minutes=35)
         self.route_comparator = route_comparator or RouteComparator(self.scorer)
         self.search_algorithm = GraphRouteSearch(self.transfer_engine)
+        self.availability_engine = availability_engine or AvailabilityEngine()
 
     def search(self, departure_date: date, origin: str, destination: str, passengers: int, allowed_transport: list[TransportType], max_transfers: int, minimum_transfer_minutes: int):
         segments = self.provider.get_segments(departure_date, allowed_transport)
@@ -42,4 +45,7 @@ class RouteEngine:
                 routes = self.search_algorithm.find_routes(graph, origin_cities, (alternative,), passengers, max_transfers, minimum_transfer_minutes)
                 if routes:
                     break
-        return self.route_comparator.rank(routes)
+        ranked = self.route_comparator.rank(routes)
+        policy = AvailabilityPolicy.for_group(passengers)
+        checked = [self.availability_engine.attach(option, policy) for option in ranked]
+        return [option for option in checked if option.availability and option.availability.is_available]

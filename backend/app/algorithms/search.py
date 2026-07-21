@@ -33,7 +33,7 @@ class GraphRouteSearch:
             candidate_station_ids = graph.station_ids_by_city.get(path[-1].destination_city.name, [station_id])
         for candidate_station_id in candidate_station_ids:
             for segment in graph.adjacency.get(candidate_station_id, []):
-                if segment.available_seats < passengers or segment in path:
+                if segment in path:
                     continue
                 if path and not self._can_transfer(path[-1], segment, min_transfer):
                     continue
