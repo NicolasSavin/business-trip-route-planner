@@ -27,6 +27,26 @@ export type RouteOption = {
   transfers_count: number;
   is_available_for_group: boolean;
 };
+export type DecisionReasonKind = "advantage" | "disadvantage" | "warning" | "recommendation";
+export type DecisionReason = { code: string; message: string; kind: DecisionReasonKind; weight: number };
+export type DecisionSummary = {
+  route_id: string;
+  total_duration_minutes: number;
+  transfer_wait_minutes: number;
+  transfers_count: number;
+  has_available_seats: boolean;
+  minimum_available_seats: number;
+  score: number;
+  rating: number;
+  explanation: string;
+  advantages: DecisionReason[];
+  disadvantages: DecisionReason[];
+  warnings: DecisionReason[];
+  recommendations: DecisionReason[];
+};
+export type DecisionAnalyzeResponse = { summaries: DecisionSummary[]; best_route_id: string | null };
+export type DecisionCriterion = { name: string; left: string; right: string; winner: string | null; difference: string };
+export type DecisionCompareResponse = { winner_route_id: string | null; criteria: DecisionCriterion[]; differences: string[]; recommendations: DecisionReason[]; left_summary: DecisionSummary; right_summary: DecisionSummary };
 export type RouteSearchResponse = { routes: RouteOption[] };
 export type RouteSearchPayload = {
   origin: string;

@@ -8,6 +8,9 @@ import type {
   MonitoringHistory,
   MonitoringResult,
   Notification,
+  RouteOption,
+  DecisionAnalyzeResponse,
+  DecisionCompareResponse,
 } from "@/lib/types";
 
 export function apiBaseUrl() {
@@ -92,4 +95,17 @@ export function markAllNotificationsRead() {
 }
 export function deleteNotification(id: string) {
   return request<void>(`/api/v1/notifications/${id}`, { method: "DELETE" });
+}
+
+export function analyzeRoutes(routes: RouteOption[], passengers: number) {
+  return request<DecisionAnalyzeResponse>("/api/v1/decision/analyze", {
+    method: "POST",
+    body: JSON.stringify({ routes, passengers }),
+  });
+}
+export function compareRoutes(left: RouteOption, right: RouteOption, passengers: number) {
+  return request<DecisionCompareResponse>("/api/v1/decision/compare", {
+    method: "POST",
+    body: JSON.stringify({ left, right, passengers }),
+  });
 }

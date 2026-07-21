@@ -34,9 +34,11 @@ import {
   runAllMonitoring,
   runMonitoring,
   searchRoutes,
+  analyzeRoutes,
+  compareRoutes,
   updateSavedSearch,
 } from "@/lib/api";
-import type { MonitoringHistory, Notification, RouteOption, SavedSearch, TransportType } from "@/lib/types";
+import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, SavedSearch, TransportType } from "@/lib/types";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -164,6 +166,11 @@ export default function Home() {
   const [lastPayload, setLastPayload] = useState(buildPayload(initialForm));
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [decisionByRoute, setDecisionByRoute] = useState<Record<string, DecisionSummary>>({});
+  const [selectedDecision, setSelectedDecision] = useState<DecisionSummary | null>(null);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [comparison, setComparison] = useState<DecisionCompareResponse | null>(null);
   const unreadNotifications = notifications.filter((item) => !item.is_read).length;
   const sortedRoutes = useMemo(
     () =>
@@ -199,6 +206,9 @@ export default function Home() {
       const data = await searchRoutes(payload);
       setLastPayload(payload);
       setRoutes(data.routes);
+      setDecisionByRoute({});
+      setCompareIds([]);
+      setComparison(null);
       setNotice(
         data.routes.length
           ? { kind: "api", text: "Результаты получены из backend API." }
@@ -215,6 +225,38 @@ export default function Home() {
       });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function explainRoute(route: RouteOption) {
+    const cached = decisionByRoute[route.id];
+    if (cached) {
+      setSelectedDecision(cached);
+      return;
+    }
+    try {
+      const result = await analyzeRoutes(routes, lastPayload.passengers);
+      const next = Object.fromEntries(result.summaries.map((item) => [item.route_id, item]));
+      setDecisionByRoute(next);
+      setSelectedDecision(next[route.id] ?? null);
+    } catch {
+      const fallback = localDecision(route, lastPayload.passengers);
+      setSelectedDecision(fallback);
+    }
+  }
+
+  function toggleCompareRoute(id: string) {
+    setCompareIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id].slice(-2));
+    setComparison(null);
+  }
+
+  async function runCompare() {
+    const picked = compareIds.map((id) => routes.find((route) => route.id === id)).filter(Boolean) as RouteOption[];
+    if (picked.length !== 2) return;
+    try {
+      setComparison(await compareRoutes(picked[0], picked[1], lastPayload.passengers));
+    } catch {
+      setComparison(localCompare(picked[0], picked[1], lastPayload.passengers));
     }
   }
 
@@ -601,13 +643,15 @@ export default function Home() {
               {notice.text}
             </div>
             {!loading && routes.length > 0 && (
-              <button
-                type="button"
-                onClick={saveCurrentSearch}
-                className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-brand px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-ink"
-              >
-                <BadgeCheck size={18} /> Сохранить заявку
-              </button>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button type="button" onClick={saveCurrentSearch} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-brand px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-ink">
+                  <BadgeCheck size={18} /> Сохранить заявку
+                </button>
+                <button type="button" onClick={() => { setCompareMode((value) => !value); setComparison(null); }} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-line bg-white px-5 py-3 font-semibold text-ink shadow-soft transition hover:-translate-y-0.5">
+                  <ArrowLeftRight size={18} /> {compareMode ? "Выключить сравнение" : "Сравнить"}
+                </button>
+                {compareMode && <button type="button" disabled={compareIds.length !== 2} onClick={runCompare} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-ink px-5 py-3 font-semibold text-white shadow-soft disabled:opacity-50">Показать сравнение</button>}
+              </div>
             )}
           </form>
 
@@ -711,6 +755,14 @@ export default function Home() {
                       );
                     })}
                   </div>
+                  <div className="mt-6 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => explainRoute(route)} className="rounded-2xl bg-brand px-4 py-2 text-sm font-semibold text-white">Почему этот маршрут?</button>
+                    {compareMode && (
+                      <label className="inline-flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-2 text-sm font-semibold text-ink">
+                        <input type="checkbox" checked={compareIds.includes(route.id)} onChange={() => toggleCompareRoute(route.id)} /> Сравнить
+                      </label>
+                    )}
+                  </div>
                   <div className="mt-7 rounded-[1.5rem] border border-line p-4 sm:p-5">
                     <div className="grid gap-4">
                       {route.segments.map((segment, segmentIndex) => {
@@ -757,6 +809,7 @@ export default function Home() {
                 </motion.article>
               ))}
           </section>
+          {comparison && <ComparisonTable comparison={comparison} />}
         </div>
       ) : (
         <RequestsScreen
@@ -780,6 +833,7 @@ export default function Home() {
         />
       )}
 
+      {selectedDecision && <DecisionModal summary={selectedDecision} onClose={() => setSelectedDecision(null)} />}
       <footer className="border-t border-line bg-white/80">
         <div className="mx-auto flex max-w-screen-2xl flex-col gap-3 px-5 py-8 text-sm text-muted sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
           <span className="font-semibold text-ink">Business Trip Planner</span>
@@ -1177,4 +1231,37 @@ function NotificationCenter(props: {
       </div>
     </div>
   );
+}
+
+function localDecision(route: RouteOption, passengers: number): DecisionSummary {
+  const minimum_available_seats = minSeats(route);
+  const advantages = [
+    ...(route.is_available_for_group ? [{ code: "available", message: `Подходит для группы из ${passengers} человек.`, kind: "advantage" as const, weight: 22 }] : []),
+    ...(route.transfers_count === 0 ? [{ code: "direct", message: "Маршрут без пересадок.", kind: "advantage" as const, weight: 14 }] : []),
+  ];
+  const warnings = route.transfer_duration_minutes && route.transfer_duration_minutes < 45 ? [{ code: "short_transfer", message: "Очень короткая пересадка.", kind: "warning" as const, weight: -18 }] : [];
+  return { route_id: route.id, total_duration_minutes: route.total_duration_minutes, transfer_wait_minutes: route.transfer_duration_minutes ?? 0, transfers_count: route.transfers_count, has_available_seats: route.is_available_for_group, minimum_available_seats, score: 70, rating: route.is_available_for_group ? 72 : 30, explanation: advantages[0]?.message ?? warnings[0]?.message ?? "Маршрут оценён по прозрачным правилам.", advantages, disadvantages: [], warnings, recommendations: warnings.length ? [{ code: "miss_risk", message: "Большой риск пропустить следующий поезд.", kind: "recommendation", weight: 0 }] : [] };
+}
+
+function localCompare(left: RouteOption, right: RouteOption, passengers: number): DecisionCompareResponse {
+  const left_summary = localDecision(left, passengers);
+  const right_summary = localDecision(right, passengers);
+  const winner_route_id = left_summary.rating === right_summary.rating ? null : left_summary.rating > right_summary.rating ? left.id : right.id;
+  return { winner_route_id, left_summary, right_summary, differences: [], recommendations: [{ code: "choose_winner", message: winner_route_id ? "Рекомендуется маршрут-победитель: выше детерминированный рейтинг." : "Маршруты равноценны по детерминированному рейтингу.", kind: "recommendation", weight: 0 }], criteria: [
+    { name: "Общий рейтинг", left: String(left_summary.rating), right: String(right_summary.rating), winner: winner_route_id, difference: `разница ${Math.abs(left_summary.rating - right_summary.rating)}` },
+    { name: "Время поездки", left: minutesLabel(left.total_duration_minutes), right: minutesLabel(right.total_duration_minutes), winner: left.total_duration_minutes === right.total_duration_minutes ? null : left.total_duration_minutes < right.total_duration_minutes ? left.id : right.id, difference: `разница ${Math.abs(left.total_duration_minutes - right.total_duration_minutes)} мин` },
+  ] };
+}
+
+function DecisionModal({ summary, onClose }: { summary: DecisionSummary; onClose: () => void }) {
+  return <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-sm"><div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-[2rem] bg-white p-6 shadow-card"><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Decision Engine</p><h2 className="mt-2 text-3xl font-semibold text-ink">Почему этот маршрут?</h2><p className="mt-2 text-muted">{summary.explanation}</p></div><button onClick={onClose} className="rounded-full bg-cloud px-4 py-2 font-semibold text-ink">Закрыть</button></div><div className="mt-6 grid gap-3 sm:grid-cols-3"><Info label="Общий рейтинг" value={`${summary.rating}/100`} /><Info label="Ожидание" value={minutesLabel(summary.transfer_wait_minutes)} /><Info label="Минимум мест" value={String(summary.minimum_available_seats)} /></div><ReasonList title="Преимущества" items={summary.advantages} tone="emerald" /><ReasonList title="Недостатки" items={summary.disadvantages} tone="amber" /><ReasonList title="Предупреждения" items={summary.warnings} tone="rose" /><ReasonList title="Рекомендации" items={summary.recommendations} tone="sky" /></div></div>;
+}
+
+function ReasonList({ title, items, tone }: { title: string; items: { message: string }[]; tone: "emerald" | "amber" | "rose" | "sky" }) {
+  const styles = { emerald: "bg-emerald-50 text-emerald-800", amber: "bg-amber-50 text-amber-800", rose: "bg-rose-50 text-rose-800", sky: "bg-sky-50 text-sky-800" }[tone];
+  return <section className="mt-5"><h3 className="mb-2 text-lg font-semibold text-ink">{title}</h3>{items.length ? <div className="grid gap-2">{items.map((item, index) => <p key={index} className={`rounded-2xl px-4 py-3 text-sm font-medium ${styles}`}>{item.message}</p>)}</div> : <p className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">Нет факторов.</p>}</section>;
+}
+
+function ComparisonTable({ comparison }: { comparison: DecisionCompareResponse }) {
+  return <section className="mt-8 rounded-[2rem] border border-line bg-white p-6 shadow-card"><p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Compare Mode</p><h2 className="mt-2 text-3xl font-semibold text-ink">Сравнение маршрутов</h2><p className="mt-2 text-muted">Победитель: {comparison.winner_route_id ?? "ничья"}</p><div className="mt-5 overflow-hidden rounded-2xl border border-line"><table className="w-full text-left text-sm"><thead className="bg-cloud text-muted"><tr><th className="p-3">Критерий</th><th className="p-3">Маршрут 1</th><th className="p-3">Маршрут 2</th><th className="p-3">Разница</th></tr></thead><tbody>{comparison.criteria.map((row) => <tr key={row.name} className="border-t border-line"><td className="p-3 font-semibold text-ink">{row.name}</td><td className="p-3">{row.left}</td><td className="p-3">{row.right}</td><td className="p-3">{row.difference}</td></tr>)}</tbody></table></div><ReasonList title="Рекомендации" items={comparison.recommendations} tone="sky" /></section>;
 }
