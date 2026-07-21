@@ -23,3 +23,8 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Saved searches MVP storage
+data/saved-searches.json
+data/*.tmp
+frontend/tsconfig.tsbuildinfo
