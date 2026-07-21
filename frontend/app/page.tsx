@@ -6,6 +6,7 @@ import {
   ArrowDown,
   ArrowLeftRight,
   BadgeCheck,
+  Bell,
   Bus,
   CalendarDays,
   Clock3,
@@ -16,6 +17,7 @@ import {
   Sparkles,
   TrainFront,
   UsersRound,
+  Trash2,
   WifiOff,
 } from "lucide-react";
 import { demoResponse } from "@/lib/demoData";
@@ -24,13 +26,17 @@ import {
   createSavedSearch,
   deleteSavedSearch,
   listSavedSearches,
+  deleteNotification,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
   monitoringHistory,
   runAllMonitoring,
   runMonitoring,
   searchRoutes,
   updateSavedSearch,
 } from "@/lib/api";
-import type { MonitoringHistory, RouteOption, SavedSearch, TransportType } from "@/lib/types";
+import type { MonitoringHistory, Notification, RouteOption, SavedSearch, TransportType } from "@/lib/types";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -156,6 +162,9 @@ export default function Home() {
   const [historyBySearch, setHistoryBySearch] = useState<Record<string, MonitoringHistory[]>>({});
   const [runningAll, setRunningAll] = useState(false);
   const [lastPayload, setLastPayload] = useState(buildPayload(initialForm));
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const unreadNotifications = notifications.filter((item) => !item.is_read).length;
   const sortedRoutes = useMemo(
     () =>
       [...routes].sort(
@@ -250,8 +259,34 @@ export default function Home() {
   }
 
   useEffect(() => {
+    void loadNotifications();
+  }, []);
+
+  useEffect(() => {
     if (viewMode === "requests") void loadSavedSearches();
   }, [viewMode]);
+
+  async function loadNotifications() {
+    try {
+      setNotifications(await listNotifications());
+    } catch {
+      setNotifications([]);
+    }
+  }
+
+  async function readNotification(id: string) {
+    const updated = await markNotificationRead(id);
+    setNotifications((current) => current.map((item) => item.id === id ? updated : item));
+  }
+
+  async function readAllNotifications() {
+    setNotifications(await markAllNotificationsRead());
+  }
+
+  async function removeNotification(id: string) {
+    await deleteNotification(id);
+    setNotifications((current) => current.filter((item) => item.id !== id));
+  }
 
   async function runCheck(item: SavedSearch) {
     setCheckingId(item.id);
@@ -288,6 +323,7 @@ export default function Home() {
         [item.id]: [result.history, ...(current[item.id] ?? [])],
       }));
       setRequestsNotice(result.summary);
+      void loadNotifications();
     } catch {
       setRequestsNotice("Monitoring Engine не смог выполнить проверку заявки.");
     } finally {
@@ -310,6 +346,7 @@ export default function Home() {
         return next;
       });
       setRequestsNotice(`Monitoring Engine проверил заявок: ${results.length}.`);
+      void loadNotifications();
     } catch {
       setRequestsNotice("Не удалось запустить Monitoring Engine для всех заявок.");
     } finally {
@@ -378,16 +415,31 @@ export default function Home() {
             Заявки
           </button>
         </nav>
-        <div className="hidden items-center gap-2 sm:flex">
-          <span className="rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-ink">
-            MVP
+        <div className="relative flex items-center gap-2">
+          <button
+            onClick={() => setNotificationsOpen((value) => !value)}
+            className="relative rounded-2xl border border-line bg-white p-3 text-ink shadow-soft transition hover:-translate-y-0.5"
+            aria-label="Открыть центр уведомлений"
+          >
+            <Bell size={20} />
+            {unreadNotifications > 0 && (
+              <span className="absolute -right-2 -top-2 rounded-full bg-rose-500 px-2 py-0.5 text-xs font-bold text-white">
+                {unreadNotifications}
+              </span>
+            )}
+          </button>
+          <span className="hidden rounded-full bg-ink px-3 py-1 text-xs font-semibold text-white sm:inline-flex">
+            v0.3
           </span>
-          <span className="rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-muted">
-            Mock Data
-          </span>
-          <span className="rounded-full bg-ink px-3 py-1 text-xs font-semibold text-white">
-            v0.2
-          </span>
+          {notificationsOpen && (
+            <NotificationCenter
+              notifications={notifications}
+              onRefresh={loadNotifications}
+              onRead={readNotification}
+              onReadAll={readAllNotifications}
+              onDelete={removeNotification}
+            />
+          )}
         </div>
       </header>
 
@@ -1047,6 +1099,80 @@ function MonitoringTimeline({ history }: { history: MonitoringHistory[] }) {
             <p className="mt-1 text-sm text-muted">Дата: {new Date(row.checked_at).toLocaleString("ru-RU")} · Маршрутов найдено: {row.routes_found} · Доступных маршрутов: {row.available_routes} · Изменения: {row.change_detected ? "да" : "нет"}</p>
             <div className="mt-3 border-t border-dashed border-line" />
           </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const notificationLabels: Record<Notification["type"], string> = {
+  new_route: "Новый маршрут",
+  seats_available: "Есть места",
+  better_route: "Лучший маршрут",
+  price_changed: "Цена",
+  monitoring_failed: "Ошибка мониторинга",
+  monitoring_resumed: "Мониторинг восстановлен",
+};
+
+const severityStyles: Record<Notification["severity"], string> = {
+  info: "border-sky-200 bg-sky-50 text-sky-800",
+  success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  warning: "border-amber-200 bg-amber-50 text-amber-800",
+  critical: "border-rose-200 bg-rose-50 text-rose-800",
+};
+
+function NotificationCenter(props: {
+  notifications: Notification[];
+  onRefresh: () => void;
+  onRead: (id: string) => void;
+  onReadAll: () => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div className="absolute right-0 top-14 z-20 w-[min(92vw,440px)] rounded-[2rem] border border-line bg-white p-4 shadow-card">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-ink">Центр уведомлений</h2>
+          <p className="text-sm text-muted">Внутренние события Monitoring Engine.</p>
+        </div>
+        <button onClick={props.onRefresh} className="rounded-full bg-cloud px-3 py-1 text-xs font-semibold text-ink">
+          Обновить
+        </button>
+      </div>
+      <div className="mb-3 flex justify-between text-xs font-semibold text-muted">
+        <span>Непрочитанных: {props.notifications.filter((item) => !item.is_read).length}</span>
+        <button onClick={props.onReadAll} className="text-brand">Прочитать всё</button>
+      </div>
+      <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+        {props.notifications.length === 0 && (
+          <div className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-700">Уведомлений пока нет.</div>
+        )}
+        {props.notifications.map((item) => (
+          <article key={item.id} className={`rounded-2xl border p-4 ${severityStyles[item.severity]} ${item.is_read ? "opacity-65" : ""}`}>
+            <div className="flex gap-3">
+              <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/80">
+                <Bell size={17} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">{notificationLabels[item.type]}</span>
+                  <time className="text-xs opacity-75">{new Date(item.created_at).toLocaleString("ru-RU")}</time>
+                </div>
+                <h3 className="mt-2 font-semibold">{item.title}</h3>
+                <p className="mt-1 text-sm leading-5">{item.message}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {!item.is_read && (
+                    <button onClick={() => props.onRead(item.id)} className="rounded-full bg-white px-3 py-1 text-xs font-semibold">
+                      Прочитано
+                    </button>
+                  )}
+                  <button onClick={() => props.onDelete(item.id)} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-semibold">
+                    <Trash2 size={13} /> Удалить
+                  </button>
+                </div>
+              </div>
+            </div>
+          </article>
         ))}
       </div>
     </div>

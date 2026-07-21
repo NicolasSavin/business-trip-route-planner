@@ -7,6 +7,7 @@ import type {
   SavedSearchUpdatePayload,
   MonitoringHistory,
   MonitoringResult,
+  Notification,
 } from "@/lib/types";
 
 export function apiBaseUrl() {
@@ -74,4 +75,21 @@ export function runMonitoring(id: string) {
 }
 export function runAllMonitoring() {
   return request<MonitoringResult[]>("/api/v1/monitoring/run-all", { method: "POST" });
+}
+
+
+export function listNotifications() {
+  return request<Notification[]>("/api/v1/notifications");
+}
+export function listUnreadNotifications() {
+  return request<Notification[]>("/api/v1/notifications/unread");
+}
+export function markNotificationRead(id: string) {
+  return request<Notification>(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
+}
+export function markAllNotificationsRead() {
+  return request<Notification[]>("/api/v1/notifications/read-all", { method: "PATCH" });
+}
+export function deleteNotification(id: string) {
+  return request<void>(`/api/v1/notifications/${id}`, { method: "DELETE" });
 }
