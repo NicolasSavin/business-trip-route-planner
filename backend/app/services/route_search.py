@@ -8,7 +8,7 @@ class RouteSearchService:
     def __init__(self, provider: TransportProvider):
         self.engine = RouteEngine(provider)
 
-    def search(self, request: RouteSearchRequest) -> list[RouteOption]:
+    def search(self, request: RouteSearchRequest, include_unavailable: bool = False) -> list[RouteOption]:
         options = self.engine.search(
             departure_date=request.departure_date,
             origin=request.origin,
@@ -20,10 +20,14 @@ class RouteSearchService:
             preferred_classes=request.preferred_classes,
             require_group_together=request.require_group_together,
             allow_split_group=request.allow_split_group,
+            include_unavailable=include_unavailable,
         )
         # Preserve the original public API behavior: returned route options are usable
         # for the requested group, while each item now also carries optional details.
-        return [self._to_api_route(option, request.passengers) for option in options if option.availability is None or option.availability.is_available]
+        api_routes = [self._to_api_route(option, request.passengers) for option in options]
+        if include_unavailable:
+            return api_routes
+        return [route for route in api_routes if route.availability is None or route.availability.is_available]
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
