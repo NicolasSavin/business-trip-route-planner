@@ -9,6 +9,7 @@ from app.api.notifications import router as notifications_router
 from app.api.decision import router as decision_router
 from app.api.providers import router as providers_router
 from app.api.locations import router as locations_router
+from app.api.browser import router as browser_router
 
 app = FastAPI(title="Business Trip Route Planner API")
 
@@ -38,3 +39,5 @@ app.include_router(notifications_router)
 app.include_router(decision_router)
 app.include_router(providers_router)
 app.include_router(locations_router)
+
+app.include_router(browser_router)

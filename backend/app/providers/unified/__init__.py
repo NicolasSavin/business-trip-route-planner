@@ -87,10 +87,12 @@ def build_default_registry() -> ProviderRegistry:
         ),
         metadata={
             **browser_status,
-            "status_label": "Не подключен",
+            "status_label": "Browser diagnostics",
             "infrastructure": "Инфраструктура готова",
-            "playwright": "Playwright пока не активирован",
-            "real_browser_requests_enabled": False,
+            "playwright_installed": browser_status["configured"],
+            "browser_running": browser_status["status"] == "running",
+            "browser_version": browser_status["version"],
+            "real_browser_requests_enabled": True,
         },
     )
 

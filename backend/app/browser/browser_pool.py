@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from app.browser.exceptions import BrowserPoolExhaustedError
 from app.browser.manager import BrowserManager
@@ -18,10 +18,11 @@ class BrowserPool:
         self._leased: set[str] = set()
 
     def acquire(self) -> BrowserSession:
+        browser = self.manager.ensure_browser()
         if self._available:
             session = self._available.pop()
         elif len(self._leased) < self.max_size:
-            session = BrowserSession(metrics=self.metrics)
+            session = BrowserSession(browser=browser, metrics=self.metrics, timeout_seconds=self.manager.config.timeout, user_agent=self.manager.config.user_agent)
         else:
             raise BrowserPoolExhaustedError("Browser pool size limit reached")
         session.open()

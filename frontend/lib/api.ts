@@ -128,3 +128,10 @@ export function suggestLocations(query: string, limit = 8, signal?: AbortSignal)
   const params = new URLSearchParams({ q: query, limit: String(limit) });
   return request<LocationSuggestResponse>(`/api/v1/locations/suggest?${params.toString()}`, { signal });
 }
+
+export function browserPing() {
+  return request<import("@/lib/types").BrowserPingResponse>("/api/v1/browser/ping");
+}
+export function browserScreenshotUrl() {
+  return `${apiBaseUrl()}/api/v1/browser/screenshot`;
+}

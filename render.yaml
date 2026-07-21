@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeployTrigger: commit
@@ -16,6 +16,10 @@ services:
           type: web
           name: business-trip-route-planner-frontend
           envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: PLAYWRIGHT_ENABLED
+        value: true
+      - key: BROWSER_HEADLESS
+        value: true
 
   - type: web
     name: business-trip-route-planner-frontend
