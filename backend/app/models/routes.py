@@ -27,12 +27,22 @@ class RouteSegment(BaseModel):
     departure_time: datetime
     arrival_time: datetime
     available_seats: int
+    origin_station: str | None = None
+    destination_station: str | None = None
+    carrier: str | None = None
+    source: str | None = None
+    availability_message: str | None = None
 
 
 class SegmentAvailability(BaseModel):
     segment_id: str
     is_available: bool
     available_seats: int
+    origin_station: str | None = None
+    destination_station: str | None = None
+    carrier: str | None = None
+    source: str | None = None
+    availability_message: str | None = None
     requested_passengers: int
     transport_class: TransportClass | None
     checked_at: datetime

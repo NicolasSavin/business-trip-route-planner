@@ -42,6 +42,11 @@ class RouteSearchService:
                 departure_time=segment.departure_datetime,
                 arrival_time=segment.arrival_datetime,
                 available_seats=segment.available_seats,
+                origin_station=segment.origin_station.name,
+                destination_station=segment.destination_station.name,
+                carrier=segment.carrier.name,
+                source=segment.metadata.get("source") or segment.metadata.get("source_provider") or segment.provider,
+                availability_message="Наличие мест пока не подтверждено" if segment.metadata.get("availability_unknown") else None,
             )
             for segment in route.segments
         ]

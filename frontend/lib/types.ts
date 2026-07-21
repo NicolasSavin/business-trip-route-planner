@@ -15,6 +15,11 @@ export type RouteSegment = {
   departure_time: string;
   arrival_time: string;
   available_seats: number;
+  origin_station?: string | null;
+  destination_station?: string | null;
+  carrier?: string | null;
+  source?: string | null;
+  availability_message?: string | null;
 };
 export type RouteOption = {
   id: string;
