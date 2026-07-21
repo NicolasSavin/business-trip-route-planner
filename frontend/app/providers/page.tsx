@@ -47,6 +47,8 @@ export default function ProvidersPage() {
     }
   }
 
+  const browserProvider = providers.find((provider) => provider.id === "browser_automation");
+
   return <main className="min-h-screen bg-cloud p-8 text-ink">
     <section className="mx-auto max-w-6xl rounded-[2rem] bg-white p-8 shadow-card">
       <div className="flex items-center justify-between gap-4">
@@ -57,6 +59,22 @@ export default function ProvidersPage() {
         <button onClick={load} className="rounded-full bg-brand px-5 py-2 font-semibold text-white">Обновить</button>
       </div>
       {error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
+      {browserProvider && <div className="mt-6 rounded-[1.5rem] border border-brand/20 bg-gradient-to-br from-blue-50 to-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Источник данных</p>
+            <h2 className="mt-2 text-2xl font-semibold">Browser Automation</h2>
+            <p className="mt-2 text-muted">Не подключен · Инфраструктура готова · Playwright пока не активирован</p>
+          </div>
+          <span className="w-fit rounded-full bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-800">{String(browserProvider.metadata?.status_label ?? "Не подключен")}</span>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl bg-white p-4"><div className="text-xs uppercase text-muted">Статус</div><div className="mt-1 font-semibold">{String(browserProvider.metadata?.status ?? "disabled")}</div></div>
+          <div className="rounded-2xl bg-white p-4"><div className="text-xs uppercase text-muted">Готовность</div><div className="mt-1 font-semibold">{String(browserProvider.metadata?.infrastructure ?? "Инфраструктура готова")}</div></div>
+          <div className="rounded-2xl bg-white p-4"><div className="text-xs uppercase text-muted">Драйвер</div><div className="mt-1 font-semibold">{String(browserProvider.metadata?.playwright ?? "Playwright пока не активирован")}</div></div>
+        </div>
+      </div>}
+
       <div className="mt-6 overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead className="text-muted"><tr><th>Источник</th><th>Тип</th><th>Приоритет</th><th>Статус</th><th>Готовность</th><th>Возможности</th><th>Настроен</th><th>Включён</th><th>Маршрутов</th><th>Последняя проверка</th><th></th></tr></thead>
