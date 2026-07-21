@@ -24,10 +24,13 @@ import {
   createSavedSearch,
   deleteSavedSearch,
   listSavedSearches,
+  monitoringHistory,
+  runAllMonitoring,
+  runMonitoring,
   searchRoutes,
   updateSavedSearch,
 } from "@/lib/api";
-import type { RouteOption, SavedSearch, TransportType } from "@/lib/types";
+import type { MonitoringHistory, RouteOption, SavedSearch, TransportType } from "@/lib/types";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -150,6 +153,8 @@ export default function Home() {
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [openedSearch, setOpenedSearch] = useState<SavedSearch | null>(null);
   const [checkedRoutes, setCheckedRoutes] = useState<RouteOption[]>([]);
+  const [historyBySearch, setHistoryBySearch] = useState<Record<string, MonitoringHistory[]>>({});
+  const [runningAll, setRunningAll] = useState(false);
   const [lastPayload, setLastPayload] = useState(buildPayload(initialForm));
   const sortedRoutes = useMemo(
     () =>
@@ -270,6 +275,57 @@ export default function Home() {
       );
     } finally {
       setCheckingId(null);
+    }
+  }
+
+
+  async function runMonitoringCheck(item: SavedSearch) {
+    setCheckingId(item.id);
+    try {
+      const result = await runMonitoring(item.id);
+      setHistoryBySearch((current) => ({
+        ...current,
+        [item.id]: [result.history, ...(current[item.id] ?? [])],
+      }));
+      setRequestsNotice(result.summary);
+    } catch {
+      setRequestsNotice("Monitoring Engine не смог выполнить проверку заявки.");
+    } finally {
+      setCheckingId(null);
+    }
+  }
+
+  async function runMonitoringForAll() {
+    setRunningAll(true);
+    try {
+      const results = await runAllMonitoring();
+      setHistoryBySearch((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          next[result.saved_search_id] = [
+            result.history,
+            ...(next[result.saved_search_id] ?? []),
+          ];
+        }
+        return next;
+      });
+      setRequestsNotice(`Monitoring Engine проверил заявок: ${results.length}.`);
+    } catch {
+      setRequestsNotice("Не удалось запустить Monitoring Engine для всех заявок.");
+    } finally {
+      setRunningAll(false);
+    }
+  }
+
+  async function openHistory(item: SavedSearch) {
+    setOpenedSearch(item);
+    setCheckedRoutes([]);
+    try {
+      const history = await monitoringHistory(item.id);
+      setHistoryBySearch((current) => ({ ...current, [item.id]: history }));
+      setRequestsNotice(history.length ? "История проверок загружена." : "История проверок пока пуста.");
+    } catch {
+      setRequestsNotice("Не удалось загрузить историю мониторинга.");
     }
   }
 
@@ -660,9 +716,12 @@ export default function Home() {
           checkedRoutes={checkedRoutes}
           onRefresh={loadSavedSearches}
           onCheck={runCheck}
+          onMonitoringCheck={runMonitoringCheck}
+          onRunAll={runMonitoringForAll}
+          runningAll={runningAll}
+          historyBySearch={historyBySearch}
           onOpen={(item) => {
-            setOpenedSearch(item);
-            setCheckedRoutes([]);
+            void openHistory(item);
           }}
           onToggle={toggleMonitoring}
           onDelete={removeSearch}
@@ -713,6 +772,10 @@ function RequestsScreen(props: {
   checkedRoutes: RouteOption[];
   onRefresh: () => void;
   onCheck: (item: SavedSearch) => void;
+  onMonitoringCheck: (item: SavedSearch) => void;
+  onRunAll: () => void;
+  runningAll: boolean;
+  historyBySearch: Record<string, MonitoringHistory[]>;
   onOpen: (item: SavedSearch) => void;
   onToggle: (item: SavedSearch) => void;
   onDelete: (item: SavedSearch) => void;
@@ -727,15 +790,24 @@ function RequestsScreen(props: {
             </h1>
             <p className="mt-4 max-w-2xl text-lg text-muted">
               Сохранённые параметры поиска и ручная повторная проверка маршрутов
-              без автоматического мониторинга.
+              с историей проверок Monitoring Engine без уведомлений и бронирований.
             </p>
           </div>
-          <button
-            onClick={props.onRefresh}
-            className="rounded-2xl bg-ink px-5 py-3 font-semibold text-white shadow-soft"
-          >
-            Обновить список
-          </button>
+<div className="flex flex-wrap gap-2">
+            <button
+              onClick={props.onRunAll}
+              disabled={props.runningAll}
+              className="rounded-2xl bg-brand px-5 py-3 font-semibold text-white shadow-soft disabled:opacity-60"
+            >
+              {props.runningAll ? "Проверяем..." : "Проверить все"}
+            </button>
+            <button
+              onClick={props.onRefresh}
+              className="rounded-2xl bg-ink px-5 py-3 font-semibold text-white shadow-soft"
+            >
+              Обновить список
+            </button>
+          </div>
         </div>
       </section>
       <div className="mb-5 rounded-2xl bg-sky-50 px-4 py-3 text-sm font-medium text-sky-800">
@@ -752,7 +824,11 @@ function RequestsScreen(props: {
         </div>
       )}
       <div className="grid gap-5 lg:grid-cols-2">
-        {props.items.map((item) => (
+        {props.items.map((item) => {
+          const history = props.historyBySearch[item.id] ?? [];
+          const latest = history[0];
+          const changesCount = history.filter((row) => row.change_detected).length;
+          return (
           <article
             key={item.id}
             className="rounded-[2rem] border border-line bg-white p-6 shadow-soft"
@@ -785,11 +861,7 @@ function RequestsScreen(props: {
               />
               <Info
                 label="Последняя проверка"
-                value={
-                  item.last_checked_at
-                    ? new Date(item.last_checked_at).toLocaleString("ru-RU")
-                    : "—"
-                }
+                value={latest ? new Date(latest.checked_at).toLocaleString("ru-RU") : item.last_checked_at ? new Date(item.last_checked_at).toLocaleString("ru-RU") : "—"}
               />
               <Info
                 label="Статус проверки"
@@ -801,8 +873,9 @@ function RequestsScreen(props: {
               />
               <Info
                 label="Доступных маршрутов"
-                value={String(item.last_available_routes_count)}
+                value={String(latest?.available_routes ?? item.last_available_routes_count)}
               />
+              <Info label="Количество изменений" value={String(changesCount)} />
             </div>
             {item.last_error && (
               <p className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -819,11 +892,18 @@ function RequestsScreen(props: {
                   ? "Проверка выполняется..."
                   : "Проверить сейчас"}
               </button>
+<button
+                onClick={() => props.onMonitoringCheck(item)}
+                disabled={props.checkingId === item.id}
+                className="rounded-2xl border border-line bg-cloud px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60"
+              >
+                Мониторинг
+              </button>
               <button
                 onClick={() => props.onOpen(item)}
                 className="rounded-2xl border border-line bg-cloud px-4 py-2 text-sm font-semibold text-ink"
               >
-                Открыть
+                История
               </button>
               <button
                 onClick={() => props.onToggle(item)}
@@ -839,7 +919,8 @@ function RequestsScreen(props: {
               </button>
             </div>
           </article>
-        ))}
+          );
+        })}
       </div>
       {props.openedSearch && (
         <section className="mt-8">
@@ -851,9 +932,10 @@ function RequestsScreen(props: {
               Проверка выполняется...
             </div>
           )}
+          <MonitoringTimeline history={props.historyBySearch[props.openedSearch.id] ?? []} />
           {!props.checkingId && props.checkedRoutes.length === 0 && (
-            <div className="rounded-2xl bg-slate-100 p-4 text-slate-700">
-              Нажмите «Проверить сейчас», чтобы увидеть найденные маршруты.
+            <div className="mt-4 rounded-2xl bg-slate-100 p-4 text-slate-700">
+              Нажмите «Проверить сейчас», чтобы увидеть найденные маршруты, или «Мониторинг», чтобы зафиксировать изменение.
             </div>
           )}
           <div className="grid gap-5">
@@ -946,5 +1028,27 @@ function RouteCard({ route, index }: { route: RouteOption; index: number }) {
         })}
       </div>
     </motion.article>
+  );
+}
+
+
+function MonitoringTimeline({ history }: { history: MonitoringHistory[] }) {
+  if (!history.length) {
+    return <div className="rounded-2xl bg-slate-100 p-4 text-slate-700">История проверок пока пуста.</div>;
+  }
+  return (
+    <div className="rounded-[2rem] border border-line bg-white p-6 shadow-soft">
+      <h3 className="mb-4 text-2xl font-semibold text-ink">История проверок</h3>
+      <div className="space-y-4">
+        {history.map((row) => (
+          <div key={row.id} className="border-l-2 border-brand pl-4">
+            <p className="text-sm font-semibold text-brand">{new Date(row.checked_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</p>
+            <p className="mt-1 font-semibold text-ink">{row.summary}</p>
+            <p className="mt-1 text-sm text-muted">Дата: {new Date(row.checked_at).toLocaleString("ru-RU")} · Маршрутов найдено: {row.routes_found} · Доступных маршрутов: {row.available_routes} · Изменения: {row.change_detected ? "да" : "нет"}</p>
+            <div className="mt-3 border-t border-dashed border-line" />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

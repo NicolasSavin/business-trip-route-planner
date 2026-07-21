@@ -5,6 +5,8 @@ import type {
   SavedSearchCheckResponse,
   SavedSearchCreatePayload,
   SavedSearchUpdatePayload,
+  MonitoringHistory,
+  MonitoringResult,
 } from "@/lib/types";
 
 export function apiBaseUrl() {
@@ -62,4 +64,14 @@ export function checkSavedSearch(id: string) {
     `/api/v1/saved-searches/${id}/check`,
     { method: "POST" },
   );
+}
+
+export function monitoringHistory(id: string) {
+  return request<MonitoringHistory[]>(`/api/v1/monitoring/history/${id}`);
+}
+export function runMonitoring(id: string) {
+  return request<MonitoringResult>(`/api/v1/monitoring/run/${id}`, { method: "POST" });
+}
+export function runAllMonitoring() {
+  return request<MonitoringResult[]>("/api/v1/monitoring/run-all", { method: "POST" });
 }

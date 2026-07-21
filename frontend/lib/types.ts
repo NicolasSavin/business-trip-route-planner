@@ -67,3 +67,28 @@ export type SavedSearchCheckResponse = {
   saved_search: SavedSearch;
   routes: RouteOption[];
 };
+
+export type MonitoringStatus = "success" | "failed" | "skipped";
+export type MonitoringHistory = {
+  id: string;
+  saved_search_id: string;
+  checked_at: string;
+  duration_ms: number;
+  routes_found: number;
+  available_routes: number;
+  best_score: number | null;
+  status: MonitoringStatus;
+  change_detected: boolean;
+  summary: string;
+  changes: string[];
+  route_ids: string[];
+  free_seats: number;
+};
+export type MonitoringResult = {
+  saved_search_id: string;
+  is_changed: boolean;
+  changes: string[];
+  summary: string;
+  timestamp: string;
+  history: MonitoringHistory;
+};
