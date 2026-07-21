@@ -9,7 +9,7 @@ This project now connects the existing Browser Automation Infrastructure to real
 Render installs Playwright during the backend build with:
 
 ```bash
-pip install -r requirements.txt && python -m playwright install --with-deps chromium
+pip install -r requirements.txt && python -m playwright install chromium
 ```
 
 The Render backend environment enables diagnostics with `PLAYWRIGHT_ENABLED=true` and `BROWSER_HEADLESS=true`.
@@ -38,7 +38,7 @@ The diagnostics API only opens `https://example.com`. This keeps the PR focused 
 
 ## API endpoints
 
-- `GET /api/v1/browser/ping` opens `https://example.com` and returns title, final URL, HTML length, browser version, and elapsed time.
+- `GET /api/v1/browser/ping` opens `https://example.com` and returns title, final URL, HTML length, browser version, and elapsed time when Chromium is available; otherwise it returns a degraded diagnostic message instead of crashing.
 - `GET /api/v1/browser/screenshot` opens `https://example.com` and returns a PNG screenshot.
 - `GET /api/v1/browser/health` reports Playwright installed, browser running, browser version, status, and health.
 - `GET /api/v1/browser/metrics` reports opened pages, closed pages, running sessions, browser restarts, and average page load time.

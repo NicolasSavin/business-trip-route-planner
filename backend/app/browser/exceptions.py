@@ -8,3 +8,7 @@ class BrowserDisabledError(BrowserInfrastructureError):
 
 class BrowserPoolExhaustedError(BrowserInfrastructureError):
     pass
+
+
+class BrowserUnavailableError(BrowserInfrastructureError):
+    pass
