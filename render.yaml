@@ -9,6 +9,8 @@ services:
     healthCheckPath: /health
     autoDeployTrigger: commit
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
       - key: FRONTEND_HOSTNAME
         fromService:
           type: web
