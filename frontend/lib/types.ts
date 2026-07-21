@@ -133,3 +133,22 @@ export type Notification = {
   severity: NotificationSeverity;
   metadata: Record<string, unknown>;
 };
+
+export type ProviderHealth = "healthy" | "degraded" | "offline";
+export type ProviderCapabilities = {
+  supported_transport: TransportType[];
+  supports_availability: boolean;
+  supports_realtime: boolean;
+};
+export type ProviderRegistration = {
+  id: string;
+  name: string;
+  priority: number;
+  enabled: boolean;
+  health: ProviderHealth;
+  capabilities: ProviderCapabilities;
+  routes_found: number;
+  last_checked_at: string | null;
+  error: string | null;
+  metadata: Record<string, unknown>;
+};

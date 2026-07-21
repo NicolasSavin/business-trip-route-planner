@@ -34,6 +34,7 @@ class RouteSearchService:
         segments = [
             RouteSegment(
                 id=segment.id,
+                provider=segment.provider,
                 origin=segment.origin_city.name,
                 destination=segment.destination_city.name,
                 transport_type=segment.transport_type,
@@ -76,6 +77,7 @@ class RouteSearchService:
             availability.segments = availability.segment_results
         return RouteOption(
             id="route-" + "-".join(segment.id for segment in route.segments),
+            provider=",".join(sorted({segment.provider for segment in route.segments})),
             origin=route.segments[0].origin_city.name,
             destination=route.segments[-1].destination_city.name,
             segments=segments,

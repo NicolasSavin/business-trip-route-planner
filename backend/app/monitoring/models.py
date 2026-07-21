@@ -36,6 +36,7 @@ class MonitoringHistory(BaseModel):
     changes: list[str] = Field(default_factory=list)
     route_ids: list[str] = Field(default_factory=list)
     free_seats: int = 0
+    provider_ids: list[str] = Field(default_factory=list)
 
 
 class MonitoringResult(BaseModel):

@@ -41,6 +41,7 @@ class MonitoringEngine:
                 changes=changes,
                 route_ids=[route.id for route in routes],
                 free_seats=self._free_seats(routes),
+                provider_ids=self._provider_ids(routes),
             )
         except Exception as exc:
             history = MonitoringHistory(
@@ -76,7 +77,9 @@ class MonitoringEngine:
         best_score = self._best_score(routes)
         free_seats = self._free_seats(routes)
         if new_routes:
-            changes.append(f"Появились новые маршруты: {len(new_routes)}")
+            providers = self._provider_ids(routes)
+            suffix = f" (providers: {', '.join(providers)})" if providers else ""
+            changes.append(f"Появились новые маршруты: {len(new_routes)}{suffix}")
         if len(routes) > previous.routes_found:
             changes.append(f"Маршрутов стало больше: {previous.routes_found} → {len(routes)}")
         if available_routes > previous.available_routes:
@@ -99,3 +102,13 @@ class MonitoringEngine:
 
     def _free_seats(self, routes: list[RouteOption]) -> int:
         return sum(min((segment.available_seats for segment in route.segments), default=0) for route in routes)
+
+    def _provider_ids(self, routes: list[RouteOption]) -> list[str]:
+        providers: set[str] = set()
+        for route in routes:
+            if route.provider:
+                providers.update(item for item in route.provider.split(",") if item)
+            for segment in route.segments:
+                if segment.provider:
+                    providers.add(segment.provider)
+        return sorted(providers)
