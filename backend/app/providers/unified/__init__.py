@@ -5,6 +5,7 @@ from app.providers.gtfs import GTFSProvider
 from app.providers.mock import MockTransportProvider
 from app.providers.rzd import RzdCapabilities, RzdConfiguration, RzdProvider
 from app.providers.tutu import TutuAvailabilityProvider, TutuConfiguration
+from app.providers.tutu.playwright import TutuPlaywrightProvider
 from app.providers.yandex import YandexRaspConfiguration, YandexRaspProvider
 from app.browser import BrowserAutomationProvider, BrowserConfiguration, BrowserManager, BrowserProviderCapability
 from app.providers.unified.models import ProviderCapabilities, ProviderHealth, ProviderPriority, ProviderRegistration
@@ -68,6 +69,30 @@ def build_default_registry() -> ProviderRegistry:
             "status_label": "Требуется партнёрский доступ",
             "real_requests_enabled": False,
             "adapter_prepared": True,
+        },
+    )
+
+    registry.register(
+        TutuPlaywrightProvider(),
+        id="tutu_playwright",
+        name="Tutu Playwright",
+        priority=ProviderPriority.LOW,
+        enabled=False,
+        capabilities=ProviderCapabilities(
+            supported_transport=[TransportType.TRAIN],
+            supports_availability=True,
+            supports_realtime=False,
+            supports_schedule=True,
+            supports_carriages=True,
+            supports_place_map=False,
+        ),
+        metadata={
+            "ready": True,
+            "status_label": "Ready",
+            "browser": "Playwright",
+            "source": "tutu.ru browser UI only",
+            "no_internal_api": True,
+            "no_booking": True,
         },
     )
 

@@ -135,3 +135,7 @@ export function browserPing() {
 export function browserScreenshotUrl() {
   return `${apiBaseUrl()}/api/v1/browser/screenshot`;
 }
+
+export function testTutuSearch() {
+  return request<import("@/lib/types").TutuDiagnosticsResponse>("/api/v1/providers/tutu/test");
+}
