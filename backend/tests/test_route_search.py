@@ -1,0 +1,49 @@
+from datetime import date
+from app.models.routes import RouteSearchRequest, TransportType
+from app.providers.mock import MockTransportProvider
+from app.services.route_search import RouteSearchService
+
+
+def make_request(**overrides):
+    data = {
+        "origin": "Москва",
+        "destination": "Екатеринбург",
+        "departure_date": date(2026, 8, 10),
+        "passengers": 2,
+        "allowed_transport": [TransportType.TRAIN, TransportType.BUS],
+        "max_transfers": 1,
+        "minimum_transfer_minutes": 30,
+    }
+    data.update(overrides)
+    return RouteSearchRequest(**data)
+
+
+def test_finds_direct_and_one_transfer_routes_sorted():
+    routes = RouteSearchService(MockTransportProvider()).search(make_request())
+    assert routes[0].transfers_count == 0
+    assert all(routes[index].transfers_count <= routes[index + 1].transfers_count for index in range(len(routes) - 1))
+    assert {route.transfer_city for route in routes if route.transfer_city} >= {"Казань", "Самара"}
+
+
+def test_respects_max_transfers_zero():
+    routes = RouteSearchService(MockTransportProvider()).search(make_request(max_transfers=0))
+    assert len(routes) == 1
+    assert routes[0].segments[0].number == "Поезд 016М"
+
+
+def test_marks_route_unavailable_when_one_segment_lacks_seats():
+    routes = RouteSearchService(MockTransportProvider()).search(make_request(passengers=5))
+    nnov_route = next(route for route in routes if route.transfer_city == "Нижний Новгород")
+    assert nnov_route.is_available_for_group is False
+    assert [segment.available_seats for segment in nnov_route.segments] == [6, 1]
+
+
+def test_filters_by_transport_type():
+    routes = RouteSearchService(MockTransportProvider()).search(make_request(allowed_transport=[TransportType.TRAIN]))
+    assert routes
+    assert all(segment.transport_type == TransportType.TRAIN for route in routes for segment in route.segments)
+
+
+def test_respects_minimum_transfer_minutes():
+    routes = RouteSearchService(MockTransportProvider()).search(make_request(minimum_transfer_minutes=181))
+    assert "Нижний Новгород" not in {route.transfer_city for route in routes if route.transfer_city}
