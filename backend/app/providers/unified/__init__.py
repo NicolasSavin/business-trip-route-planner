@@ -6,6 +6,7 @@ from app.providers.mock import MockTransportProvider
 from app.providers.rzd import RzdCapabilities, RzdConfiguration, RzdProvider
 from app.providers.tutu import TutuAvailabilityProvider, TutuConfiguration
 from app.providers.yandex import YandexRaspConfiguration, YandexRaspProvider
+from app.browser import BrowserAutomationProvider, BrowserConfiguration, BrowserManager, BrowserProviderCapability
 from app.providers.unified.models import ProviderCapabilities, ProviderHealth, ProviderPriority, ProviderRegistration
 from app.providers.unified.provider import UnifiedTransportProvider
 from app.providers.unified.registry import ProviderRegistry
@@ -67,6 +68,29 @@ def build_default_registry() -> ProviderRegistry:
             "status_label": "Требуется партнёрский доступ",
             "real_requests_enabled": False,
             "adapter_prepared": True,
+        },
+    )
+
+    browser_config = BrowserConfiguration.from_env()
+    browser_manager = BrowserManager(config=browser_config)
+    browser_status = BrowserAutomationProvider(manager=browser_manager).status()
+    browser_capability = BrowserProviderCapability()
+    registry.register(
+        BrowserAutomationProvider(manager=browser_manager),
+        id="browser_automation",
+        name="Browser Automation",
+        priority=ProviderPriority.LOW,
+        enabled=False,
+        capabilities=ProviderCapabilities(
+            supported_transport=[],
+            browser_automation=browser_capability.__dict__,
+        ),
+        metadata={
+            **browser_status,
+            "status_label": "Не подключен",
+            "infrastructure": "Инфраструктура готова",
+            "playwright": "Playwright пока не активирован",
+            "real_browser_requests_enabled": False,
         },
     )
 

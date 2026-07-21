@@ -158,6 +158,7 @@ export type ProviderCapabilities = {
   supports_place_map?: boolean;
   supports_compartment_rules?: boolean;
   supports_gender_restrictions?: boolean;
+  browser_automation?: Record<string, boolean> | null;
 };
 export type ProviderRegistration = {
   id: string;

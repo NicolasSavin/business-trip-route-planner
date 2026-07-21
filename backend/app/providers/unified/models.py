@@ -30,6 +30,7 @@ class ProviderCapabilities(BaseModel):
     supports_place_map: bool = False
     supports_compartment_rules: bool = False
     supports_gender_restrictions: bool = False
+    browser_automation: dict[str, bool] | None = None
 
 
 class ProviderRegistration(BaseModel):
