@@ -16,7 +16,7 @@ def list_providers() -> list[ProviderRegistration]:
 
 @router.get("/health", response_model=list[ProviderRegistration])
 def providers_health() -> list[ProviderRegistration]:
-    return registry.list()
+    return registry.health()
 
 
 @router.post("/{provider_id}/enable", response_model=ProviderRegistration)

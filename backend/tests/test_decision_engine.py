@@ -50,3 +50,11 @@ def test_compare_returns_winner_criteria_and_recommendation():
     assert response.criteria
     assert response.differences
     assert response.recommendations[0].code == "choose_winner"
+
+
+def test_decision_engine_shows_rzd_source_for_rzd_route():
+    item = route("rzd-route", duration=300)
+    item.provider = "rzd"
+    item.segments[0].provider = "rzd"
+    summary = DecisionEngine().analyze([item], passengers=2)[0]
+    assert any(reason.code == "source_rzd" and reason.message == "Источник: РЖД" for reason in summary.advantages)

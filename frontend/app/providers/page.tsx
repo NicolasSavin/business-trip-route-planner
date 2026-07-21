@@ -4,6 +4,12 @@ import { useEffect, useState } from "react";
 import { disableProvider, enableProvider, listProviders } from "@/lib/api";
 import type { ProviderRegistration } from "@/lib/types";
 
+function readinessLabel(provider: ProviderRegistration) {
+  const label = provider.metadata?.status_label;
+  if (typeof label === "string") return label;
+  return provider.metadata?.ready_to_connect ? "готов к подключению" : "—";
+}
+
 export default function ProvidersPage() {
   const [providers, setProviders] = useState<ProviderRegistration[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -36,12 +42,13 @@ export default function ProvidersPage() {
       {error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
       <div className="mt-6 overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="text-muted"><tr><th>Provider</th><th>Тип</th><th>Приоритет</th><th>Статус</th><th>Realtime</th><th>Availability</th><th>Маршрутов</th><th>Последняя проверка</th><th></th></tr></thead>
+          <thead className="text-muted"><tr><th>Provider</th><th>Тип</th><th>Приоритет</th><th>Статус</th><th>Готовность</th><th>Realtime</th><th>Availability</th><th>Маршрутов</th><th>Последняя проверка</th><th></th></tr></thead>
           <tbody>{providers.map((provider) => <tr key={provider.id} className="border-t border-cloud">
             <td className="py-4 font-semibold">{provider.name}<div className="text-xs text-muted">{provider.id}</div></td>
             <td>{provider.capabilities.supported_transport.join(", ")}</td>
             <td>{provider.priority}</td>
             <td><span className="rounded-full bg-cloud px-3 py-1">{provider.enabled ? provider.health : "disabled"}</span></td>
+            <td>{readinessLabel(provider)}</td>
             <td>{provider.capabilities.supports_realtime ? "Да" : "Нет"}</td>
             <td>{provider.capabilities.supports_availability ? "Да" : "Нет"}</td>
             <td>{provider.routes_found}</td>
