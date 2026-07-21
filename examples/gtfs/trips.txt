@@ -1,0 +1,3 @@
+route_id,service_id,trip_id,trip_headsign
+train_msk_ekb,weekday,train_016m_2026,Екатеринбург
+bus_msk_nnov,weekday,bus_mn10_2026,Нижний Новгород
