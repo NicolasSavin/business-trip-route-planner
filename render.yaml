@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: business-trip-route-planner-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: FRONTEND_HOSTNAME
+        fromService:
+          type: web
+          name: business-trip-route-planner-frontend
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+  - type: web
+    name: business-trip-route-planner-frontend
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    autoDeployTrigger: commit
+    envVars:
+      - key: NEXT_PUBLIC_API_HOSTNAME
+        fromService:
+          type: web
+          name: business-trip-route-planner-backend
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: NODE_VERSION
+        value: 20
