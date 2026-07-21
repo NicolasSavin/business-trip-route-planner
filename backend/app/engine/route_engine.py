@@ -46,7 +46,10 @@ class RouteEngine:
         allow_split_group: bool = False,
         include_unavailable: bool = False,
     ):
-        segments = self.provider.get_segments(departure_date, allowed_transport)
+        try:
+            segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination)
+        except TypeError:
+            segments = self.provider.get_segments(departure_date, allowed_transport)
         self.validator.validate_segments(segments)
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)

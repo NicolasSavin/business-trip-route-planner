@@ -63,7 +63,7 @@ type FormState = {
 
 const initialForm: FormState = {
   origin: "Москва",
-  destination: "Екатеринбург",
+  destination: "Санкт-Петербург",
   departure_date: "2026-08-10",
   passengers: 2,
   transport: "both",
@@ -777,14 +777,17 @@ export default function Home() {
                                 {segment.origin}
                               </p>
                               <p className="text-sm text-muted">
-                                {dateTime(segment.departure_time)}
+                                {segment.origin_station || "Станция не указана"} · {dateTime(segment.departure_time)}
                               </p>
                             </div>
                             <div className="flex items-center justify-center gap-2 text-muted sm:flex-col">
                               <ArrowDown className="sm:hidden" size={18} />
                               <Icon className="text-brand" size={22} />
                               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-soft">
-                                {segment.number}
+                                {transportLabels[segment.transport_type]} {segment.number}
+                              </span>
+                              <span className="text-center text-xs text-muted">
+                                {segment.carrier || "Перевозчик не указан"}<br />{segment.source || "Источник не указан"}
                               </span>
                               {segmentIndex < route.segments.length - 1 && (
                                 <span className="text-xs font-medium text-aqua">
@@ -797,8 +800,10 @@ export default function Home() {
                                 {segment.destination}
                               </p>
                               <p className="text-sm text-muted">
-                                {dateTime(segment.arrival_time)} ·{" "}
-                                {segment.available_seats} мест
+                                {segment.destination_station || "Станция не указана"} · {dateTime(segment.arrival_time)} · {minutesLabel(Math.round((new Date(segment.arrival_time).getTime() - new Date(segment.departure_time).getTime()) / 60000))}
+                              </p>
+                              <p className="mt-1 text-xs font-medium text-aqua">
+                                {segment.availability_message || `${segment.available_seats} мест`}
                               </p>
                             </div>
                           </div>

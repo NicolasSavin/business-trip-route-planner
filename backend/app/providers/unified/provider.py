@@ -14,12 +14,15 @@ class UnifiedTransportProvider(TransportProvider):
     def __init__(self, registry: ProviderRegistry):
         self.registry = registry
 
-    def get_segments(self, departure_date: date, allowed_transport: list[TransportType]) -> list[TransportSegment]:
+    def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None) -> list[TransportSegment]:
         merged: list[TransportSegment] = []
         seen: set[tuple[str, str, str, str, str, str]] = set()
         for registration, provider in self.registry.enabled(allowed_transport):
             try:
-                segments = provider.get_segments(departure_date, allowed_transport)
+                try:
+                    segments = provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination)
+                except TypeError:
+                    segments = provider.get_segments(departure_date, allowed_transport)
                 self.registry.mark_result(registration.id, segments)
             except Exception as exc:
                 self.registry.mark_error(registration.id, exc)

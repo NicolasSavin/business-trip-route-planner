@@ -4,6 +4,7 @@ from app.domain import TransportType
 from app.providers.gtfs import GTFSProvider
 from app.providers.mock import MockTransportProvider
 from app.providers.rzd import RzdCapabilities, RzdConfiguration, RzdProvider
+from app.providers.yandex import YandexRaspConfiguration, YandexRaspProvider
 from app.providers.unified.models import ProviderCapabilities, ProviderHealth, ProviderPriority, ProviderRegistration
 from app.providers.unified.provider import UnifiedTransportProvider
 from app.providers.unified.registry import ProviderRegistry
@@ -18,6 +19,19 @@ def build_default_registry() -> ProviderRegistry:
         priority=ProviderPriority.NORMAL,
         capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=True, supports_realtime=False),
     )
+    yandex_config = YandexRaspConfiguration.from_env()
+    registry.register(
+        YandexRaspProvider(config=yandex_config),
+        id="yandex_rasp",
+        name="Яндекс Расписания",
+        priority=ProviderPriority.HIGH,
+        enabled=yandex_config.enabled,
+        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=False, supports_realtime=False),
+        metadata={"base_url": yandex_config.base_url, "timeout_seconds": yandex_config.timeout_seconds, "uses_official_api": True},
+    )
+    if yandex_config.enabled:
+        registry.disable("mock")
+
     rzd_config = RzdConfiguration.from_env()
     registry.register(
         RzdProvider(configuration=rzd_config),
