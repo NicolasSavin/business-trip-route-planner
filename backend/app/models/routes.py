@@ -7,6 +7,12 @@ from app.domain import TransportClass, TransportType
 class RouteSearchRequest(BaseModel):
     origin: str
     destination: str
+    origin_location_id: str | None = None
+    origin_provider_code: str | None = None
+    origin_location_type: str | None = None
+    destination_location_id: str | None = None
+    destination_provider_code: str | None = None
+    destination_location_type: str | None = None
     departure_date: date
     passengers: int = Field(ge=1, le=100)
     allowed_transport: list[TransportType] = Field(min_length=1)

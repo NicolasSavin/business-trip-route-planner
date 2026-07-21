@@ -1,6 +1,7 @@
 import type {
   RouteSearchPayload,
   RouteSearchResponse,
+  LocationSuggestResponse,
   SavedSearch,
   SavedSearchCheckResponse,
   SavedSearchCreatePayload,
@@ -121,4 +122,9 @@ export function enableProvider(id: string) {
 }
 export function disableProvider(id: string) {
   return request<import("@/lib/types").ProviderRegistration>(`/api/v1/providers/${id}/disable`, { method: "POST" });
+}
+
+export function suggestLocations(query: string, limit = 8, signal?: AbortSignal) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request<LocationSuggestResponse>(`/api/v1/locations/suggest?${params.toString()}`, { signal });
 }

@@ -45,6 +45,12 @@ class RouteEngine:
         require_group_together: bool = True,
         allow_split_group: bool = False,
         include_unavailable: bool = False,
+        origin_location_id: str | None = None,
+        origin_provider_code: str | None = None,
+        origin_location_type: str | None = None,
+        destination_location_id: str | None = None,
+        destination_provider_code: str | None = None,
+        destination_location_type: str | None = None,
     ):
         try:
             segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination)
@@ -54,11 +60,11 @@ class RouteEngine:
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)
         destination_cities = self.station_resolver.resolve_city_names(destination, segments)
-        routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes)
+        routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
         if not routes:
             alternatives = self.nearby_city_resolver.alternatives_for(destination_cities[0])
             for alternative in alternatives:
-                routes = self.search_algorithm.find_routes(graph, origin_cities, (alternative,), passengers, max_transfers, minimum_transfer_minutes)
+                routes = self.search_algorithm.find_routes(graph, origin_cities, (alternative,), passengers, max_transfers, minimum_transfer_minutes, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
                 if routes:
                     break
         ranked = self.route_comparator.rank(routes)
@@ -72,3 +78,8 @@ class RouteEngine:
         if include_unavailable:
             return checked
         return [option for option in checked if option.availability and option.availability.is_available]
+
+    def _station_code(self, location_id: str | None, provider_code: str | None, location_type: str | None) -> str | None:
+        if location_type in {"station", "railway_station", "bus_station"}:
+            return provider_code or (location_id.split(":", 1)[1] if location_id and ":" in location_id else location_id)
+        return None

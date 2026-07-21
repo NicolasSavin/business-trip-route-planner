@@ -27,6 +27,12 @@ class SavedSearch(BaseModel):
     title: str
     origin: str
     destination: str
+    origin_location_id: str | None = None
+    origin_provider_code: str | None = None
+    origin_location_type: str | None = None
+    destination_location_id: str | None = None
+    destination_provider_code: str | None = None
+    destination_location_type: str | None = None
     departure_date: RouteSearchRequest.model_fields["departure_date"].annotation
     passengers: int = Field(ge=1, le=100)
     allowed_transport: RouteSearchRequest.model_fields["allowed_transport"].annotation = Field(min_length=1)
@@ -48,6 +54,12 @@ class SavedSearch(BaseModel):
         return RouteSearchRequest(
             origin=self.origin,
             destination=self.destination,
+            origin_location_id=self.origin_location_id,
+            origin_provider_code=self.origin_provider_code,
+            origin_location_type=self.origin_location_type,
+            destination_location_id=self.destination_location_id,
+            destination_provider_code=self.destination_provider_code,
+            destination_location_type=self.destination_location_type,
             departure_date=self.departure_date,
             passengers=self.passengers,
             allowed_transport=self.allowed_transport,
@@ -69,6 +81,12 @@ class SavedSearchUpdate(BaseModel):
     monitoring_enabled: bool | None = None
     origin: str | None = None
     destination: str | None = None
+    origin_location_id: str | None = None
+    origin_provider_code: str | None = None
+    origin_location_type: str | None = None
+    destination_location_id: str | None = None
+    destination_provider_code: str | None = None
+    destination_location_type: str | None = None
     departure_date: RouteSearchRequest.model_fields["departure_date"].annotation | None = None
     passengers: int | None = Field(default=None, ge=1, le=100)
     allowed_transport: RouteSearchRequest.model_fields["allowed_transport"].annotation | None = None
