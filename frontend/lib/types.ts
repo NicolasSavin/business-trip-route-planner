@@ -92,3 +92,24 @@ export type MonitoringResult = {
   timestamp: string;
   history: MonitoringHistory;
 };
+
+
+export type NotificationType =
+  | "new_route"
+  | "seats_available"
+  | "better_route"
+  | "price_changed"
+  | "monitoring_failed"
+  | "monitoring_resumed";
+export type NotificationSeverity = "info" | "success" | "warning" | "critical";
+export type Notification = {
+  id: string;
+  created_at: string;
+  saved_search_id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  is_read: boolean;
+  severity: NotificationSeverity;
+  metadata: Record<string, unknown>;
+};

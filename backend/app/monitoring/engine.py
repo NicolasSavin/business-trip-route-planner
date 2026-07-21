@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 from app.models.routes import RouteOption
 from app.models.saved_searches import SavedSearch
@@ -8,12 +9,16 @@ from app.monitoring.history import MonitoringHistoryRepository
 from app.monitoring.models import MonitoringHistory, MonitoringPolicy, MonitoringResult, MonitoringStatus, utc_now
 from app.services.route_search import RouteSearchService
 
+if TYPE_CHECKING:
+    from app.notifications.engine import NotificationEngine
+
 
 class MonitoringEngine:
-    def __init__(self, route_search: RouteSearchService, history: MonitoringHistoryRepository, policy: MonitoringPolicy | None = None):
+    def __init__(self, route_search: RouteSearchService, history: MonitoringHistoryRepository, policy: MonitoringPolicy | None = None, notification_engine: NotificationEngine | None = None):
         self.route_search = route_search
         self.history = history
         self.policy = policy or MonitoringPolicy()
+        self.notification_engine = notification_engine
 
     def check(self, saved_search: SavedSearch) -> MonitoringResult:
         started = time.perf_counter()
@@ -49,9 +54,17 @@ class MonitoringEngine:
                 summary=str(exc) or "Проверка не выполнена",
             )
             self.history.add(history)
+            result = MonitoringResult(saved_search_id=saved_search.id, is_changed=False, changes=[], summary=history.summary, timestamp=timestamp, history=history)
+            self._notify(result, previous)
             raise
         self.history.add(history)
-        return MonitoringResult(saved_search_id=saved_search.id, is_changed=bool(changes), changes=changes, summary=summary, timestamp=timestamp, history=history)
+        result = MonitoringResult(saved_search_id=saved_search.id, is_changed=bool(changes), changes=changes, summary=summary, timestamp=timestamp, history=history)
+        self._notify(result, previous)
+        return result
+
+    def _notify(self, result: MonitoringResult, previous: MonitoringHistory | None) -> None:
+        if self.notification_engine is not None:
+            self.notification_engine.notify_monitoring_result(result, previous)
 
     def detect_changes(self, previous: MonitoringHistory | None, routes: list[RouteOption]) -> list[str]:
         if previous is None:

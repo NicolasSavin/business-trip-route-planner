@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 
 from app.monitoring import FileMonitoringHistoryRepository, MonitoringEngine, MonitoringHistory, MonitoringResult, MonitoringScheduler, MonitoringService
+from app.notifications import FileNotificationRepository, NotificationEngine, NotificationService
 from app.providers.mock import MockTransportProvider
 from app.services.route_search import RouteSearchService
 from app.services.saved_searches import FileSavedSearchRepository
@@ -9,7 +10,10 @@ router = APIRouter(prefix="/api/v1/monitoring", tags=["monitoring"])
 
 saved_search_repository = FileSavedSearchRepository()
 history_repository = FileMonitoringHistoryRepository()
-monitoring_engine = MonitoringEngine(RouteSearchService(MockTransportProvider()), history_repository)
+notification_repository = FileNotificationRepository()
+notification_service = NotificationService(notification_repository)
+notification_engine = NotificationEngine(notification_service)
+monitoring_engine = MonitoringEngine(RouteSearchService(MockTransportProvider()), history_repository, notification_engine=notification_engine)
 service = MonitoringService(saved_search_repository, monitoring_engine, history_repository)
 scheduler = MonitoringScheduler(service)
 
