@@ -103,6 +103,7 @@ class RouteOption:
     explanation: str = ""
     warnings: tuple[str, ...] = ()
     advantages: tuple[str, ...] = ()
+    availability: Any | None = None
 
 
 class TransportProvider(Protocol):

@@ -1,6 +1,6 @@
 from app.domain import RouteOption as DomainRouteOption
 from app.engine import RouteEngine
-from app.models.routes import RouteOption, RouteSearchRequest, RouteSegment
+from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSegment, SegmentAvailability
 from app.providers.base import TransportProvider
 
 
@@ -36,6 +36,28 @@ class RouteSearchService:
             for segment in route.segments
         ]
         first_transfer = route.transfers[0] if route.transfers else None
+        availability = None
+        if option.availability:
+            availability = RouteAvailability(
+                is_available=option.availability.is_available,
+                total_available_seats=option.availability.total_available_seats,
+                min_available_seats=option.availability.min_available_seats,
+                checked_at=option.availability.checked_at,
+                source=option.availability.source,
+                segment_results=[
+                    SegmentAvailability(
+                        segment_id=result.segment_id,
+                        is_available=result.is_available,
+                        available_seats=result.available_seats,
+                        transport_class=result.transport_class,
+                        checked_at=result.checked_at,
+                        source=result.source,
+                        warnings=list(result.warnings),
+                    )
+                    for result in option.availability.segment_results
+                ],
+                warnings=list(option.availability.warnings),
+            )
         return RouteOption(
             id="route-" + "-".join(segment.id for segment in route.segments),
             origin=route.segments[0].origin_city.name,
@@ -45,10 +67,11 @@ class RouteSearchService:
             transfer_duration_minutes=sum(transfer.duration_minutes for transfer in route.transfers) if route.transfers else None,
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
-            is_available_for_group=all(segment.available_seats >= passengers for segment in route.segments),
+            is_available_for_group=option.availability.is_available if option.availability else all(segment.available_seats >= passengers for segment in route.segments),
             score=option.score,
             rank=option.rank,
             explanation=option.explanation,
             warnings=list(option.warnings),
             advantages=list(option.advantages),
+            availability=availability,
         )
