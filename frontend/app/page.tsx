@@ -9,6 +9,11 @@ import type { RouteOption, RouteSearchResponse, TransportType } from '@/lib/type
 const transportLabels: Record<TransportType, string> = { train: 'Поезд', bus: 'Автобус' };
 const transportIcons: Record<TransportType, typeof TrainFront> = { train: TrainFront, bus: Bus };
 
+function apiBaseUrl() {
+  const hostname = process.env.NEXT_PUBLIC_API_HOSTNAME;
+  return hostname ? `https://${hostname}` : 'http://localhost:8000';
+}
+
 type NoticeKind = 'demo' | 'api' | 'empty' | 'error';
 type FormState = { origin: string; destination: string; departure_date: string; passengers: number; transport: 'both' | TransportType; max_transfers: number; minimum_transfer_minutes: number };
 
@@ -70,7 +75,7 @@ export default function Home() {
     const allowed_transport = formState.transport === 'both' ? ['train', 'bus'] : [formState.transport];
     const payload = { ...formState, allowed_transport, transport: undefined };
     try {
-      const response = await fetch('http://localhost:8000/api/v1/routes/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const response = await fetch(`${apiBaseUrl()}/api/v1/routes/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error('Backend недоступен');
       const data = (await response.json()) as RouteSearchResponse;
       setRoutes(data.routes);
