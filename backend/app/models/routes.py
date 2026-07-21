@@ -19,6 +19,7 @@ class RouteSearchRequest(BaseModel):
 
 class RouteSegment(BaseModel):
     id: str
+    provider: str | None = None
     origin: str
     destination: str
     transport_type: TransportType
@@ -65,6 +66,7 @@ class RouteAvailability(BaseModel):
 
 class RouteOption(BaseModel):
     id: str
+    provider: str | None = None
     origin: str
     destination: str
     segments: list[RouteSegment]

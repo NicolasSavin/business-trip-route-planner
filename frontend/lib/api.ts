@@ -109,3 +109,16 @@ export function compareRoutes(left: RouteOption, right: RouteOption, passengers:
     body: JSON.stringify({ left, right, passengers }),
   });
 }
+
+export function listProviders() {
+  return request<import("@/lib/types").ProviderRegistration[]>("/api/v1/providers");
+}
+export function providersHealth() {
+  return request<import("@/lib/types").ProviderRegistration[]>("/api/v1/providers/health");
+}
+export function enableProvider(id: string) {
+  return request<import("@/lib/types").ProviderRegistration>(`/api/v1/providers/${id}/enable`, { method: "POST" });
+}
+export function disableProvider(id: string) {
+  return request<import("@/lib/types").ProviderRegistration>(`/api/v1/providers/${id}/disable`, { method: "POST" });
+}

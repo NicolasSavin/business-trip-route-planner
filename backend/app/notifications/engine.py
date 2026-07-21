@@ -32,4 +32,5 @@ class NotificationEngine:
         return NotificationType.NEW_ROUTE, NotificationSeverity.INFO, "Есть изменения в мониторинге"
 
     def _create(self, saved_search_id: str, notification_type: NotificationType, title: str, message: str, severity: NotificationSeverity, result: MonitoringResult) -> Notification:
-        return self.service.create(Notification(saved_search_id=saved_search_id, type=notification_type, title=title, message=message, severity=severity, metadata={"history_id": result.history.id, "changes": result.changes, "checked_at": result.timestamp.isoformat()}))
+        provider_suffix = f" Источник: {', '.join(result.history.provider_ids)}." if result.history.provider_ids else ""
+        return self.service.create(Notification(saved_search_id=saved_search_id, type=notification_type, title=title, message=message + provider_suffix, severity=severity, metadata={"history_id": result.history.id, "changes": result.changes, "checked_at": result.timestamp.isoformat(), "providers": result.history.provider_ids}))
