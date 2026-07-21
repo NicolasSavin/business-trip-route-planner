@@ -77,17 +77,20 @@ class BrowserSession:
             return page.evaluate(expression)
         return page.evaluate(expression, arg)
 
-    def click(self, *_args: Any, **_kwargs: Any) -> None:
-        raise NotImplementedError("Click actions are intentionally not connected at this stage.")
+    def click(self, selector: str, **kwargs: Any) -> None:
+        self._require_page().locator(selector).first.click(**kwargs)
 
-    def fill(self, *_args: Any, **_kwargs: Any) -> None:
-        raise NotImplementedError("Fill actions are intentionally not connected at this stage.")
+    def fill(self, selector: str, value: str, **kwargs: Any) -> None:
+        self._require_page().locator(selector).first.fill(value, **kwargs)
 
-    def select(self, *_args: Any, **_kwargs: Any) -> None:
-        raise NotImplementedError("Select actions are intentionally not connected at this stage.")
+    def select(self, selector: str, value: str | list[str], **kwargs: Any) -> Any:
+        return self._require_page().locator(selector).first.select_option(value, **kwargs)
 
-    def wait_for(self, *_args: Any, **_kwargs: Any) -> bool:
-        return self.wait_ready()
+    def wait_for(self, selector: str | None = None, **kwargs: Any) -> bool:
+        if selector is None:
+            return self.wait_ready()
+        self._require_page().locator(selector).first.wait_for(**kwargs)
+        return True
 
     def cookies(self) -> list[dict[str, Any]]:
         return self.context.cookies() if self.context is not None else []

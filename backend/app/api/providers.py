@@ -2,11 +2,18 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
 
 from app.providers.tutu.exceptions import TutuConfigurationError
 from app.providers.unified import ProviderRegistration, registry
 
 router = APIRouter(prefix="/api/v1/providers", tags=["providers"])
+
+
+class TutuLiveTestRequest(BaseModel):
+    origin: str
+    destination: str
+    date: date
 
 
 def _not_found() -> HTTPException:
@@ -57,3 +64,11 @@ def test_tutu_provider() -> dict:
     finally:
         client.close()
     return jsonable_encoder({"origin": "Москва", "destination": "Санкт-Петербург", "date": tomorrow, "routes": routes})
+
+
+@router.post("/tutu/live-test")
+def live_test_tutu_provider(payload: TutuLiveTestRequest) -> dict:
+    from app.providers.tutu.playwright import TutuPlaywrightClient
+
+    client = TutuPlaywrightClient()
+    return jsonable_encoder(client.live_test(payload.origin, payload.destination, payload.date))
