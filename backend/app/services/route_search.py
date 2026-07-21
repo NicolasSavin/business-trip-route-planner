@@ -17,8 +17,13 @@ class RouteSearchService:
             allowed_transport=request.allowed_transport,
             max_transfers=request.max_transfers,
             minimum_transfer_minutes=request.minimum_transfer_minutes,
+            preferred_classes=request.preferred_classes,
+            require_group_together=request.require_group_together,
+            allow_split_group=request.allow_split_group,
         )
-        return [self._to_api_route(option, request.passengers) for option in options]
+        # Preserve the original public API behavior: returned route options are usable
+        # for the requested group, while each item now also carries optional details.
+        return [self._to_api_route(option, request.passengers) for option in options if option.availability is None or option.availability.is_available]
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
@@ -40,24 +45,31 @@ class RouteSearchService:
         if option.availability:
             availability = RouteAvailability(
                 is_available=option.availability.is_available,
-                total_available_seats=option.availability.total_available_seats,
-                min_available_seats=option.availability.min_available_seats,
+                requested_passengers=option.availability.requested_passengers,
+                minimum_available_seats=option.availability.minimum_available_seats,
                 checked_at=option.availability.checked_at,
-                source=option.availability.source,
                 segment_results=[
                     SegmentAvailability(
                         segment_id=result.segment_id,
                         is_available=result.is_available,
                         available_seats=result.available_seats,
+                        requested_passengers=result.requested_passengers,
                         transport_class=result.transport_class,
                         checked_at=result.checked_at,
                         source=result.source,
+                        reason=result.reason,
                         warnings=list(result.warnings),
+                        stale_after_seconds=result.stale_after_seconds,
+                        is_stale=result.is_stale,
                     )
                     for result in option.availability.segment_results
                 ],
+                reasons=list(option.availability.reasons),
                 warnings=list(option.availability.warnings),
+                stale_after_seconds=option.availability.stale_after_seconds,
+                is_stale=option.availability.is_stale,
             )
+            availability.segments = availability.segment_results
         return RouteOption(
             id="route-" + "-".join(segment.id for segment in route.segments),
             origin=route.segments[0].origin_city.name,

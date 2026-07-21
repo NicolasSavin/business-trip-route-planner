@@ -32,7 +32,20 @@ class RouteEngine:
         self.search_algorithm = GraphRouteSearch(self.transfer_engine)
         self.availability_engine = availability_engine or AvailabilityEngine()
 
-    def search(self, departure_date: date, origin: str, destination: str, passengers: int, allowed_transport: list[TransportType], max_transfers: int, minimum_transfer_minutes: int):
+    def search(
+        self,
+        departure_date: date,
+        origin: str,
+        destination: str,
+        passengers: int,
+        allowed_transport: list[TransportType],
+        max_transfers: int,
+        minimum_transfer_minutes: int,
+        preferred_classes=(),
+        require_group_together: bool = True,
+        allow_split_group: bool = False,
+        include_unavailable: bool = False,
+    ):
         segments = self.provider.get_segments(departure_date, allowed_transport)
         self.validator.validate_segments(segments)
         graph = self.graph_builder.build(segments)
@@ -46,6 +59,13 @@ class RouteEngine:
                 if routes:
                     break
         ranked = self.route_comparator.rank(routes)
-        policy = AvailabilityPolicy.for_group(passengers)
+        policy = AvailabilityPolicy.for_group(
+            passengers,
+            preferred_classes=tuple(preferred_classes),
+            require_group_together=require_group_together,
+            allow_split_group=allow_split_group,
+        )
         checked = [self.availability_engine.attach(option, policy) for option in ranked]
+        if include_unavailable:
+            return checked
         return [option for option in checked if option.availability and option.availability.is_available]
