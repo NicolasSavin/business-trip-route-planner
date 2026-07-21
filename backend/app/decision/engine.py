@@ -53,6 +53,9 @@ class DecisionEngine:
             score -= policy.long_wait_penalty; dis.append(self._r("long_wait", "Длительное ожидание между сегментами.", "disadvantage", -policy.long_wait_penalty))
         if route.total_duration_minutes <= fastest * 1.15 and route.transfers_count <= 1 and route.is_available_for_group:
             score += policy.balanced_bonus; adv.append(self._r("balanced", "Лучший баланс времени и количества пересадок.", "advantage", policy.balanced_bonus))
+        providers = {segment.provider for segment in route.segments if getattr(segment, "provider", None)}
+        if "rzd" in providers or route.provider == "rzd":
+            adv.append(self._r("source_rzd", "Источник: РЖД", "advantage"))
         for w in route.warnings:
             warn.append(self._r("route_warning", w, "warning"))
         rating=max(0,min(100,round(score)))
