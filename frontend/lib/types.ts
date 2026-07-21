@@ -153,6 +153,11 @@ export type ProviderCapabilities = {
   supported_transport: TransportType[];
   supports_availability: boolean;
   supports_realtime: boolean;
+  supports_schedule?: boolean;
+  supports_carriages?: boolean;
+  supports_place_map?: boolean;
+  supports_compartment_rules?: boolean;
+  supports_gender_restrictions?: boolean;
 };
 export type ProviderRegistration = {
   id: string;

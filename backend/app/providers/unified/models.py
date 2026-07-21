@@ -25,6 +25,11 @@ class ProviderCapabilities(BaseModel):
     supported_transport: list[TransportType] = Field(default_factory=list)
     supports_availability: bool = False
     supports_realtime: bool = False
+    supports_schedule: bool = False
+    supports_carriages: bool = False
+    supports_place_map: bool = False
+    supports_compartment_rules: bool = False
+    supports_gender_restrictions: bool = False
 
 
 class ProviderRegistration(BaseModel):
