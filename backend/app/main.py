@@ -2,14 +2,8 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import router as routes_router
-from app.api.saved_searches import router as saved_searches_router
-from app.api.monitoring import router as monitoring_router
-from app.api.notifications import router as notifications_router
-from app.api.decision import router as decision_router
-from app.api.providers import router as providers_router
-from app.api.locations import router as locations_router
-from app.api.browser import router as browser_router
+
+from app.api import api_routers
 
 app = FastAPI(title="Business Trip Route Planner API")
 
@@ -32,12 +26,5 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-app.include_router(routes_router)
-app.include_router(saved_searches_router)
-app.include_router(monitoring_router)
-app.include_router(notifications_router)
-app.include_router(decision_router)
-app.include_router(providers_router)
-app.include_router(locations_router)
-
-app.include_router(browser_router)
+for router in api_routers:
+    app.include_router(router)
