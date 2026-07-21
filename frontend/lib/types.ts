@@ -172,3 +172,11 @@ export type ProviderRegistration = {
   error: string | null;
   metadata: Record<string, unknown>;
 };
+
+export type BrowserPingResponse = {
+  title: string;
+  url: string;
+  html_length: number;
+  browser_version: string;
+  elapsed_ms: number;
+};

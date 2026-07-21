@@ -33,3 +33,13 @@ class BrowserConfiguration:
     @property
     def configured(self) -> bool:
         return self.playwright_enabled
+
+    def with_playwright_enabled(self) -> "BrowserConfiguration":
+        return BrowserConfiguration(
+            playwright_enabled=True,
+            headless=self.headless,
+            pool_size=self.pool_size,
+            timeout=self.timeout,
+            user_agent=self.user_agent,
+            proxy=self.proxy,
+        )
