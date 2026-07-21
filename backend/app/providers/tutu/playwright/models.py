@@ -30,11 +30,12 @@ class SeatAvailability:
 @dataclass(frozen=True)
 class TutuPlaywrightResult:
     train_number: str
-    origin_station: str
-    destination_station: str
-    departure: datetime
-    arrival: datetime
-    duration_minutes: int
+    train_name: str | None = None
+    origin_station: str = ""
+    destination_station: str = ""
+    departure: datetime = field(default_factory=datetime.now)
+    arrival: datetime = field(default_factory=datetime.now)
+    duration_minutes: int = 0
     transfers: int = 0
     carriage_type: str = "Unknown"
     available_seats: SeatAvailability = field(default_factory=SeatAvailability)
