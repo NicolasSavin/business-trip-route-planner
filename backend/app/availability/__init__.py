@@ -1,6 +1,7 @@
 from app.availability.engine import AvailabilityEngine
 from app.availability.models import AvailabilityPolicy, AvailabilityResult, RouteAvailability, SegmentAvailability
 from app.availability.provider import AvailabilityProvider, MockAvailabilityProvider
+from app.availability.seats import BerthPosition, GenderRestriction, RailwayCarriageAvailability, RailwayPlace, SeatAllocationResult, SeatAllocationService, SeatPreferences
 from app.availability.validator import AvailabilityValidator
 
 __all__ = [
@@ -12,4 +13,11 @@ __all__ = [
     "MockAvailabilityProvider",
     "RouteAvailability",
     "SegmentAvailability",
+    "BerthPosition",
+    "GenderRestriction",
+    "RailwayCarriageAvailability",
+    "RailwayPlace",
+    "SeatAllocationResult",
+    "SeatAllocationService",
+    "SeatPreferences",
 ]

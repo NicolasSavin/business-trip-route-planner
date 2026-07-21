@@ -61,6 +61,10 @@ class ProviderRegistry:
         registration = self._registrations.get(provider_id)
         if registration is None:
             return None
+        if enabled:
+            ensure_can_enable = getattr(self._providers[provider_id], "ensure_can_enable", None)
+            if ensure_can_enable is not None:
+                ensure_can_enable()
         updated = registration.model_copy(update={"enabled": enabled})
         self._registrations[provider_id] = updated
         return updated
