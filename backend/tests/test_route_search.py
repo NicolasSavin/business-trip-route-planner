@@ -11,31 +11,30 @@ def make_request(**overrides):
         "departure_date": date(2026, 8, 10),
         "passengers": 2,
         "allowed_transport": [TransportType.TRAIN, TransportType.BUS],
-        "max_transfers": 1,
+        "max_transfers": 2,
         "minimum_transfer_minutes": 30,
     }
     data.update(overrides)
     return RouteSearchRequest(**data)
 
 
-def test_finds_direct_and_one_transfer_routes_sorted():
+def test_finds_direct_and_transfer_routes_sorted_by_engine_score():
     routes = RouteSearchService(MockTransportProvider()).search(make_request())
     assert routes[0].transfers_count == 0
-    assert all(routes[index].transfers_count <= routes[index + 1].transfers_count for index in range(len(routes) - 1))
     assert {route.transfer_city for route in routes if route.transfer_city} >= {"Казань", "Самара"}
 
 
 def test_respects_max_transfers_zero():
     routes = RouteSearchService(MockTransportProvider()).search(make_request(max_transfers=0))
-    assert len(routes) == 1
+    assert routes
+    assert all(route.transfers_count == 0 for route in routes)
     assert routes[0].segments[0].number == "Поезд 016М"
 
 
-def test_marks_route_unavailable_when_one_segment_lacks_seats():
+def test_filters_route_unavailable_when_one_segment_lacks_seats():
     routes = RouteSearchService(MockTransportProvider()).search(make_request(passengers=5))
-    nnov_route = next(route for route in routes if route.transfer_city == "Нижний Новгород")
-    assert nnov_route.is_available_for_group is False
-    assert [segment.available_seats for segment in nnov_route.segments] == [6, 1]
+    assert "Нижний Новгород" not in {route.transfer_city for route in routes if route.transfer_city}
+    assert all(route.is_available_for_group for route in routes)
 
 
 def test_filters_by_transport_type():

@@ -1,12 +1,7 @@
 from datetime import date, datetime
-from enum import StrEnum
 from typing import Literal
 from pydantic import BaseModel, Field
-
-
-class TransportType(StrEnum):
-    TRAIN = "train"
-    BUS = "bus"
+from app.domain import TransportType
 
 
 class RouteSearchRequest(BaseModel):
@@ -15,7 +10,7 @@ class RouteSearchRequest(BaseModel):
     departure_date: date
     passengers: int = Field(ge=1, le=100)
     allowed_transport: list[TransportType] = Field(min_length=1)
-    max_transfers: Literal[0, 1] = 1
+    max_transfers: Literal[0, 1, 2] = 1
     minimum_transfer_minutes: int = Field(default=30, ge=0)
 
 
