@@ -1,4 +1,7 @@
+from datetime import date, timedelta
+
 from fastapi import APIRouter, HTTPException, status
+from fastapi.encoders import jsonable_encoder
 
 from app.providers.tutu.exceptions import TutuConfigurationError
 from app.providers.unified import ProviderRegistration, registry
@@ -37,3 +40,20 @@ def disable_provider(provider_id: str) -> ProviderRegistration:
     if provider is None:
         raise _not_found()
     return provider
+
+
+@router.get("/tutu/test")
+def test_tutu_provider() -> dict:
+    from app.providers.tutu.playwright import TutuPlaywrightClient, TutuPlaywrightMapper
+
+    tomorrow = date.today() + timedelta(days=1)
+    client = TutuPlaywrightClient()
+    mapper = TutuPlaywrightMapper()
+    try:
+        client.open_home()
+        client.search(origin="Москва", destination="Санкт-Петербург", date=tomorrow, passengers=1)
+        results = client.parse_results()
+        routes = [mapper.to_route_option(result, "Москва", "Санкт-Петербург", rank=index + 1) for index, result in enumerate(results[:5])]
+    finally:
+        client.close()
+    return jsonable_encoder({"origin": "Москва", "destination": "Санкт-Петербург", "date": tomorrow, "routes": routes})

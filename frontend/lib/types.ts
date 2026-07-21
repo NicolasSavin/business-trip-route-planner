@@ -180,3 +180,27 @@ export type BrowserPingResponse = {
   browser_version: string;
   elapsed_ms: number;
 };
+
+export type TutuSeatAvailability = {
+  total: number | "Unknown";
+  upper: number | "Unknown";
+  lower: number | "Unknown";
+  side: number | "Unknown";
+  platzkart: number | "Unknown";
+  coupe: number | "Unknown";
+  sv: number | "Unknown";
+  seated: number | "Unknown";
+};
+export type TutuDiagnosticsRoute = {
+  route: {
+    segments: Array<RouteSegment & { vehicle_number?: string; departure_datetime?: string; arrival_datetime?: string; price?: number | null; metadata?: Record<string, unknown> }>;
+  };
+  rank: number;
+  availability: TutuSeatAvailability;
+};
+export type TutuDiagnosticsResponse = {
+  origin: string;
+  destination: string;
+  date: string;
+  routes: TutuDiagnosticsRoute[];
+};
