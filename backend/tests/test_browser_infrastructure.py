@@ -104,3 +104,34 @@ def test_provider_registry_exposes_browser_infrastructure():
     assert registration.metadata["infrastructure"] == "Инфраструктура готова"
     assert "playwright_installed" in registration.metadata
     assert registration.capabilities.browser_automation["javascript"] is True
+
+
+def test_browser_manager_reports_missing_chromium_without_crashing(monkeypatch):
+    class FakePlaywrightError(Exception):
+        pass
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            raise FakePlaywrightError("Executable doesn't exist at /tmp/chromium")
+
+    class FakePlaywrightRuntime:
+        chromium = FakeChromium()
+
+        def stop(self):
+            pass
+
+    fake_sync_api = types.SimpleNamespace(
+        Error=FakePlaywrightError,
+        sync_playwright=lambda: types.SimpleNamespace(start=lambda: FakePlaywrightRuntime()),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+
+    manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
+    manager._installed = True
+    manager.start()
+
+    health = manager.health()
+    assert health.status == BrowserStatus.DEGRADED
+    assert health.healthy is False
+    assert "Chromium browser files are not installed" in health.message
+    assert manager.version() == "chromium-unavailable"

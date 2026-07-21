@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.browser.config import BrowserConfiguration
+from app.browser.exceptions import BrowserUnavailableError
 from app.browser.metrics import BrowserMetrics
 from app.browser.models import BrowserHealth, BrowserStatus
 
@@ -17,6 +18,7 @@ class BrowserManager:
         self._playwright: Any | None = None
         self._browser: Any | None = None
         self._version: str | None = None
+        self._unavailable_reason: str | None = None
         self._installed = self._detect_playwright()
 
     @property
@@ -37,18 +39,51 @@ class BrowserManager:
         if self._running and self._browser is not None:
             return
         if not self._installed:
-            raise RuntimeError("Playwright package is not installed")
-        from playwright.sync_api import sync_playwright
+            self._unavailable_reason = "Playwright package is not installed"
+            return
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-        self._playwright = sync_playwright().start()
-        launch_options: dict[str, Any] = {"headless": self.config.headless}
-        if self.config.proxy:
-            launch_options["proxy"] = {"server": self.config.proxy}
-        self._browser = self._playwright.chromium.launch(**launch_options)
+        self._unavailable_reason = None
+        try:
+            self._playwright = sync_playwright().start()
+            launch_options: dict[str, Any] = {"headless": self.config.headless}
+            if self.config.proxy:
+                launch_options["proxy"] = {"server": self.config.proxy}
+            self._browser = self._playwright.chromium.launch(**launch_options)
+        except PlaywrightError as exc:
+            self._unavailable_reason = f"Chromium is unavailable: {self._summarize_launch_error(exc)}"
+            self._cleanup_failed_start()
+            return
+        except Exception as exc:
+            self._unavailable_reason = f"Browser could not start: {exc}"
+            self._cleanup_failed_start()
+            return
         self._version = self._browser.version
         self._running = True
         self.started_at = datetime.now(timezone.utc)
         self.metrics.active_browsers += 1
+
+    def _cleanup_failed_start(self) -> None:
+        if self._browser is not None:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+        self._running = False
+        self.started_at = None
+
+    def _summarize_launch_error(self, exc: Exception) -> str:
+        message = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+        if "Executable doesn't exist" in str(exc) or "Please run" in str(exc):
+            return "Chromium browser files are not installed; run `python -m playwright install chromium` during build."
+        return message
 
     def stop(self) -> None:
         if self._browser is not None:
@@ -76,17 +111,23 @@ class BrowserManager:
         if not self._running or self._browser is None:
             self.start()
         if self._browser is None:
-            raise RuntimeError("Browser is disabled or unavailable")
+            raise BrowserUnavailableError(self._unavailable_reason or "Browser is disabled or unavailable")
         return self._browser
 
     def version(self) -> str:
         if self._version:
             return self._version
-        return "playwright-not-running" if self._installed else "playwright-not-installed"
+        if not self._installed:
+            return "playwright-not-installed"
+        if self._unavailable_reason:
+            return "chromium-unavailable"
+        return "playwright-not-running"
 
     def health(self) -> BrowserHealth:
         if not self.config.playwright_enabled:
             return BrowserHealth(False, self._installed, True, BrowserStatus.DISABLED, "Playwright disabled", version=self.version())
         if not self._installed:
             return BrowserHealth(True, False, False, BrowserStatus.DEGRADED, "Playwright package is not installed", version=self.version())
+        if self._unavailable_reason:
+            return BrowserHealth(True, True, False, BrowserStatus.DEGRADED, self._unavailable_reason, version=self.version())
         return BrowserHealth(True, True, self._running, BrowserStatus.RUNNING if self._running else BrowserStatus.READY, "Playwright browser is ready" if self._running else "Playwright installed; browser is ready to start", version=self.version())
