@@ -39,7 +39,7 @@ import {
   compareRoutes,
   updateSavedSearch,
 } from "@/lib/api";
-import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, SavedSearch, TransportType } from "@/lib/types";
+import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, SavedSearch, TransportType } from "@/lib/types";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -62,6 +62,10 @@ type FormState = {
   transport: "both" | TransportType;
   max_transfers: number;
   minimum_transfer_minutes: number;
+  maximum_transfer_minutes: number;
+  strict_availability: boolean;
+  lower_only: boolean;
+  same_compartment: boolean;
 };
 
 const initialForm: FormState = {
@@ -73,7 +77,11 @@ const initialForm: FormState = {
   passengers: 2,
   transport: "both",
   max_transfers: 1,
-  minimum_transfer_minutes: 30,
+  minimum_transfer_minutes: 45,
+  maximum_transfer_minutes: 360,
+  strict_availability: true,
+  lower_only: true,
+  same_compartment: true,
 };
 
 function minutesLabel(minutes: number) {
@@ -607,6 +615,8 @@ export default function Home() {
                 >
                   <option value="0">0</option>
                   <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
                 </select>
               </label>
               <label className="space-y-2 text-sm font-semibold text-ink">
@@ -624,6 +634,19 @@ export default function Home() {
                   }
                   required
                 />
+              </label>
+              <label className="space-y-2 text-sm font-semibold text-ink">
+                Максимальное время пересадки
+                <input className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10" type="number" min="0" value={formState.maximum_transfer_minutes} onChange={(e) => updateField("maximum_transfer_minutes", Number(e.target.value))} required />
+              </label>
+              <label className="flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-3 text-sm font-semibold text-ink">
+                <input type="checkbox" checked={formState.strict_availability} onChange={(e) => updateField("strict_availability", e.target.checked)} /> Только подтверждённые варианты
+              </label>
+              <label className="flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-3 text-sm font-semibold text-ink">
+                <input type="checkbox" checked={formState.lower_only} onChange={(e) => updateField("lower_only", e.target.checked)} /> Только нижние места
+              </label>
+              <label className="flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-3 text-sm font-semibold text-ink">
+                <input type="checkbox" checked={formState.same_compartment} onChange={(e) => updateField("same_compartment", e.target.checked)} /> Все сотрудники в одном купе
               </label>
               <button
                 className="mt-auto inline-flex items-center justify-center gap-2 rounded-2xl bg-ink px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-brand disabled:cursor-not-allowed disabled:opacity-70"
@@ -795,8 +818,9 @@ export default function Home() {
                                 {segment.carrier || "Перевозчик не указан"}<br />{segment.source || "Источник не указан"}
                               </span>
                               {segmentIndex < route.segments.length - 1 && (
-                                <span className="text-xs font-medium text-aqua">
-                                  пересадка
+                                <span className="text-center text-xs font-medium text-aqua">
+                                  пересадка: {route.transfers?.[segmentIndex]?.duration_minutes ? minutesLabel(route.transfers[segmentIndex].duration_minutes) : "проверяется"}
+                                  {route.transfers?.[segmentIndex]?.station_change_required ? " · смена вокзала" : ""}
                                 </span>
                               )}
                             </div>
@@ -809,6 +833,7 @@ export default function Home() {
                               </p>
                               <p className="mt-1 text-xs font-medium text-aqua">
                                 {segment.availability_message || `${segment.available_seats} мест`}
+                                {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
                               </p>
                             </div>
                           </div>
@@ -854,7 +879,7 @@ export default function Home() {
   );
 }
 
-function buildPayload(formState: FormState) {
+function buildPayload(formState: FormState): RouteSearchPayload {
   const allowed_transport: TransportType[] =
     formState.transport === "both" ? ["train", "bus"] : [formState.transport];
   return {
@@ -869,9 +894,22 @@ function buildPayload(formState: FormState) {
     departure_date: formState.departure_date,
     passengers: formState.passengers,
     allowed_transport,
+    allowed_transport_types: allowed_transport,
     max_transfers: formState.max_transfers,
     minimum_transfer_minutes: formState.minimum_transfer_minutes,
-    preferred_classes: [],
+    maximum_transfer_minutes: formState.maximum_transfer_minutes,
+    strict_availability: formState.strict_availability,
+    preferred_classes: formState.same_compartment ? ["coupe"] : [],
+    seat_policy_scope: "every_rail_segment",
+    seat_preferences: {
+      preferred_classes: formState.same_compartment ? ["coupe"] : [],
+      berth_preference: formState.lower_only ? "lower_only" : "any",
+      require_same_compartment: formState.same_compartment,
+      require_same_carriage: true,
+      allow_split_group: false,
+      maximum_compartments: formState.same_compartment ? 1 : null,
+      strict_preferences: true,
+    },
     require_group_together: true,
     allow_split_group: false,
   };

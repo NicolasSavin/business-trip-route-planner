@@ -41,6 +41,9 @@ class RouteEngine:
         allowed_transport: list[TransportType],
         max_transfers: int,
         minimum_transfer_minutes: int,
+        maximum_transfer_minutes: int = 360,
+        maximum_total_duration_minutes: int | None = None,
+        allow_overnight_transfer: bool = True,
         preferred_classes=(),
         require_group_together: bool = True,
         allow_split_group: bool = False,
@@ -60,11 +63,11 @@ class RouteEngine:
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)
         destination_cities = self.station_resolver.resolve_city_names(destination, segments)
-        routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
+        routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes, maximum_transfer_minutes, maximum_total_duration_minutes, allow_overnight_transfer, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
         if not routes:
             alternatives = self.nearby_city_resolver.alternatives_for(destination_cities[0])
             for alternative in alternatives:
-                routes = self.search_algorithm.find_routes(graph, origin_cities, (alternative,), passengers, max_transfers, minimum_transfer_minutes, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
+                routes = self.search_algorithm.find_routes(graph, origin_cities, (alternative,), passengers, max_transfers, minimum_transfer_minutes, maximum_transfer_minutes, maximum_total_duration_minutes, allow_overnight_transfer, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
                 if routes:
                     break
         ranked = self.route_comparator.rank(routes)
