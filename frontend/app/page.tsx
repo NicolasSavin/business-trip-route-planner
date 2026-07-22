@@ -114,7 +114,27 @@ function routeLabel(route: RouteOption, index: number) {
 }
 
 function minSeats(route: RouteOption) {
-  return Math.min(...route.segments.map((segment) => segment.available_seats));
+  const knownSeats = route.segments.map((segment) => segment.available_seats).filter((value): value is number => value !== null);
+  return knownSeats.length ? Math.min(...knownSeats) : null;
+}
+
+function seatCountLabel(value: number | null) {
+  return value === null ? "не проверено" : String(value);
+}
+
+function totalSeats(route: RouteOption) {
+  const knownSeats = route.segments.map((segment) => segment.available_seats).filter((value): value is number => value !== null);
+  return knownSeats.length ? knownSeats.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function availabilityBadge(route: RouteOption) {
+  const statuses = route.segments.map((segment) => segment.availability_status);
+  if (statuses.includes("unconfirmed") || statuses.includes("unknown") || statuses.includes("partially_confirmed")) {
+    return { className: "bg-amber-50 text-amber-700", text: "Наличие мест не проверено" };
+  }
+  return route.is_available_for_group
+    ? { className: "bg-emerald-50 text-emerald-700", text: "Доступно для группы" }
+    : { className: "bg-rose-50 text-rose-700", text: "Недостаточно мест" };
 }
 
 function TransportIllustration() {
@@ -750,11 +770,9 @@ export default function Home() {
                       </h2>
                     </div>
                     <span
-                      className={`rounded-full px-3 py-1 text-xs font-semibold ${route.is_available_for_group ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${availabilityBadge(route).className}`}
                     >
-                      {route.is_available_for_group
-                        ? "Доступно для группы"
-                        : "Недостаточно мест"}
+                      {availabilityBadge(route).text}
                     </span>
                   </div>
                   <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -768,14 +786,9 @@ export default function Home() {
                       [
                         UsersRound,
                         "Свободных мест",
-                        String(
-                          route.segments.reduce(
-                            (sum, segment) => sum + segment.available_seats,
-                            0,
-                          ),
-                        ),
+                        seatCountLabel(totalSeats(route)),
                       ],
-                      [BadgeCheck, "Минимум мест", String(minSeats(route))],
+                      [BadgeCheck, "Минимум мест", seatCountLabel(minSeats(route))],
                       [
                         CalendarDays,
                         "Пересадка",
@@ -850,9 +863,18 @@ export default function Home() {
                                 {segment.destination_station || "Станция не указана"} · {dateTime(segment.arrival_time)} · {minutesLabel(Math.round((new Date(segment.arrival_time).getTime() - new Date(segment.departure_time).getTime()) / 60000))}
                               </p>
                               <p className="mt-1 text-xs font-medium text-aqua">
-                                {segment.availability_message || `${segment.available_seats} мест`}
+                                {segment.availability_message || (segment.available_seats === null ? "Наличие мест не проверено" : `${segment.available_seats} мест`)}
                                 {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
                               </p>
+                              <div className="mt-2 flex flex-wrap gap-1 text-[11px] font-semibold">
+                                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Расписание подтверждено</span>
+                                {segment.availability_status === "unconfirmed" && (
+                                  <>
+                                    <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">Наличие мест не проверено</span>
+                                    <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места и одно купе требуют дополнительной проверки</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           </div>
                         );
@@ -1211,11 +1233,9 @@ function RouteCard({ route, index }: { route: RouteOption; index: number }) {
           </h2>
         </div>
         <span
-          className={`rounded-full px-3 py-1 text-xs font-semibold ${route.is_available_for_group ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${availabilityBadge(route).className}`}
         >
-          {route.is_available_for_group
-            ? "Доступно для группы"
-            : "Недостаточно мест"}
+          {availabilityBadge(route).text}
         </span>
       </div>
       <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -1225,14 +1245,9 @@ function RouteCard({ route, index }: { route: RouteOption; index: number }) {
           [
             UsersRound,
             "Свободных мест",
-            String(
-              route.segments.reduce(
-                (sum, segment) => sum + segment.available_seats,
-                0,
-              ),
-            ),
+            seatCountLabel(totalSeats(route)),
           ],
-          [BadgeCheck, "Минимум мест", String(minSeats(route))],
+          [BadgeCheck, "Минимум мест", seatCountLabel(minSeats(route))],
           [
             CalendarDays,
             "Пересадка",
@@ -1354,7 +1369,7 @@ function NotificationCenter(props: {
 }
 
 function localDecision(route: RouteOption, passengers: number): DecisionSummary {
-  const minimum_available_seats = minSeats(route);
+  const minimum_available_seats = minSeats(route) ?? 0;
   const advantages = [
     ...(route.is_available_for_group ? [{ code: "available", message: `Подходит для группы из ${passengers} человек.`, kind: "advantage" as const, weight: 22 }] : []),
     ...(route.transfers_count === 0 ? [{ code: "direct", message: "Маршрут без пересадок.", kind: "advantage" as const, weight: 14 }] : []),

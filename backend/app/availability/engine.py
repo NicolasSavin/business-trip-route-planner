@@ -17,7 +17,8 @@ class AvailabilityEngine:
     def check(self, option: RouteOption, policy: AvailabilityPolicy) -> RouteAvailability:
         checked_at = datetime.now(timezone.utc)
         results = tuple(self.provider.check_segment(segment, policy) for segment in option.route.segments)
-        minimum = min((result.available_seats for result in results), default=0)
+        known_counts = [result.available_seats for result in results if result.available_seats is not None]
+        minimum = min(known_counts) if known_counts else None
         reasons = [result.reason for result in results if result.reason]
         warnings = [warning for result in results for warning in result.warnings]
         if policy.require_same_class_for_all_segments and results:

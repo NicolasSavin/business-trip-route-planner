@@ -78,3 +78,40 @@ def test_cache_prevents_repeated_availability_lookup():
     before = dict(planner.cache._items)
     planner.search(request)
     assert planner.cache._items.keys() == before.keys()
+
+def test_yandex_schedule_only_unknown_seats_is_unconfirmed_not_rejected_when_not_strict():
+    segment = seg("yx", "A", "C", dt(8), dt(12), seats=None, klass=None)
+    segment = segment.__class__(**{**segment.__dict__, "provider": "yandex_rasp", "metadata": {"availability_unknown": True, "source": "Яндекс Расписания"}})
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(max_transfers=0, strict_availability=False, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True))
+
+    routes, partial, rejected, summary = planner.search(request)
+
+    assert routes == partial
+    assert len(routes) == 1
+    assert rejected == []
+    assert routes[0].availability.status == AvailabilityStatus.UNCONFIRMED
+    assert routes[0].availability.segment_results[0].available_places_count is None
+    assert "Источник расписаний не подтверждает наличие и расположение мест" in routes[0].availability.warnings
+    assert summary.partially_confirmed_routes == 1
+    assert summary.rejected_routes == 0
+
+
+def test_yandex_schedule_only_strict_is_not_confirmed_and_explains_unavailable_data():
+    segment = seg("yx", "A", "C", dt(8), dt(12), seats=None, klass=None)
+    segment = segment.__class__(**{**segment.__dict__, "provider": "yandex_rasp", "metadata": {"availability_unknown": True, "source": "Яндекс Расписания"}})
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(max_transfers=0, strict_availability=True, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True))
+
+    routes, partial, rejected, summary = planner.search(request)
+
+    assert routes == []
+    assert len(partial) == 1
+    assert rejected == []
+    assert partial[0].availability.status == AvailabilityStatus.UNCONFIRMED
+    assert "нет мест" not in partial[0].explanation.lower()
+    assert partial[0].explanation == "Расписание найдено, наличие мест не подтверждено."
+    assert "Источник расписаний не подтверждает наличие и расположение мест" in partial[0].availability.warnings
+    assert summary.confirmed_routes == 0
+    assert summary.partially_confirmed_routes == 1
+    assert summary.rejected_routes == 0

@@ -54,18 +54,20 @@ class AvailabilityPolicy:
             return 1
         return self.passengers
 
-    def accepts_class(self, transport_class: TransportClass) -> bool:
+    def accepts_class(self, transport_class: TransportClass | None) -> bool:
+        if transport_class is None:
+            return True
         return not self.preferred_classes or transport_class in self.preferred_classes
 
-    def has_enough_seats(self, seats: int) -> bool:
-        return seats >= self.required_seats_per_segment
+    def has_enough_seats(self, seats: int | None) -> bool:
+        return seats is not None and seats >= self.required_seats_per_segment
 
 
 @dataclass(frozen=True)
 class SegmentAvailability:
     segment_id: str
     is_available: bool
-    available_seats: int
+    available_seats: int | None
     requested_passengers: int
     transport_class: TransportClass | None
     checked_at: datetime
@@ -86,7 +88,7 @@ class SegmentAvailability:
 class RouteAvailability:
     is_available: bool
     requested_passengers: int
-    minimum_available_seats: int
+    minimum_available_seats: int | None
     checked_at: datetime
     segment_results: tuple[SegmentAvailability, ...]
     reasons: tuple[str, ...] = field(default_factory=tuple)
@@ -103,11 +105,11 @@ class RouteAvailability:
         return (datetime.now(timezone.utc) - checked).total_seconds() > self.stale_after_seconds
 
     @property
-    def min_available_seats(self) -> int:
+    def min_available_seats(self) -> int | None:
         return self.minimum_available_seats
 
     @property
-    def total_available_seats(self) -> int:
+    def total_available_seats(self) -> int | None:
         return self.minimum_available_seats
 
 
