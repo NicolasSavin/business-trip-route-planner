@@ -41,4 +41,16 @@ class YandexRaspUnknownCityError(YandexRaspError):
 class YandexRaspInvalidResponseError(YandexRaspError):
     """Yandex Rasp API response cannot be mapped safely."""
 
-    code = "invalid_api_response"
+    code = "invalid_provider_response"
+
+
+class YandexRaspEmptyResponseError(YandexRaspError):
+    """Yandex Rasp API returned no usable search segments."""
+
+    code = "empty_provider_response"
+
+    def to_error(self) -> dict:
+        payload = super().to_error()
+        if self.diagnostics:
+            payload["details"] = self.diagnostics
+        return payload
