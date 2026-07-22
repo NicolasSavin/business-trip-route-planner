@@ -159,6 +159,23 @@ def test_browser_manager_startup_diagnostics_reports_chromium_path(monkeypatch):
 
     assert manager.startup_diagnostics() == {
         "playwright_version": "1.54.0",
+        "playwright_browsers_path": "not-set",
         "browser_executable_path": "/tmp/fake-playwright/chromium",
         "browser_exists": True,
+        "browser_manager_status": "ready",
+        "startup_exception": "none",
+    }
+
+
+def test_browser_manager_startup_diagnostics_reports_missing_playwright():
+    manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
+    manager._installed = False
+
+    assert manager.startup_diagnostics() == {
+        "playwright_version": "not-installed",
+        "playwright_browsers_path": "not-set",
+        "browser_executable_path": "unavailable",
+        "browser_exists": False,
+        "browser_manager_status": "degraded",
+        "startup_exception": "Playwright package is not installed",
     }

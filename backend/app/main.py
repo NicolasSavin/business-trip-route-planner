@@ -8,7 +8,7 @@ from app.api import api_routers
 from app.browser import BrowserManager
 
 app = FastAPI(title="Business Trip Route Planner API")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 frontend_hostname = os.getenv("FRONTEND_HOSTNAME")
 allowed_origins = ["http://localhost:3000"]
@@ -26,10 +26,36 @@ app.add_middleware(
 
 @app.on_event("startup")
 def log_browser_startup_diagnostics() -> None:
-    diagnostics = BrowserManager().startup_diagnostics()
-    logger.info("Playwright version: %s", diagnostics["playwright_version"])
-    logger.info("Browser executable path: %s", diagnostics["browser_executable_path"])
-    logger.info("Browser exists: %s", diagnostics["browser_exists"])
+    try:
+        diagnostics = BrowserManager().startup_diagnostics()
+    except Exception as exc:
+        diagnostics = {
+            "playwright_version": "unavailable",
+            "playwright_browsers_path": os.getenv("PLAYWRIGHT_BROWSERS_PATH", "not-set"),
+            "browser_executable_path": "unavailable",
+            "browser_exists": False,
+            "browser_manager_status": "diagnostics-failed",
+            "startup_exception": str(exc) or exc.__class__.__name__,
+        }
+
+    logger.info(
+        "\n"
+        "==================================================\n"
+        "Playwright Startup Diagnostics\n\n"
+        "Playwright version: %s\n\n"
+        "PLAYWRIGHT_BROWSERS_PATH:\n%s\n\n"
+        "Executable:\n%s\n\n"
+        "Exists: %s\n\n"
+        "BrowserManager status: %s\n\n"
+        "Startup exception: %s\n\n"
+        "==================================================",
+        diagnostics["playwright_version"],
+        diagnostics["playwright_browsers_path"],
+        diagnostics["browser_executable_path"],
+        str(diagnostics["browser_exists"]).lower(),
+        diagnostics["browser_manager_status"],
+        diagnostics["startup_exception"],
+    )
 
 
 @app.get("/health")
