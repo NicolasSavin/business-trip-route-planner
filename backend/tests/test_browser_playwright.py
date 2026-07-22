@@ -83,6 +83,25 @@ def test_browser_ping_and_screenshot_api(monkeypatch):
     assert screenshot.content.startswith(b"\x89PNG")
 
 
+def test_browser_health_endpoint_reports_runtime_singleton(monkeypatch):
+    from app.api import browser as browser_api
+    from app.main import app
+
+    fake_manager = FakeManager()
+    monkeypatch.setattr(browser_api, "_manager", fake_manager)
+    monkeypatch.setattr(browser_api, "_pool", BrowserPool(fake_manager, max_size=1))
+
+    payload = TestClient(app).get("/api/v1/browser/health").json()
+
+    assert payload == {
+        "playwright_installed": True,
+        "browser_running": True,
+        "browser_version": "chromium-fake",
+        "status": "running",
+        "healthy": True,
+    }
+
+
 def test_browser_health_metrics_and_provider_registry_metadata():
     registration = build_default_registry().get("browser_automation")
     assert registration is not None

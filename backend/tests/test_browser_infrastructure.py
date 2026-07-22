@@ -91,6 +91,27 @@ def test_browser_pool_context_releases_session_and_tracks_pages():
     asyncio.run(run())
 
 
+def test_browser_manager_health_uses_live_browser_connection():
+    class DisconnectedBrowser:
+        version = "chromium-disconnected"
+
+        def is_connected(self):
+            return False
+
+    manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
+    manager._installed = True
+    manager._running = True
+    manager._browser = DisconnectedBrowser()
+    manager._version = "chromium-disconnected"
+
+    health = manager.health()
+
+    assert manager.browser_running is False
+    assert health.status == BrowserStatus.READY
+    assert health.healthy is False
+    assert health.version == "chromium-disconnected"
+
+
 def test_browser_provider_status_boundary_is_safe():
     provider = BrowserAutomationProvider(BrowserManager(BrowserConfiguration(playwright_enabled=False)))
     status = provider.status()

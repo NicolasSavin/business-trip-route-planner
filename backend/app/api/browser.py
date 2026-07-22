@@ -6,14 +6,13 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 
-from app.browser import BrowserConfiguration, BrowserManager, BrowserPool
 from app.browser.exceptions import BrowserUnavailableError
+from app.browser.runtime import browser_manager, browser_pool
 
 router = APIRouter(prefix="/api/v1/browser", tags=["browser"])
 
-_config = BrowserConfiguration.from_env().with_playwright_enabled()
-_manager = BrowserManager(config=_config)
-_pool = BrowserPool(manager=_manager)
+_manager = browser_manager
+_pool = browser_pool
 
 
 @router.get("/ping")
@@ -61,7 +60,7 @@ def browser_health() -> dict[str, Any]:
     health = _manager.health()
     return {
         "playwright_installed": health.configured,
-        "browser_running": health.status == "running",
+        "browser_running": _manager.browser_running,
         "browser_version": health.version,
         "status": health.status,
         "healthy": health.healthy,

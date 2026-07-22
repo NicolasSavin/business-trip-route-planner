@@ -27,6 +27,15 @@ class BrowserManager:
     def browser(self) -> Any | None:
         return self._browser
 
+    @property
+    def browser_running(self) -> bool:
+        if not self._running or self._browser is None:
+            return False
+        is_connected = getattr(self._browser, "is_connected", None)
+        if callable(is_connected):
+            return bool(is_connected())
+        return True
+
     def _detect_playwright(self) -> bool:
         try:
             import playwright.async_api  # noqa: F401
@@ -186,4 +195,5 @@ class BrowserManager:
             return BrowserHealth(True, False, False, BrowserStatus.DEGRADED, "Playwright package is not installed", version=self.version())
         if self._unavailable_reason:
             return BrowserHealth(True, True, False, BrowserStatus.DEGRADED, self._unavailable_reason, version=self.version())
-        return BrowserHealth(True, True, self._running, BrowserStatus.RUNNING if self._running else BrowserStatus.READY, "Playwright browser is ready" if self._running else "Playwright installed; browser is ready to start", version=self.version())
+        browser_running = self.browser_running
+        return BrowserHealth(True, True, browser_running, BrowserStatus.RUNNING if browser_running else BrowserStatus.READY, "Playwright browser is ready" if browser_running else "Playwright installed; browser is ready to start", version=self.version())

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_routers
-from app.browser import BrowserManager
+from app.browser.runtime import browser_manager
 
 app = FastAPI(title="Business Trip Route Planner API")
 logger = logging.getLogger("uvicorn.error")
@@ -27,7 +27,8 @@ app.add_middleware(
 @app.on_event("startup")
 async def log_browser_startup_diagnostics() -> None:
     try:
-        diagnostics = await BrowserManager().startup_diagnostics()
+        diagnostics = await browser_manager.startup_diagnostics()
+        await browser_manager.start()
     except Exception as exc:
         diagnostics = {
             "playwright_version": "unavailable",
@@ -59,6 +60,11 @@ async def log_browser_startup_diagnostics() -> None:
         diagnostics["browser_manager_status"],
         diagnostics["startup_exception"],
     )
+
+
+@app.on_event("shutdown")
+async def shutdown_browser_manager() -> None:
+    await browser_manager.graceful_shutdown()
 
 
 @app.get("/health")
