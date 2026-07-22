@@ -131,13 +131,16 @@ class TutuPlaywrightClient:
         loc = await self._locator_first(self.selectors[key], field=key, root=form)
         if loc is None: return False
         await loc.click(); await loc.press("Control+A"); await loc.type(value, delay=40)
-        if not await self._wait_suggestions(value):
+        if not await self._wait_suggestions(value, loc):
+            await self._save_suggestion_diagnostics(f"{key}_suggestions_not_found", loc, value)
             await self._save_artifact(f"{key}_suggestions_not_found", html=True, screenshot=True); return False
         event_open = "origin_suggestions_opened" if key == "origin_input" else "destination_suggestions_opened"
         event_selected = "origin_selected" if key == "origin_input" else "destination_selected"
         self._record(event_open, value=value)
-        option = await self._suggestion_locator(value)
-        if option is None: return False
+        option = await self._suggestion_locator(value, loc)
+        if option is None:
+            await self._save_suggestion_diagnostics(f"{key}_matching_suggestion_not_found", loc, value)
+            return False
         await option.click()
         await self.page.wait_for_timeout(500)
         ok = await self._input_contains(loc, value)
@@ -399,29 +402,156 @@ class TutuPlaywrightClient:
         assert self.page is not None
         return await self.page.locator("body").evaluate("el => String(el.innerHTML.length) + ':' + (el.innerText || '').length")
 
-    async def _wait_suggestions(self, value: str) -> bool:
+    async def _wait_suggestions(self, value: str, input_loc: Any | None = None) -> bool:
         assert self.page is not None
-        for _ in range(12):
-            if await self._suggestion_locator(value) is not None: return True
+        deadline = datetime.utcnow() + timedelta(seconds=8)
+        while datetime.utcnow() < deadline:
+            if await self._suggestion_locator(value, input_loc) is not None:
+                self._record("station_suggestions_visible", value=value)
+                return True
+            if input_loc is not None:
+                try:
+                    expanded = await input_loc.get_attribute("aria-expanded", timeout=300)
+                    controls = await input_loc.get_attribute("aria-controls", timeout=300)
+                    self._record("station_combobox_state", value=value, aria_expanded=expanded, aria_controls=controls)
+                    if expanded == "true" and controls:
+                        controlled = self.page.locator(f"#{controls}")
+                        if await controlled.count() and await controlled.first.is_visible(timeout=300):
+                            return True
+                except Exception:
+                    pass
             await self.page.wait_for_timeout(250)
         return False
 
-    async def _suggestion_locator(self, value: str) -> Any | None:
+    async def _suggestion_locator(self, value: str, input_loc: Any | None = None) -> Any | None:
         assert self.page is not None
-        pattern = re.compile(re.escape(value.split()[0]), re.I)
-        for selector in ["[role='option']", "li", "[class*='suggest' i]", "[class*='autocomplete' i]", "[data-testid*='suggest' i]"]:
-            loc = self.page.locator(selector).filter(has_text=pattern)
-            try:
-                if await loc.count() and await loc.first.is_visible(timeout=300): return loc.first
-            except Exception: pass
+        normalized = self._normalize_station_text(value)
+        roots = await self._suggestion_roots(input_loc)
+        selectors = [
+            "[role='option']",
+            "[role='listbox'] [role='option']",
+            "[role='listbox'] li",
+            "[aria-selected]",
+            "[data-testid*='suggest' i]",
+            "[data-testid*='autocomplete' i]",
+            "[data-ti*='suggest' i]",
+            "[data-ti*='autocomplete' i]",
+            "[class*='suggest' i] li",
+            "[class*='autocomplete' i] li",
+            "[class*='popup' i] li",
+            "li",
+        ]
+        seen_texts: list[str] = []
+        for root in roots:
+            for selector in selectors:
+                try:
+                    loc = root.locator(selector)
+                    count = min(await loc.count(), 30)
+                    for index in range(count):
+                        item = loc.nth(index)
+                        if not await item.is_visible(timeout=300):
+                            continue
+                        text = self._clean_text(await item.inner_text(timeout=700))
+                        if text:
+                            seen_texts.append(text[:160])
+                        if self._station_text_exact_match(text, normalized):
+                            self._record("station_suggestion_chosen", selector=selector, index=index, text=text[:200], requested=value)
+                            return item
+                except Exception as exc:
+                    self._record("station_suggestion_selector_error", selector=selector, error=str(exc)[:160])
+        self._record("station_suggestion_exact_match_missing", requested=value, option_texts=seen_texts[:40])
         return None
+
+    async def _suggestion_roots(self, input_loc: Any | None = None) -> list[Any]:
+        assert self.page is not None
+        roots: list[Any] = []
+        if input_loc is not None:
+            try:
+                controls = await input_loc.get_attribute("aria-controls", timeout=500)
+                if controls:
+                    roots.append(self.page.locator(f"#{controls}").first)
+            except Exception:
+                pass
+        root_selectors = [
+            "[role='listbox']:visible",
+            "[role='combobox'][aria-expanded='true']:visible",
+            "[data-testid*='suggest' i]:visible",
+            "[data-testid*='autocomplete' i]:visible",
+            "[data-ti*='suggest' i]:visible",
+            "[data-ti*='autocomplete' i]:visible",
+            "[class*='suggest' i]:visible",
+            "[class*='autocomplete' i]:visible",
+            "[class*='popup' i]:visible",
+            "[class*='dropdown' i]:visible",
+            "body",
+        ]
+        for selector in root_selectors:
+            try:
+                loc = self.page.locator(selector)
+                for index in range(min(await loc.count(), 8)):
+                    item = loc.nth(index)
+                    if selector == "body" or await item.is_visible(timeout=300):
+                        roots.append(item)
+            except Exception:
+                pass
+        return roots
+
+    async def _save_suggestion_diagnostics(self, name: str, input_loc: Any | None, value: str) -> None:
+        assert self.page is not None
+        containers = await self._visible_autocomplete_containers()
+        option_texts = await self._visible_option_texts(input_loc)
+        self.diagnostics[f"{name}_autocomplete_containers"] = containers
+        self.diagnostics[f"{name}_option_texts"] = option_texts
+        self._record("station_suggestion_diagnostics", name=name, requested=value, visible_autocomplete_containers=containers, option_texts=option_texts)
+
+    async def _visible_autocomplete_containers(self) -> list[dict[str, Any]]:
+        assert self.page is not None
+        return await self.page.locator("[role='listbox'], [role='combobox'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i], [class*='dropdown' i], [data-testid*='suggest' i], [data-testid*='autocomplete' i], [data-ti*='suggest' i], [data-ti*='autocomplete' i]").evaluate_all("""
+        (els) => els.slice(0, 80).map((el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return {
+                tag: el.tagName.toLowerCase(),
+                role: el.getAttribute('role') || '',
+                id: el.id || '',
+                class: el.className ? String(el.className).slice(0, 180) : '',
+                data_testid: el.getAttribute('data-testid') || el.getAttribute('data-ti') || '',
+                aria_controls: el.getAttribute('aria-controls') || '',
+                aria_expanded: el.getAttribute('aria-expanded') || '',
+                visible: !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none'),
+                text: ((el.innerText || el.textContent || '') + '').trim().replace(/\\s+/g, ' ').slice(0, 300),
+            };
+        }).filter((item) => item.visible || item.text)
+        """)
+
+    async def _visible_option_texts(self, input_loc: Any | None = None) -> list[str]:
+        texts: list[str] = []
+        for root in await self._suggestion_roots(input_loc):
+            try:
+                values = await root.locator("[role='option'], [aria-selected], li, [data-testid*='suggest' i], [data-ti*='suggest' i]").evaluate_all("""(els) => els.slice(0, 80).map((el) => ((el.innerText || el.textContent || '') + '').trim().replace(/\\s+/g, ' ')).filter(Boolean)""")
+                texts.extend(values)
+            except Exception:
+                pass
+        return list(dict.fromkeys(texts))[:80]
+
+    def _normalize_station_text(self, text: str) -> str:
+        return self._clean_text(text).lower().replace("ё", "е")
+
+    def _station_text_exact_match(self, text: str, normalized_value: str) -> bool:
+        hay = self._normalize_station_text(text)
+        if not hay:
+            return False
+        first_line = hay.split("\n", 1)[0].strip()
+        return hay == normalized_value or first_line == normalized_value or re.search(rf"(^|[^а-яa-z0-9]){re.escape(normalized_value)}([^а-яa-z0-9]|$)", hay, re.I) is not None
 
     async def _input_contains(self, loc: Any, value: str) -> bool:
         try: actual = await loc.input_value(timeout=1000)
         except Exception:
             try: actual = await loc.inner_text(timeout=1000)
             except Exception: actual = ""
-        return value.lower().split()[0] in actual.lower()
+        ok = self._normalize_station_text(value) in self._normalize_station_text(actual)
+        self._record("station_input_verified", requested=value, actual=actual[:200], ok=ok)
+        return ok
 
     async def _detect_calendar_month(self, calendar: Any) -> tuple[int, int] | None:
         text = self._clean_text(await calendar.inner_text(timeout=2000))
