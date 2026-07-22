@@ -57,6 +57,7 @@ class YandexRaspProvider(TransportProvider):
                             "response_keys": sorted(payload.keys()),
                             "segment_count": len(raw_segments),
                             "pagination": {key: payload.get(key) for key in ("pagination", "page", "total", "limit", "offset") if key in payload},
+                            "response_diagnostics": getattr(self.client, "last_response_diagnostics", None),
                         })
                         for segment in self.mapper.to_segments(payload):
                             if segment.id in seen_ids:
@@ -94,7 +95,8 @@ class YandexRaspProvider(TransportProvider):
 
     def _validate_payload(self, payload: Any, diagnostics: dict) -> None:
         if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
-            raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=diagnostics)
+            details = getattr(self.client, "last_response_diagnostics", None) or diagnostics
+            raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=details)
 
     def _diagnostics(self, origin: YandexLocationMatch, destination: YandexLocationMatch, departure_date: date) -> dict:
         return {
@@ -116,7 +118,12 @@ class YandexRaspProvider(TransportProvider):
         return {"endpoint": "/search/", "origin_code": origin_code, "destination_code": destination_code, "request_attempt": attempt}
 
     def _empty_details(self, origin: str | None, destination: str | None, departure_date: date, pair_errors: list[dict[str, Any]]) -> dict[str, Any]:
-        return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "resolved_origin_codes": self.last_diagnostics.get("resolved_origin_codes", []), "resolved_destination_codes": self.last_diagnostics.get("resolved_destination_codes", []), "pair_errors": pair_errors}
+        details = {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "resolved_origin_codes": self.last_diagnostics.get("resolved_origin_codes", []), "resolved_destination_codes": self.last_diagnostics.get("resolved_destination_codes", []), "pair_errors": pair_errors}
+        for item in pair_errors:
+            error_details = (item.get("error") or {}).get("details")
+            if error_details:
+                return error_details | {"route_context": details}
+        return details
 
     def _codes_for_transport(self, match: YandexLocationMatch, allowed_transport: list[TransportType]) -> tuple[str, ...]:
         allowed = {item.value for item in allowed_transport}
