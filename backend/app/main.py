@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_routers
 from app.browser.runtime import browser_manager
 from app.providers.unified import registry as provider_registry
+from app.providers.yandex.location_service import yandex_location_resolver
 
 app = FastAPI(title="Business Trip Route Planner API")
 logger = logging.getLogger("uvicorn.error")
@@ -47,6 +48,9 @@ def log_transport_provider_startup_diagnostics() -> None:
 @app.on_event("startup")
 async def log_browser_startup_diagnostics() -> None:
     log_transport_provider_startup_diagnostics()
+    yandex_location_resolver.warm_from_existing_cache()
+    logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
+    yandex_location_resolver.startup_refresh_background()
     try:
         diagnostics = await browser_manager.startup_diagnostics()
         await browser_manager.start()

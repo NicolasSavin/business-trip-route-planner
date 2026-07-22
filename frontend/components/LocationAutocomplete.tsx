@@ -95,7 +95,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
     if (event.key === "Enter" && active >= 0 && items[active]) { event.preventDefault(); pick(items[active]); }
   }
 
-  const stateText = value.trim().length < 2 ? "Начните вводить название города" : loading ? "Ищем варианты…" : error ? "Сервис подсказок временно недоступен" : items.length ? "Выберите город или станцию" : "Ничего не найдено";
+  const stateText = value.trim().length < 2 ? "Начните вводить название города или станции" : loading ? "Ищем варианты…" : error ? "Сервис подсказок временно недоступен" : items.length ? "Выберите город, регион и конкретную станцию" : "Ничего не найдено";
 
   return (
     <label ref={rootRef} className="relative space-y-2 text-sm font-semibold text-ink">
@@ -121,7 +121,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
         <div className="border-b border-line px-4 py-2 text-xs font-semibold text-muted">{stateText}</div>
         {!loading && !error && items.map((item, index) => <button key={item.id} id={`${baseId}-option-${index}`} role="option" aria-selected={active === index} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(item)} className={`flex w-full items-start gap-3 px-4 py-3 text-left transition ${active === index ? "bg-sky-50" : "hover:bg-cloud"}`}>
           <LocationIcon type={item.type} />
-          <span><span className="block font-semibold text-ink"><Highlight text={item.display_name} query={value} /></span><span className="text-xs font-medium text-muted">{typeLabels[item.type]}{item.region ? ` · ${item.region}` : ""}</span></span>
+          <span><span className="block font-semibold text-ink"><Highlight text={item.display_name} query={value} /></span><span className="text-xs font-medium text-muted">{typeLabels[item.type]}{item.region ? ` · ${item.region}` : ""}{item.provider_code ? ` · ${item.provider_code}` : ""}</span></span>
         </button>)}
       </div>}
     </label>
