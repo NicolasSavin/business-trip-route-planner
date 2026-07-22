@@ -30,6 +30,7 @@ ALIASES = {"спб": "санкт петербург", "питер": "санкт 
 
 def normalize(value: str) -> str:
     text = unicodedata.normalize("NFKC", value or "").strip().lower().replace("ё", "е")
+    text = re.sub(r"\s*\((?:train|bus|train/bus|поезд|автобус|поезд/автобус)\)\s*$", "", text)
     text = re.sub(r"[\-–—.,/]+", " ", text); text = re.sub(r"\bж\s*д\b", "жд", text)
     words = [w for w in text.split() if w not in STOP_WORDS]
     text = " ".join(words)
@@ -185,6 +186,20 @@ class YandexLocationResolver:
         matches=self.resolve_all(query)
         if not matches: raise YandexRaspUnknownCityError(f"Неизвестный город или станция для Яндекс Расписаний: {query}")
         return matches[0]
+    def resolve_code(self, code: str, fallback_title: str | None = None) -> YandexLocationMatch:
+        self._maybe_seed_repository()
+        match = self._stations_repository.get_by_code(code)
+        if match:
+            return match
+        for item in LOCAL_POINTS:
+            if item.code == code:
+                return item
+            for station in item.stations:
+                if station.code == code:
+                    return YandexLocationMatch(station.code, station.title, "station", station.transport_types, (station,), station.latitude, station.longitude, country=station.country, region=station.region, settlement=station.settlement, station_type=station.type)
+        point_type: YandexPointType = "city" if code.startswith("c") else "station"
+        title = fallback_title or code
+        return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
         self._maybe_seed_repository()
         self._initialized=True; key=normalize(query)

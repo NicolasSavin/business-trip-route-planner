@@ -346,3 +346,26 @@ def test_yandex_client_api_key_is_not_in_unexpected_content_type_diagnostics():
         raise AssertionError("expected unexpected content type")
 
     assert "top-secret-key" not in __import__("json").dumps(error, ensure_ascii=False)
+
+
+def test_yandex_provider_uses_provider_codes_without_string_resolve():
+    provider, client = provider_with_payload({"segments": [segment()]})
+    segments = provider.get_segments(
+        DAY,
+        [TransportType.TRAIN],
+        origin="Санкт-Петербург (train/bus)",
+        destination="Москва (train/bus)",
+        origin_provider_code="c2",
+        destination_provider_code="c213",
+    )
+
+    assert segments
+    assert client.kwargs["origin_code"] == "s9602494"
+    assert client.kwargs["destination_code"] in {"s2000003", "s2006004"}
+
+
+def test_yandex_resolver_strips_ui_suffix_as_fallback():
+    resolver = YandexLocationResolver()
+
+    assert resolver.resolve("Санкт-Петербург (train/bus)").code == "c2"
+    assert resolver.resolve("Москва (поезд/автобус)").code == "c213"

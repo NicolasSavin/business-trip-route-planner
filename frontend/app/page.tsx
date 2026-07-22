@@ -21,7 +21,8 @@ import {
   WifiOff,
 } from "lucide-react";
 import { demoResponse } from "@/lib/demoData";
-import { LocationAutocomplete, type SelectedLocation } from "@/components/LocationAutocomplete";
+import { LocationAutocomplete } from "@/components/LocationAutocomplete";
+import { buildRouteSearchPayload, type SelectedLocation } from "@/lib/locationPayload";
 import {
   checkSavedSearch,
   createSavedSearch,
@@ -73,8 +74,8 @@ type FormState = {
 const initialForm: FormState = {
   origin: "Москва",
   destination: "Санкт-Петербург",
-  originLocation: { id: "city:c213", provider_code: "c213", type: "city" },
-  destinationLocation: { id: "city:c2", provider_code: "c2", type: "city" },
+  originLocation: { id: "city:c213", provider_code: "c213", type: "city", title: "Москва", displayLabel: "Москва" },
+  destinationLocation: { id: "city:c2", provider_code: "c2", type: "city", title: "Санкт-Петербург", displayLabel: "Санкт-Петербург" },
   departure_date: "2026-08-10",
   passengers: 2,
   transport: "both",
@@ -977,39 +978,7 @@ function ApiDiagnosticsBlock({ diagnostics }: { diagnostics: ApiDiagnostics }) {
 }
 
 function buildPayload(formState: FormState): RouteSearchPayload {
-  const allowed_transport: TransportType[] =
-    formState.transport === "both" ? ["train", "bus"] : [formState.transport];
-  return {
-    origin: formState.origin,
-    destination: formState.destination,
-    origin_location_id: formState.originLocation?.id ?? null,
-    origin_provider_code: formState.originLocation?.provider_code ?? null,
-    origin_location_type: formState.originLocation?.type ?? null,
-    destination_location_id: formState.destinationLocation?.id ?? null,
-    destination_provider_code: formState.destinationLocation?.provider_code ?? null,
-    destination_location_type: formState.destinationLocation?.type ?? null,
-    departure_date: formState.departure_date,
-    passengers: formState.passengers,
-    allowed_transport,
-    allowed_transport_types: allowed_transport,
-    max_transfers: formState.max_transfers,
-    minimum_transfer_minutes: formState.minimum_transfer_minutes,
-    maximum_transfer_minutes: formState.maximum_transfer_minutes,
-    strict_availability: formState.strict_availability,
-    preferred_classes: formState.same_compartment ? ["coupe"] : [],
-    seat_policy_scope: "every_rail_segment",
-    seat_preferences: {
-      preferred_classes: formState.same_compartment ? ["coupe"] : [],
-      berth_preference: formState.lower_only ? "lower_only" : "any",
-      require_same_compartment: formState.same_compartment,
-      require_same_carriage: true,
-      allow_split_group: false,
-      maximum_compartments: formState.same_compartment ? 1 : null,
-      strict_preferences: true,
-    },
-    require_group_together: true,
-    allow_split_group: false,
-  };
+  return buildRouteSearchPayload(formState);
 }
 
 const checkLabels: Record<SavedSearch["last_check_status"], string> = {
