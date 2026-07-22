@@ -15,6 +15,6 @@ class YandexRaspConfiguration:
     def from_env(cls) -> "YandexRaspConfiguration":
         return cls(
             api_key=os.getenv("YANDEX_RASP_API_KEY") or None,
-            enabled=os.getenv("YANDEX_RASP_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            enabled=(os.getenv("YANDEX_RASP_ENABLED", "").lower() in {"1", "true", "yes", "on"}) or bool(os.getenv("YANDEX_RASP_API_KEY")),
             timeout_seconds=float(os.getenv("YANDEX_RASP_TIMEOUT_SECONDS", "10")),
         )

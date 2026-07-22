@@ -5,7 +5,8 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from app.providers.tutu.exceptions import TutuConfigurationError
-from app.providers.unified import ProviderRegistration, registry
+from app.providers.unified import ProviderRegistration, ProviderHealth, registry
+from app.domain import TransportType
 
 router = APIRouter(prefix="/api/v1/providers", tags=["providers"])
 
@@ -16,6 +17,31 @@ class TutuLiveTestRequest(BaseModel):
     date: date
 
 
+
+def _provider_health_payload(provider: ProviderRegistration) -> dict:
+    configured = bool(provider.metadata.get("configured", True))
+    if provider.id == "yandex_rasp":
+        configured = bool(provider.metadata.get("configured"))
+    ready = bool(provider.metadata.get("ready", configured))
+    caps = provider.capabilities
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "enabled": provider.enabled,
+        "provider_type": provider.metadata.get("provider_type") or ("mock" if provider.id == "mock" else "production"),
+        "capabilities": caps.model_dump(),
+        "ready": ready,
+        "healthy": provider.health == ProviderHealth.HEALTHY,
+        "configured": configured,
+        "last_error": provider.error,
+        "last_checked_at": provider.last_checked_at,
+        "supports_schedule": caps.supports_schedule,
+        "supports_availability": caps.supports_availability,
+        "supports_seat_map": caps.supports_place_map,
+        "supports_train": TransportType.TRAIN in caps.supported_transport,
+        "supports_bus": TransportType.BUS in caps.supported_transport,
+    }
+
 def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
 
@@ -25,9 +51,9 @@ def list_providers() -> list[ProviderRegistration]:
     return registry.list()
 
 
-@router.get("/health", response_model=list[ProviderRegistration])
-def providers_health() -> list[ProviderRegistration]:
-    return registry.health()
+@router.get("/health")
+def providers_health() -> list[dict]:
+    return [_provider_health_payload(item) for item in registry.health()]
 
 
 @router.post("/{provider_id}/enable", response_model=ProviderRegistration)

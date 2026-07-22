@@ -31,6 +31,7 @@ class RouteEngine:
         self.route_comparator = route_comparator or RouteComparator(self.scorer)
         self.search_algorithm = GraphRouteSearch(self.transfer_engine)
         self.availability_engine = availability_engine or AvailabilityEngine()
+        self.last_segments_count = 0
 
     def search(
         self,
@@ -59,6 +60,7 @@ class RouteEngine:
             segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination)
         except TypeError:
             segments = self.provider.get_segments(departure_date, allowed_transport)
+        self.last_segments_count = len(segments)
         self.validator.validate_segments(segments)
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)

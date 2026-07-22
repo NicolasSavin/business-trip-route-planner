@@ -24,7 +24,7 @@ class Provider:
 
 
 def caps():
-    return ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_availability=True, supports_realtime=False)
+    return ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_availability=True, supports_realtime=False, supports_schedule=True)
 
 
 def test_registry_priority_enable_disable():
@@ -71,6 +71,45 @@ def test_providers_api_enable_disable(monkeypatch):
     monkeypatch.setattr(api_module, "registry", registry)
 
     assert api_module.list_providers()[0].id == "api"
-    assert api_module.providers_health()[0].health == ProviderHealth.HEALTHY
+    assert api_module.providers_health()[0]["healthy"] is True
     assert api_module.disable_provider("api").enabled is False
     assert api_module.enable_provider("api").enabled is True
+
+
+def test_availability_provider_not_used_as_schedule_provider():
+    registry = ProviderRegistry()
+    registry.register(Provider([seg("availability")]), id="availability", name="Availability", priority=ProviderPriority.HIGH, capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_availability=True, supports_schedule=False))
+    unified = UnifiedTransportProvider(registry)
+
+    assert unified.get_segments(DAY, [TransportType.TRAIN]) == []
+    assert unified.last_diagnostics["providers_called"] == []
+
+
+def test_no_real_schedule_providers_warning():
+    registry = ProviderRegistry()
+    registry.register(Provider(), id="mock", name="Mock", priority=ProviderPriority.NORMAL, enabled=True, capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_schedule=True))
+    unified = UnifiedTransportProvider(registry)
+
+    assert unified.get_segments(DAY, [TransportType.TRAIN]) == []
+    assert "Не подключён ни один реальный источник расписаний" in unified.last_diagnostics["warnings"]
+
+
+def test_provider_disabled_is_considered_but_not_called():
+    registry = ProviderRegistry()
+    registry.register(Provider([seg("disabled")]), id="disabled", name="Disabled", priority=ProviderPriority.NORMAL, enabled=False, capabilities=caps())
+    unified = UnifiedTransportProvider(registry)
+
+    assert unified.get_segments(DAY, [TransportType.TRAIN]) == []
+    assert unified.last_diagnostics["providers_considered"] == ["disabled"]
+    assert unified.last_diagnostics["providers_called"] == []
+
+
+def test_segments_by_provider_and_errors_are_recorded():
+    registry = ProviderRegistry()
+    registry.register(Provider([seg("ok")]), id="ok", name="Ok", priority=ProviderPriority.HIGH, capabilities=caps())
+    registry.register(Provider(fail=True), id="broken", name="Broken", priority=ProviderPriority.LOW, capabilities=caps())
+    unified = UnifiedTransportProvider(registry)
+
+    assert len(unified.get_segments(DAY, [TransportType.TRAIN])) == 1
+    assert unified.last_diagnostics["segments_by_provider"] == {"ok": 1, "broken": 0}
+    assert unified.last_diagnostics["provider_errors"] == {"broken": "down"}

@@ -37,13 +37,15 @@ class ProviderRegistry:
                 self.mark_error(provider_id, exc)
         return self.list()
 
-    def enabled(self, allowed_transport: Iterable[TransportType] | None = None) -> list[tuple[ProviderRegistration, TransportProvider]]:
+    def enabled(self, allowed_transport: Iterable[TransportType] | None = None, schedule_only: bool = False) -> list[tuple[ProviderRegistration, TransportProvider]]:
         allowed = set(allowed_transport or [])
         result = []
         for registration in self.list():
             if not registration.enabled or registration.health == ProviderHealth.OFFLINE:
                 continue
             if allowed and not allowed.intersection(registration.capabilities.supported_transport):
+                continue
+            if schedule_only and not registration.capabilities.supports_schedule:
                 continue
             result.append((registration, self._providers[registration.id]))
         return result

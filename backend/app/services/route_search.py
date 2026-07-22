@@ -23,7 +23,7 @@ class RouteSearchService:
         if not include_unavailable and not request.strict_availability:
             api_rejected = []
         diagnostic_rejected = api_rejected + (api_partial if request.strict_availability else [])
-        return RouteSearchResponse(routes=api_routes, partially_confirmed_routes=api_partial if not request.strict_availability else [], rejected_routes=diagnostic_rejected, search_summary=summary)
+        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, partially_confirmed_routes=api_partial if not request.strict_availability else [], rejected_routes=diagnostic_rejected, search_summary=summary)
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route

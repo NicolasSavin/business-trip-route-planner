@@ -37,5 +37,13 @@ class YandexRaspProvider(TransportProvider):
             self.last_error = None
             return segments
         except Exception as exc:
-            self.last_error = str(exc)
-            return []
+            self.last_error = str(exc) or exc.__class__.__name__
+            raise
+
+    def healthcheck(self) -> bool:
+        return self.config.enabled and bool(self.config.api_key)
+
+    def ensure_can_enable(self) -> None:
+        if not self.config.api_key:
+            from app.providers.yandex.exceptions import YandexRaspAuthError
+            raise YandexRaspAuthError("YANDEX_RASP_API_KEY is not configured")

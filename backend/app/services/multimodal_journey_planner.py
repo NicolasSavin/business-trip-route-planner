@@ -60,13 +60,25 @@ class MultimodalJourneyPlanner:
         partial = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED]
         rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED}]
         routes = confirmed if request.strict_availability else confirmed + partial
+        provider_diagnostics = getattr(self.provider, "last_diagnostics", {}) or {}
+        warnings = list(provider_diagnostics.get("warnings", []))
+        if self.route_engine.last_segments_count == 0 and provider_diagnostics.get("provider_errors"):
+            warnings.append("Источники расписаний не вернули сегменты; подробности в provider_errors")
         summary = SearchSummary(
-            segments_loaded=min(MAX_SEGMENTS_PER_QUERY, sum(len(o.route.segments) for o in options)),
+            segments_loaded=min(MAX_SEGMENTS_PER_QUERY, self.route_engine.last_segments_count),
             candidate_journeys=len(options),
             availability_checks=sum(len(o.route.segments) for o in checked),
             confirmed_routes=len(confirmed),
             partially_confirmed_routes=len(partial),
             rejected_routes=len(rejected),
+            providers_considered=provider_diagnostics.get("providers_considered", []),
+            providers_enabled=provider_diagnostics.get("providers_enabled", []),
+            providers_called=provider_diagnostics.get("providers_called", []),
+            providers_succeeded=provider_diagnostics.get("providers_succeeded", []),
+            providers_failed=provider_diagnostics.get("providers_failed", []),
+            provider_errors=provider_diagnostics.get("provider_errors", {}),
+            segments_by_provider=provider_diagnostics.get("segments_by_provider", {}),
+            warnings=warnings,
         )
         self.last_summary = summary
         return routes, partial, rejected, summary

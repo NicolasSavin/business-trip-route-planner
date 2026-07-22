@@ -64,7 +64,7 @@ def test_empty_response_returns_no_segments():
     assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург") == []
 
 
-def test_provider_returns_empty_on_auth_timeout_429_and_500_errors():
+def test_provider_raises_auth_timeout_429_and_500_errors():
     for exc in (httpx.Response(403), httpx.TimeoutException("timeout"), httpx.Response(429), httpx.Response(500)):
         def handler(request, exc=exc):
             if isinstance(exc, httpx.Response):
@@ -72,10 +72,39 @@ def test_provider_returns_empty_on_auth_timeout_429_and_500_errors():
             raise exc
         client = YandexRaspClient(YandexRaspConfiguration("key", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex.net/v3.0"))
         provider = YandexRaspProvider(YandexRaspConfiguration("key", enabled=True), client=client, resolver=YandexLocationResolver())
-        assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург") == []
-        assert provider.last_error
+        try:
+            provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+        except Exception:
+            assert provider.last_error
+        else:
+            raise AssertionError("expected provider error")
 
 
-def test_unknown_city_returns_empty_result():
+def test_unknown_city_raises_clear_error():
     provider, _ = provider_with_payload({"segments": [segment()]})
-    assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Неизвестный", destination="Москва") == []
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Неизвестный", destination="Москва")
+    except Exception as exc:
+        assert "Неизвестный город" in str(exc)
+    else:
+        raise AssertionError("expected unknown city error")
+
+
+def test_yandex_enabled_when_api_key_is_present(monkeypatch):
+    monkeypatch.setenv("YANDEX_RASP_API_KEY", "secret")
+    monkeypatch.delenv("YANDEX_RASP_ENABLED", raising=False)
+
+    config = YandexRaspConfiguration.from_env()
+
+    assert config.enabled is True
+
+
+def test_yandex_missing_api_key_is_not_silently_swallowed():
+    provider = YandexRaspProvider(YandexRaspConfiguration(None, enabled=True), resolver=YandexLocationResolver())
+
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    except Exception as exc:
+        assert "YANDEX_RASP_API_KEY" in str(exc)
+    else:
+        raise AssertionError("expected Yandex Rasp API key error")

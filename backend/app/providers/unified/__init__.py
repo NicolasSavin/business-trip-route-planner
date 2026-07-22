@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from app.domain import TransportType
@@ -20,7 +21,9 @@ def build_default_registry() -> ProviderRegistry:
         id="mock",
         name="Mock Provider",
         priority=ProviderPriority.NORMAL,
-        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=True, supports_realtime=False),
+        enabled=os.getenv("MOCK_PROVIDER_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=True, supports_realtime=False, supports_schedule=True),
+        metadata={"provider_type": "mock", "configured": True, "ready": True},
     )
     yandex_config = YandexRaspConfiguration.from_env()
     registry.register(
@@ -29,8 +32,8 @@ def build_default_registry() -> ProviderRegistry:
         name="Яндекс Расписания",
         priority=ProviderPriority.HIGH,
         enabled=yandex_config.enabled,
-        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=False, supports_realtime=False),
-        metadata={"base_url": yandex_config.base_url, "timeout_seconds": yandex_config.timeout_seconds, "uses_official_api": True},
+        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=False, supports_realtime=False, supports_schedule=True),
+        metadata={"base_url": yandex_config.base_url, "timeout_seconds": yandex_config.timeout_seconds, "uses_official_api": True, "configured": bool(yandex_config.api_key), "provider_type": "production"},
     )
     if yandex_config.enabled:
         registry.disable("mock")
@@ -42,8 +45,8 @@ def build_default_registry() -> ProviderRegistry:
         name="РЖД",
         priority=rzd_config.priority,
         enabled=rzd_config.enabled,
-        capabilities=ProviderCapabilities(supported_transport=RzdCapabilities.supported_transport, supports_availability=RzdCapabilities.supports_availability, supports_realtime=RzdCapabilities.supports_realtime),
-        metadata={"ready_to_connect": True, "status_label": "готов к подключению", "base_url": rzd_config.base_url, "timeout": rzd_config.timeout, "retry_count": rzd_config.retry_count},
+        capabilities=ProviderCapabilities(supported_transport=RzdCapabilities.supported_transport, supports_availability=RzdCapabilities.supports_availability, supports_realtime=RzdCapabilities.supports_realtime, supports_schedule=True),
+        metadata={"provider_type": "production", "configured": rzd_config.enabled, "ready_to_connect": True, "status_label": "готов к подключению", "base_url": rzd_config.base_url, "timeout": rzd_config.timeout, "retry_count": rzd_config.retry_count},
     )
     tutu_config = TutuConfiguration.from_env()
     registry.register(
@@ -56,13 +59,14 @@ def build_default_registry() -> ProviderRegistry:
             supported_transport=[TransportType.TRAIN],
             supports_availability=True,
             supports_realtime=False,
-            supports_schedule=True,
+            supports_schedule=False,
             supports_carriages=True,
             supports_place_map=True,
             supports_compartment_rules=True,
             supports_gender_restrictions=True,
         ),
         metadata={
+            "provider_type": "production",
             "configured": tutu_config.configured,
             "status": "disabled",
             "message": "Требуется официальный партнёрский доступ Туту",
@@ -82,11 +86,12 @@ def build_default_registry() -> ProviderRegistry:
             supported_transport=[TransportType.TRAIN],
             supports_availability=True,
             supports_realtime=False,
-            supports_schedule=True,
+            supports_schedule=False,
             supports_carriages=True,
             supports_place_map=False,
         ),
         metadata={
+            "provider_type": "production",
             "ready": True,
             "status_label": "Ready",
             "browser": "Playwright",
@@ -111,6 +116,8 @@ def build_default_registry() -> ProviderRegistry:
             browser_automation=browser_capability.__dict__,
         ),
         metadata={
+            "provider_type": "infrastructure",
+            "configured": browser_status["configured"],
             **browser_status,
             "status_label": "Browser diagnostics",
             "infrastructure": "Инфраструктура готова",
@@ -128,7 +135,8 @@ def build_default_registry() -> ProviderRegistry:
             id="gtfs",
             name="GTFS Provider",
             priority=ProviderPriority.HIGH,
-            capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=False, supports_realtime=False),
+            capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN, TransportType.BUS], supports_availability=False, supports_realtime=False, supports_schedule=True),
+            metadata={"provider_type": "production", "configured": True, "ready": True},
         )
     return registry
 
