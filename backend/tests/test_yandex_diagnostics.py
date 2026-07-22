@@ -142,4 +142,6 @@ def test_route_search_api_exposes_yandex_invalid_provider_response_details(monke
     assert details["status_code"] == 200
     assert details["response_headers"]["x-debug"] == "yes"
     assert details["parsed_json"] == {"unexpected": []}
+    expected_client_diagnostics = dict(provider.client.last_response_diagnostics)
+    assert {key: details[key] for key in expected_client_diagnostics} == expected_client_diagnostics
     assert_artifacts(details)
