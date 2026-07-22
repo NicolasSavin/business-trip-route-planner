@@ -21,9 +21,13 @@ def client():
     return TutuPlaywrightClient(pool=None)
 
 
-def test_date_control_button_when_selector_supported(client):
-    constants = " ".join(str(item) for item in client._date_control.__code__.co_consts)
-    assert "button:has-text('Когда')" in constants
+def test_date_control_uses_dom_interactive_probe(client):
+    selector = client._interactive_elements_selector()
+    assert "button" in selector
+    assert "input" in selector
+    assert "[tabindex]" in selector
+    assert "[aria-haspopup]" in selector
+    assert "[data-testid]" in selector
 
 
 def test_date_control_today_button_shortcut(client):
