@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ApiError, searchRoutes } from "./api";
 import type { RouteSearchPayload } from "./types";
+import { buildRouteSearchPayload, type RouteFormState } from "./locationPayload";
 
 const payload: RouteSearchPayload = {
   origin: "Москва",
@@ -106,4 +107,57 @@ test("searchRoutes preserves network failure message", async () => {
   } finally {
     restore();
   }
+});
+
+
+const formState: RouteFormState = {
+  origin: "Санкт-Петербург (train/bus)",
+  destination: "Москва",
+  originLocation: {
+    id: "city:c2",
+    provider_code: "c2",
+    type: "city",
+    title: "Санкт-Петербург",
+    displayLabel: "Санкт-Петербург (train/bus)",
+  },
+  destinationLocation: {
+    id: "city:c213",
+    provider_code: "c213",
+    type: "city",
+    title: "Москва",
+    displayLabel: "Москва (train/bus)",
+  },
+  departure_date: "2026-08-10",
+  passengers: 2,
+  transport: "both",
+  max_transfers: 1,
+  minimum_transfer_minutes: 45,
+  maximum_transfer_minutes: 360,
+  strict_availability: false,
+  lower_only: false,
+  same_compartment: false,
+};
+
+test("buildRouteSearchPayload sends selected title instead of display label", () => {
+  const actual = buildRouteSearchPayload(formState);
+  assert.equal(actual.origin, "Санкт-Петербург");
+  assert.notEqual(actual.origin, "Санкт-Петербург (train/bus)");
+});
+
+test("buildRouteSearchPayload sends provider code separately", () => {
+  const actual = buildRouteSearchPayload(formState);
+  assert.equal(actual.origin_provider_code, "c2");
+  assert.equal(actual.destination_provider_code, "c213");
+  assert.equal(actual.origin_location_id, "city:c2");
+  assert.equal(actual.destination_location_id, "city:c213");
+});
+
+test("buildRouteSearchPayload strips UI suffix fallback when no selected location", () => {
+  const actual = buildRouteSearchPayload({
+    ...formState,
+    originLocation: null,
+    origin: "Санкт-Петербург (поезд/автобус)",
+  });
+  assert.equal(actual.origin, "Санкт-Петербург");
+  assert.equal(actual.origin_provider_code, null);
 });

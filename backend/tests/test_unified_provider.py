@@ -113,3 +113,47 @@ def test_segments_by_provider_and_errors_are_recorded():
     assert len(unified.get_segments(DAY, [TransportType.TRAIN])) == 1
     assert unified.last_diagnostics["segments_by_provider"] == {"ok": 1, "broken": 0}
     assert unified.last_diagnostics["provider_errors"] == {"broken": "down"}
+
+from app.providers.yandex.exceptions import YandexRaspServerError, YandexRaspUnknownCityError
+
+
+def test_unknown_city_does_not_mark_provider_offline():
+    registry = ProviderRegistry()
+    registry.register(Provider(), id="yandex_rasp", name="Yandex", priority=ProviderPriority.HIGH, capabilities=caps())
+
+    registry.mark_error("yandex_rasp", YandexRaspUnknownCityError("unknown"))
+
+    assert registry.get("yandex_rasp").health == ProviderHealth.HEALTHY
+    assert [item.id for item, _ in registry.enabled([TransportType.TRAIN], schedule_only=True)] == ["yandex_rasp"]
+
+
+def test_network_errors_mark_offline_only_after_repeated_failures():
+    registry = ProviderRegistry()
+    registry.register(Provider(), id="yandex_rasp", name="Yandex", priority=ProviderPriority.HIGH, capabilities=caps())
+
+    registry.mark_error("yandex_rasp", YandexRaspServerError("down 1"))
+    registry.mark_error("yandex_rasp", YandexRaspServerError("down 2"))
+    assert registry.get("yandex_rasp").health == ProviderHealth.DEGRADED
+
+    registry.mark_error("yandex_rasp", YandexRaspServerError("down 3"))
+    assert registry.get("yandex_rasp").health == ProviderHealth.OFFLINE
+
+class UnknownOnceProvider:
+    def get_segments(self, _date, _allowed, *, origin=None, **_kwargs):
+        if origin == "Неизвестный":
+            raise YandexRaspUnknownCityError("unknown")
+        return [seg("ok-after-unknown", "yandex_rasp")]
+
+
+def test_valid_search_calls_provider_after_unknown_city_error():
+    registry = ProviderRegistry()
+    registry.register(UnknownOnceProvider(), id="yandex_rasp", name="Yandex", priority=ProviderPriority.HIGH, capabilities=caps())
+    unified = UnifiedTransportProvider(registry)
+
+    assert unified.get_segments(DAY, [TransportType.TRAIN], origin="Неизвестный", destination="Москва") == []
+    assert registry.get("yandex_rasp").health != ProviderHealth.OFFLINE
+
+    segments = unified.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert segments
+    assert unified.last_diagnostics["providers_called"] == ["yandex_rasp"]
+    assert registry.get("yandex_rasp").health == ProviderHealth.HEALTHY

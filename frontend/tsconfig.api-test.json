@@ -13,6 +13,7 @@
   "include": [
     "lib/api.ts",
     "lib/api.test.ts",
-    "lib/types.ts"
+    "lib/types.ts",
+    "lib/locationPayload.ts"
   ]
 }

@@ -4,6 +4,7 @@ import { KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Building2, Loader2, MapPin, TrainFront, X } from "lucide-react";
 import { suggestLocations } from "@/lib/api";
 import type { LocationSuggestion } from "@/lib/types";
+import type { SelectedLocation } from "@/lib/locationPayload";
 
 const typeLabels: Record<LocationSuggestion["type"], string> = {
   city: "Город",
@@ -24,7 +25,7 @@ function Highlight({ text, query }: { text: string; query: string }) {
   return <>{text.slice(0, index)}<mark className="rounded bg-aqua/20 px-0.5 text-ink">{text.slice(index, index + query.length)}</mark>{text.slice(index + query.length)}</>;
 }
 
-export type SelectedLocation = Pick<LocationSuggestion, "id" | "provider_code" | "type"> | null;
+export type { SelectedLocation } from "@/lib/locationPayload";
 
 export function LocationAutocomplete({ label, value, selected, onChange, onSelect, required }: {
   label: string;
@@ -82,7 +83,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   }, [value]);
 
   function pick(item: LocationSuggestion) {
-    onSelect({ id: item.id, provider_code: item.provider_code, type: item.type }, item.display_name);
+    onSelect({ id: item.id, provider_code: item.provider_code, type: item.type, title: item.name, displayLabel: item.display_name }, item.display_name);
     setOpen(false);
   }
 

@@ -27,7 +27,7 @@ class YandexRaspProvider(TransportProvider):
         self.last_error_payload: dict | None = None
         self.last_diagnostics: dict = {}
 
-    def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None) -> list[TransportSegment]:
+    def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None, origin_provider_code: str | None = None, destination_provider_code: str | None = None, **_kwargs) -> list[TransportSegment]:
         if not self.config.enabled:
             return []
         try:
@@ -35,8 +35,8 @@ class YandexRaspProvider(TransportProvider):
             segments: list[TransportSegment] = []
             pair_errors: list[dict[str, Any]] = []
             for origin_name, destination_name in pairs:
-                origin_resolution = self.resolver.resolve(origin_name or "")
-                destination_resolution = self.resolver.resolve(destination_name or "")
+                origin_resolution = self._resolve_location(origin_name or "", origin_provider_code)
+                destination_resolution = self._resolve_location(destination_name or "", destination_provider_code)
                 diagnostics = self._diagnostics(origin_resolution, destination_resolution, departure_date)
                 seen_ids = {segment.id for segment in segments}
                 origin_codes = self._codes_for_transport(origin_resolution, allowed_transport)
@@ -98,6 +98,11 @@ class YandexRaspProvider(TransportProvider):
             wrapped = YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=self.last_diagnostics)
             self._record_error(wrapped)
             raise wrapped
+
+    def _resolve_location(self, title: str, provider_code: str | None) -> YandexLocationMatch:
+        if provider_code:
+            return self.resolver.resolve_code(provider_code, title)
+        return self.resolver.resolve(title)
 
     def _validate_payload(self, payload: Any, diagnostics: dict) -> None:
         if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):

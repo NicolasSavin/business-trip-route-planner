@@ -6,12 +6,14 @@ from datetime import datetime, timezone
 from app.domain import TransportSegment, TransportType
 from app.providers.base import TransportProvider
 from app.providers.unified.models import ProviderCapabilities, ProviderHealth, ProviderRegistration
+from app.providers.yandex.exceptions import YandexRaspAuthError, YandexRaspRateLimitError, YandexRaspServerError, YandexRaspTimeoutError, YandexRaspUnknownCityError
 
 
 class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, TransportProvider] = {}
         self._registrations: dict[str, ProviderRegistration] = {}
+        self._consecutive_network_errors: dict[str, int] = {}
 
     def register(self, provider: TransportProvider, *, id: str, name: str, priority: int, enabled: bool = True, capabilities: ProviderCapabilities, metadata: dict | None = None) -> ProviderRegistration:
         registration = ProviderRegistration(id=id, name=name, priority=priority, enabled=enabled, capabilities=capabilities, metadata=metadata or {})
@@ -73,9 +75,24 @@ class ProviderRegistry:
 
     def mark_result(self, provider_id: str, segments: list[TransportSegment]) -> None:
         registration = self._registrations[provider_id]
+        self._consecutive_network_errors[provider_id] = 0
         self._registrations[provider_id] = registration.model_copy(update={"health": ProviderHealth.HEALTHY, "routes_found": len(segments), "last_checked_at": datetime.now(timezone.utc), "error": None})
 
     def mark_error(self, provider_id: str, exc: Exception) -> None:
         registration = self._registrations[provider_id]
-        status = ProviderHealth.OFFLINE if registration.routes_found == 0 else ProviderHealth.DEGRADED
+        status = self._health_for_error(provider_id, registration, exc)
         self._registrations[provider_id] = registration.model_copy(update={"health": status, "last_checked_at": datetime.now(timezone.utc), "error": str(exc) or exc.__class__.__name__})
+
+    def _health_for_error(self, provider_id: str, registration: ProviderRegistration, exc: Exception) -> ProviderHealth:
+        if isinstance(exc, YandexRaspUnknownCityError):
+            self._consecutive_network_errors[provider_id] = 0
+            return ProviderHealth.DEGRADED if registration.health == ProviderHealth.OFFLINE else registration.health
+        if isinstance(exc, YandexRaspAuthError):
+            self._consecutive_network_errors[provider_id] = 0
+            return ProviderHealth.OFFLINE
+        if isinstance(exc, (YandexRaspTimeoutError, YandexRaspServerError, YandexRaspRateLimitError)):
+            count = self._consecutive_network_errors.get(provider_id, 0) + 1
+            self._consecutive_network_errors[provider_id] = count
+            return ProviderHealth.OFFLINE if count >= 3 else ProviderHealth.DEGRADED
+        self._consecutive_network_errors[provider_id] = 0
+        return ProviderHealth.DEGRADED
