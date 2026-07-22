@@ -36,7 +36,7 @@ class YandexRaspClient:
         transport_types = [YANDEX_TRANSPORT_TYPES[item] for item in allowed_transport if item in YANDEX_TRANSPORT_TYPES]
         if TransportType.TRAIN in allowed_transport:
             transport_types.append(SUBURBAN_TRANSPORT_TYPE)
-        return self._get("/search/", params={
+        return self._get("search/", params={
             "from": origin_code,
             "to": destination_code,
             "date": departure_date.isoformat(),
@@ -50,7 +50,7 @@ class YandexRaspClient:
         })
 
     def stations_list(self) -> dict:
-        return self._get("/stations_list/", params={"format": "json", "lang": "ru_RU"})
+        return self._get("stations_list/", params={"format": "json", "lang": "ru_RU"})
 
     def _get(self, path: str, params: dict) -> dict:
         if not self.config.api_key:
