@@ -139,10 +139,19 @@ class SearchSummary(BaseModel):
     confirmed_routes: int = 0
     partially_confirmed_routes: int = 0
     rejected_routes: int = 0
+    providers_considered: list[str] = Field(default_factory=list)
+    providers_enabled: list[str] = Field(default_factory=list)
+    providers_called: list[str] = Field(default_factory=list)
+    providers_succeeded: list[str] = Field(default_factory=list)
+    providers_failed: list[str] = Field(default_factory=list)
+    provider_errors: dict[str, str] = Field(default_factory=dict)
+    segments_by_provider: dict[str, int] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RouteSearchResponse(BaseModel):
     routes: list[RouteOption]
+    warnings: list[str] = Field(default_factory=list)
     partially_confirmed_routes: list[RouteOption] = Field(default_factory=list)
     rejected_routes: list[RouteOption] = Field(default_factory=list)
     search_summary: SearchSummary = Field(default_factory=SearchSummary)

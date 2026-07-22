@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_routers
 from app.browser.runtime import browser_manager
+from app.providers.unified import registry as provider_registry
 
 app = FastAPI(title="Business Trip Route Planner API")
 logger = logging.getLogger("uvicorn.error")
@@ -24,8 +25,28 @@ app.add_middleware(
 )
 
 
+
+def log_transport_provider_startup_diagnostics() -> None:
+    lines = ["=== Transport Providers Startup Diagnostics ==="]
+    for provider in provider_registry.list():
+        caps = provider.capabilities
+        configured = provider.metadata.get("configured", True)
+        lines.extend([
+            f"provider: {provider.id}",
+            f"enabled: {str(provider.enabled).lower()}",
+            f"configured: {str(bool(configured)).lower()}",
+            f"supports_schedule: {str(caps.supports_schedule).lower()}",
+            f"supports_availability: {str(caps.supports_availability).lower()}",
+            f"supports_train: {str('train' in [t.value for t in caps.supported_transport]).lower()}",
+            f"supports_bus: {str('bus' in [t.value for t in caps.supported_transport]).lower()}",
+            f"status: {provider.health.value if hasattr(provider.health, 'value') else provider.health}",
+            "",
+        ])
+    logger.info("\n" + "\n".join(lines))
+
 @app.on_event("startup")
 async def log_browser_startup_diagnostics() -> None:
+    log_transport_provider_startup_diagnostics()
     try:
         diagnostics = await browser_manager.startup_diagnostics()
         await browser_manager.start()
