@@ -81,3 +81,65 @@ def test_yandex_diagnostics_truncates_returned_body_only():
     details = provider.last_error_payload["details"]
     assert len(details["raw_body"].encode("utf-8")) < len(body.encode("utf-8"))
     assert (DIAGNOSTICS_DIR / "yandex_response.txt").read_text(encoding="utf-8") == body
+
+
+def test_route_search_api_exposes_yandex_invalid_provider_response_details(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes as routes_api
+    from app.main import app
+    from app.providers.unified.models import ProviderCapabilities, ProviderPriority
+    from app.providers.unified.provider import UnifiedTransportProvider
+    from app.providers.unified.registry import ProviderRegistry
+    from app.services.route_search import RouteSearchService
+
+    provider = YandexRaspProvider(
+        YandexRaspConfiguration("secret", enabled=True),
+        client=client_for_response(httpx.Response(200, json={"unexpected": []}, headers={"content-type": "application/json", "x-debug": "yes"})),
+        resolver=YandexLocationResolver(),
+    )
+    registry = ProviderRegistry()
+    registry.register(
+        provider,
+        id="yandex_rasp",
+        name="Яндекс Расписания",
+        priority=ProviderPriority.HIGH,
+        enabled=True,
+        capabilities=ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_schedule=True),
+    )
+    monkeypatch.setattr(routes_api, "service", RouteSearchService(UnifiedTransportProvider(registry)))
+
+    response = TestClient(app).post(
+        "/api/v1/routes/search",
+        json={
+            "origin": "Москва",
+            "destination": "Санкт-Петербург",
+            "departure_date": DAY.isoformat(),
+            "passengers": 1,
+            "allowed_transport": ["train"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    error = body["provider_errors"]["yandex_rasp"]
+    assert error["code"] == "invalid_provider_response"
+    details = error["details"]
+    for key in (
+        "request_url",
+        "request_params",
+        "status_code",
+        "response_headers",
+        "content_type",
+        "raw_body",
+        "parsed_json",
+        "exception",
+        "traceback",
+        "artifact_paths",
+    ):
+        assert key in details
+    assert details["request_params"]["apikey"] == "***redacted***"
+    assert details["status_code"] == 200
+    assert details["response_headers"]["x-debug"] == "yes"
+    assert details["parsed_json"] == {"unexpected": []}
+    assert_artifacts(details)

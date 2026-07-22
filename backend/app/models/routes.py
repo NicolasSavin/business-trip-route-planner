@@ -152,6 +152,7 @@ class SearchSummary(BaseModel):
 class RouteSearchResponse(BaseModel):
     routes: list[RouteOption]
     warnings: list[str] = Field(default_factory=list)
+    provider_errors: dict[str, str | dict] = Field(default_factory=dict)
     partially_confirmed_routes: list[RouteOption] = Field(default_factory=list)
     rejected_routes: list[RouteOption] = Field(default_factory=list)
     search_summary: SearchSummary = Field(default_factory=SearchSummary)
