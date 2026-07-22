@@ -8,7 +8,7 @@ from app.domain import TransportSegment, TransportType
 from app.providers.base import TransportProvider
 from app.providers.yandex.client import YandexRaspClient
 from app.providers.yandex.config import YandexRaspConfiguration
-from app.providers.yandex.exceptions import YandexRaspEmptyResponseError, YandexRaspError, YandexRaspInvalidResponseError, YandexRaspUnknownCityError
+from app.providers.yandex.exceptions import YandexRaspEmptyResponseError, YandexRaspError, YandexRaspInvalidResponseError, YandexRaspUnexpectedContentTypeError, YandexRaspUnknownCityError
 from app.providers.yandex.mapper import YandexRaspMapper
 from app.providers.yandex.resolver import YandexLocationMatch, YandexLocationResolver
 
@@ -78,6 +78,12 @@ class YandexRaspProvider(TransportProvider):
                 return segments
             details = self._empty_details(origin, destination, departure_date, pair_errors)
             if pair_errors:
+                first_error = pair_errors[0].get("error") or {}
+                if first_error.get("code") == "unexpected_content_type":
+                    raise YandexRaspUnexpectedContentTypeError(
+                        first_error.get("message", "Яндекс Расписания вернули ответ не в формате JSON"),
+                        diagnostics=details,
+                    )
                 raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=details)
             raise YandexRaspEmptyResponseError("Яндекс Расписания не вернули сегменты", diagnostics=details)
         except YandexRaspUnknownCityError as exc:

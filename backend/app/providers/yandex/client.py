@@ -7,7 +7,14 @@ import httpx
 from app.domain import TransportType
 from app.providers.yandex.config import YandexRaspConfiguration
 from app.providers.yandex.diagnostics import write_yandex_diagnostics
-from app.providers.yandex.exceptions import YandexRaspAuthError, YandexRaspRateLimitError, YandexRaspServerError, YandexRaspTimeoutError
+from app.providers.yandex.exceptions import (
+    YandexRaspAuthError,
+    YandexRaspInvalidResponseError,
+    YandexRaspRateLimitError,
+    YandexRaspServerError,
+    YandexRaspTimeoutError,
+    YandexRaspUnexpectedContentTypeError,
+)
 
 
 YANDEX_TRANSPORT_TYPES = {
@@ -15,12 +22,13 @@ YANDEX_TRANSPORT_TYPES = {
     TransportType.BUS: "bus",
 }
 SUBURBAN_TRANSPORT_TYPE = "suburban"
+BODY_PREVIEW_CHARS = 1000
 
 
 class YandexRaspClient:
     def __init__(self, config: YandexRaspConfiguration, http_client: httpx.Client | None = None):
         self.config = config
-        self._client = http_client or httpx.Client(base_url=config.base_url, timeout=config.timeout_seconds)
+        self._client = http_client or httpx.Client(base_url=config.base_url, timeout=config.timeout_seconds, follow_redirects=True)
         self.last_status_code: int | None = None
         self.last_response_diagnostics: dict | None = None
 
@@ -36,7 +44,9 @@ class YandexRaspClient:
             "transfers": "true" if transfers else "false",
             "format": "json",
             "lang": "ru_RU",
-            "page": 1,
+            "system": "yandex",
+            "limit": 100,
+            "offset": 0,
         })
 
     def stations_list(self) -> dict:
@@ -53,16 +63,8 @@ class YandexRaspClient:
         except httpx.TimeoutException as exc:
             self.last_response_diagnostics = write_yandex_diagnostics(request=request, exception=exc)
             raise YandexRaspTimeoutError("Yandex Rasp API timeout", diagnostics=self.last_response_diagnostics) from exc
-        parsed_json = None
-        json_exception = None
-        try:
-            parsed_json = response.json()
-        except Exception as exc:
-            json_exception = exc
-        self.last_response_diagnostics = write_yandex_diagnostics(request=request, response=response, parsed_json=parsed_json, json_exception=json_exception)
-        if json_exception is not None:
-            from app.providers.yandex.exceptions import YandexRaspInvalidResponseError
-            raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=self.last_response_diagnostics) from json_exception
+
+        self.last_response_diagnostics = write_yandex_diagnostics(request=request, response=response)
         if response.status_code in {401, 403}:
             raise YandexRaspAuthError("Yandex Rasp API rejected API key", diagnostics=self.last_response_diagnostics)
         if response.status_code == 429:
@@ -72,6 +74,34 @@ class YandexRaspClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            from app.providers.yandex.exceptions import YandexRaspInvalidResponseError
             raise YandexRaspInvalidResponseError("Yandex Rasp API HTTP error", diagnostics=self.last_response_diagnostics) from exc
+
+        content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            diagnostics = self._unexpected_content_type_details(request, response)
+            self.last_response_diagnostics = diagnostics
+            raise YandexRaspUnexpectedContentTypeError(
+                "Яндекс Расписания вернули ответ не в формате JSON",
+                diagnostics=diagnostics,
+            )
+
+        parsed_json = None
+        json_exception = None
+        try:
+            parsed_json = response.json()
+        except Exception as exc:
+            json_exception = exc
+        self.last_response_diagnostics = write_yandex_diagnostics(request=request, response=response, parsed_json=parsed_json, json_exception=json_exception)
+        if json_exception is not None:
+            raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=self.last_response_diagnostics) from json_exception
         return parsed_json
+
+    def _unexpected_content_type_details(self, request: httpx.Request, response: httpx.Response) -> dict:
+        text = response.text[:BODY_PREVIEW_CHARS]
+        return {
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "request_url": str(request.url).split("?", 1)[0],
+            "final_response_url": str(response.url).split("?", 1)[0],
+            "body_preview": text,
+        }

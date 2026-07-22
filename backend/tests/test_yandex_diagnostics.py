@@ -57,9 +57,9 @@ def test_yandex_diagnostics_html_response(monkeypatch):
     monkeypatch.setenv("YANDEX_DIAGNOSTICS_VERBOSE", "true")
     provider = run_provider(client_for_response(httpx.Response(200, text="<html>bad gateway</html>", headers={"content-type": "text/html"})))
     details = provider.last_error_payload["details"]
+    assert provider.last_error_payload["code"] == "unexpected_content_type"
     assert details["content_type"] == "text/html"
-    assert details["raw_body_preview"] == "<html>bad gateway</html>"
-    assert details["exception_type"] == "JSONDecodeError"
+    assert details["body_preview"] == "<html>bad gateway</html>"
 
 
 def test_yandex_diagnostics_empty_body(monkeypatch):
@@ -85,8 +85,8 @@ def test_yandex_diagnostics_truncates_returned_body_only(monkeypatch):
     body = "x" * (1024 * 1024 + 10)
     provider = run_provider(client_for_response(httpx.Response(200, text=body, headers={"content-type": "text/plain"})))
     details = provider.last_error_payload["details"]
-    assert len(details["raw_body_preview"]) == 4000
-    assert (DIAGNOSTICS_DIR / "yandex_response.bin").read_bytes() == body.encode()
+    assert len(details["body_preview"]) == 1000
+    assert "raw_body" not in details
 
 
 def test_route_search_api_exposes_yandex_invalid_provider_response_details(monkeypatch):
@@ -158,9 +158,8 @@ def test_yandex_diagnostics_binary_body_has_no_string_preview(monkeypatch):
     content = b"\x00\x01\x02not-text" * 100
     provider = run_provider(client_for_response(httpx.Response(200, content=content, headers={"content-type": "application/octet-stream"})))
     details = provider.last_error_payload["details"]
-    assert details["raw_body_preview"] is None
-    assert details["raw_body_binary"] is True
-    assert details["raw_body_size_bytes"] == len(content)
+    assert provider.last_error_payload["code"] == "unexpected_content_type"
+    assert len(details["body_preview"]) <= 1000
     assert "raw_body" not in details
 
 
@@ -191,7 +190,7 @@ def test_yandex_diagnostics_default_compact_response(monkeypatch):
     monkeypatch.delenv("YANDEX_DIAGNOSTICS_VERBOSE", raising=False)
     provider = run_provider(client_for_response(httpx.Response(200, json={"unexpected": []}, headers={"content-type": "application/json"})))
     details = provider.last_error_payload["details"]
-    assert set(details) == {"status_code", "content_type", "content_encoding", "response_keys", "raw_body_size_bytes", "artifact_paths"}
+    assert set(details) == {"status_code", "content_type", "content_encoding", "final_response_url", "response_keys", "raw_body_size_bytes", "artifact_paths"}
     assert details["status_code"] == 200
     assert details["response_keys"] == ["unexpected"]
 
@@ -221,6 +220,6 @@ def test_route_search_api_compact_provider_errors_does_not_502_for_large_body(mo
 
     assert response.status_code == 200
     error = response.json()["provider_errors"]["yandex_rasp"]
-    assert error["code"] == "invalid_provider_response"
+    assert error["code"] == "unexpected_content_type"
     assert "raw_body" not in __import__("json").dumps(error, ensure_ascii=False)
     assert len(response.content) < 32768

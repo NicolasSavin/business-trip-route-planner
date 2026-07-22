@@ -46,6 +46,12 @@ class YandexRaspInvalidResponseError(YandexRaspError):
     code = "invalid_provider_response"
 
 
+class YandexRaspUnexpectedContentTypeError(YandexRaspInvalidResponseError):
+    """Yandex Rasp API returned a non-JSON response."""
+
+    code = "unexpected_content_type"
+
+
 class YandexRaspEmptyResponseError(YandexRaspError):
     """Yandex Rasp API returned no usable search segments."""
 

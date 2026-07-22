@@ -9,7 +9,7 @@ class YandexRaspConfiguration:
     api_key: str | None
     enabled: bool = False
     timeout_seconds: float = 10.0
-    base_url: str = "https://api.rasp.yandex.net/v3.0"
+    base_url: str = "https://api.rasp.yandex-net.ru/v3.0"
 
     @classmethod
     def from_env(cls) -> "YandexRaspConfiguration":
@@ -17,4 +17,5 @@ class YandexRaspConfiguration:
             api_key=os.getenv("YANDEX_RASP_API_KEY") or None,
             enabled=(os.getenv("YANDEX_RASP_ENABLED", "").lower() in {"1", "true", "yes", "on"}) or bool(os.getenv("YANDEX_RASP_API_KEY")),
             timeout_seconds=float(os.getenv("YANDEX_RASP_TIMEOUT_SECONDS", "10")),
+            base_url=os.getenv("YANDEX_RASP_BASE_URL", "https://api.rasp.yandex-net.ru/v3.0"),
         )
