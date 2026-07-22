@@ -52,7 +52,7 @@ class RouteSegment(BaseModel):
     number: str
     departure_time: datetime
     arrival_time: datetime
-    available_seats: int
+    available_seats: int | None
     origin_station: str | None = None
     destination_station: str | None = None
     carrier: str | None = None
@@ -68,7 +68,7 @@ class RouteSegment(BaseModel):
 class SegmentAvailability(BaseModel):
     segment_id: str
     is_available: bool
-    available_seats: int
+    available_seats: int | None
     origin_station: str | None = None
     destination_station: str | None = None
     carrier: str | None = None
@@ -92,7 +92,7 @@ class SegmentAvailability(BaseModel):
 class RouteAvailability(BaseModel):
     is_available: bool
     requested_passengers: int
-    minimum_available_seats: int
+    minimum_available_seats: int | None
     checked_at: datetime
     segment_results: list[SegmentAvailability]
     segments: list[SegmentAvailability] = Field(default_factory=list)
@@ -102,11 +102,11 @@ class RouteAvailability(BaseModel):
     is_stale: bool = False
 
     @property
-    def total_available_seats(self) -> int:
+    def total_available_seats(self) -> int | None:
         return self.minimum_available_seats
 
     @property
-    def min_available_seats(self) -> int:
+    def min_available_seats(self) -> int | None:
         return self.minimum_available_seats
 
 

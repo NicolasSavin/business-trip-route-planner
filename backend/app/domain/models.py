@@ -40,7 +40,7 @@ class Carrier:
 
 @dataclass(frozen=True)
 class Availability:
-    available_seats: int
+    available_seats: int | None
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class TransportSegment:
     provider: str
     carrier: Carrier
     transport_type: TransportType
-    transport_class: TransportClass
+    transport_class: TransportClass | None
     vehicle_number: str
     origin_city: City
     origin_station: Station
@@ -58,7 +58,7 @@ class TransportSegment:
     departure_datetime: datetime
     arrival_datetime: datetime
     duration_minutes: int
-    available_seats: int
+    available_seats: int | None
     price: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -92,7 +92,7 @@ class Route:
 
     @property
     def min_available_seats(self) -> int:
-        return min(segment.available_seats for segment in self.segments)
+        return min((segment.available_seats or 0) for segment in self.segments)
 
 
 @dataclass(frozen=True)

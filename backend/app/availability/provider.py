@@ -31,17 +31,17 @@ class MockAvailabilityProvider:
     def check_segment(self, segment: TransportSegment, policy: AvailabilityPolicy) -> SegmentAvailability:
         checked_at = self.checked_at_overrides.get(segment.id, datetime.now(timezone.utc))
         warnings: list[str] = []
-        if segment.id in self.overrides and self.overrides[segment.id] is None:
+        if segment.metadata.get("availability_unknown") or segment.available_seats is None or (segment.id in self.overrides and self.overrides[segment.id] is None):
             return SegmentAvailability(
                 segment.id,
-                False,
-                0,
+                True,
+                None,
                 policy.passengers,
                 segment.transport_class,
                 checked_at,
                 self.source,
-                "Данные о наличии мест для сегмента недоступны",
-                ("availability data is missing",),
+                None,
+                ("Источник расписаний не подтверждает наличие и расположение мест",),
                 self.stale_after_seconds,
             )
 

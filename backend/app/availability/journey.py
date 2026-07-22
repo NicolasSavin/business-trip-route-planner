@@ -14,6 +14,7 @@ class AvailabilityStatus(StrEnum):
     PARTIALLY_CONFIRMED = "partially_confirmed"
     UNAVAILABLE = "unavailable"
     UNKNOWN = "unknown"
+    UNCONFIRMED = "unconfirmed"
     STALE = "stale"
     PROVIDER_ERROR = "provider_error"
 
@@ -32,7 +33,7 @@ class SegmentAvailabilityResult:
     schedule_confirmed: bool = True
     seats_confirmed: bool = False
     passengers_supported: bool = False
-    available_places_count: int = 0
+    available_places_count: int | None = None
     seat_preferences_status: AvailabilityStatus = AvailabilityStatus.UNKNOWN
     selected_places: tuple[str, ...] = ()
     selected_carriages: tuple[str, ...] = ()

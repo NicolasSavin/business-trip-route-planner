@@ -67,8 +67,8 @@ class MultimodalJourneyPlanner:
         )
         checked = asyncio.run(self._attach_journey_availability(options, request)) if options else []
         confirmed = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.CONFIRMED]
-        partial = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED]
-        rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED}]
+        partial = [o for o in checked if o.availability and o.availability.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
+        rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
         routes = confirmed if request.strict_availability else confirmed + partial
         logger.info(
             "route_search.filters availability_checked=%s confirmed=%s partially_confirmed=%s rejected_by_confirmation=%s strict_availability=%s final_routes=%s",
@@ -125,6 +125,9 @@ class MultimodalJourneyPlanner:
             policy = AvailabilityPolicy.for_group(request.passengers, preferred_classes=tuple(self._preferred_classes(request)), require_group_together=request.require_group_together, allow_split_group=request.allow_split_group)
             legacy = self.availability_engine.provider.check_segment(segment, policy)
             result = SegmentAvailabilityResult.from_legacy(legacy, provider=segment.provider)
+            if segment.metadata.get("availability_unknown") or "Источник расписаний не подтверждает наличие и расположение мест" in result.warnings:
+                result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=(), warnings=(*result.warnings, "Нижние места и одно купе требуют дополнительной проверки" if request.seat_preferences else ""))
+                result = replace(result, warnings=tuple(w for w in result.warnings if w))
             if segment.transport_type == TransportType.TRAIN and request.seat_preferences:
                 result = self._apply_railway_preferences(segment, request, result)
             if segment.transport_type != TransportType.TRAIN:
@@ -137,19 +140,20 @@ class MultimodalJourneyPlanner:
     def _apply_railway_preferences(self, segment: TransportSegment, request: RouteSearchRequest, base: SegmentAvailabilityResult) -> SegmentAvailabilityResult:
         pref = request.seat_preferences
         assert pref is not None
-        # Official providers may put concrete places into metadata; when absent, create a conservative synthetic map from confirmed free seats.
         raw = segment.metadata.get("places") or []
         places = [self._place_from_dict(segment.provider, item, segment.transport_class) for item in raw]
-        if not places and segment.available_seats > 0:
-            places = [RailwayPlace(provider=segment.provider, place_number=str(i + 1), carriage_number="1", transport_class=segment.transport_class, berth_position=(BerthPosition.LOWER if i % 2 == 0 else BerthPosition.UPPER), compartment_number=str(i // 4 + 1)) for i in range(segment.available_seats)]
+        if not places and base.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}:
+            return replace(base, seat_preferences_status=AvailabilityStatus.UNKNOWN)
+        if not places and segment.available_seats and segment.available_seats > 0:
+            places = [RailwayPlace(provider=segment.provider, place_number=str(i + 1), carriage_number="1", transport_class=segment.transport_class or TransportClass.SEATED, berth_position=(BerthPosition.LOWER if i % 2 == 0 else BerthPosition.UPPER), compartment_number=str(i // 4 + 1)) for i in range(segment.available_seats)]
         allocation = self.seat_allocator.match(places, SeatPreferences(passengers=request.passengers, prefer_lower=pref.berth_preference == "lower_only", prefer_upper=pref.berth_preference == "upper_only", require_same_compartment=pref.require_same_compartment, require_empty_compartment=pref.require_empty_compartment, require_same_carriage=pref.require_same_carriage, require_adjacent=pref.require_adjacent, exclude_side_berths=pref.exclude_side_berths, gender=GenderRestriction(pref.gender) if pref.gender else None))
         selected = allocation.selected_places
         status = base.status if allocation.matches_preferences else (AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED)
         reasons = (*base.reasons, *allocation.reasons)
         return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=reasons)
 
-    def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass) -> RailwayPlace:
-        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number")), carriage_number=str(item.get("carriage_number") or item.get("carriage") or "1"), transport_class=TransportClass(item.get("transport_class") or fallback_class), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)))
+    def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass | None) -> RailwayPlace:
+        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number")), carriage_number=str(item.get("carriage_number") or item.get("carriage") or "1"), transport_class=TransportClass(item.get("transport_class") or fallback_class or TransportClass.SEATED), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)))
 
     def _preferred_classes(self, request: RouteSearchRequest):
         if request.seat_preferences and request.seat_preferences.preferred_classes:
@@ -162,8 +166,8 @@ class MultimodalJourneyPlanner:
     def _explain(self, option: DomainRouteOption, availability) -> str:
         if availability.status == AvailabilityStatus.CONFIRMED:
             return "Все участки маршрута и требования к местам подтверждены."
-        if availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED:
-            return "Часть участков не проверена: маршрут можно показывать только с предупреждением."
+        if availability.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}:
+            return "Расписание найдено, наличие мест не подтверждено."
         if availability.status == AvailabilityStatus.UNAVAILABLE:
             return "На одном из обязательных участков нет подходящих мест."
         if availability.status == AvailabilityStatus.PROVIDER_ERROR:

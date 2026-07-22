@@ -14,7 +14,7 @@ export type RouteSegment = {
   number: string;
   departure_time: string;
   arrival_time: string;
-  available_seats: number;
+  available_seats: number | null;
   origin_station?: string | null;
   destination_station?: string | null;
   carrier?: string | null;

@@ -15,7 +15,7 @@ class AvailabilityValidator:
         for segment in route.segments:
             if segment.id not in checked_ids:
                 warnings.append(f"segment {segment.id} was not checked")
-        if policy.require_group_together and any(result.available_seats < policy.passengers for result in results):
+        if policy.require_group_together and any(result.available_seats is not None and result.available_seats < policy.passengers for result in results):
             warnings.append("route does not have enough seats for the full group")
         if any(result.is_stale for result in results):
             warnings.append("availability data is stale")

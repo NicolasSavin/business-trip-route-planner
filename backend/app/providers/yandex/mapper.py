@@ -63,7 +63,7 @@ class YandexRaspMapper:
             provider="yandex_rasp",
             carrier=Carrier(str(carrier.get("code") or carrier.get("id") or "yandex"), carrier.get("title") or carrier.get("name") or "Яндекс Расписания"),
             transport_type=transport_type,
-            transport_class=TransportClass.EXPRESS if thread.get("transport_type") == "suburban" else TransportClass.SEATED,
+            transport_class=None,
             vehicle_number=thread.get("number") or thread.get("title") or item.get("number") or "рейс",
             origin_city=origin_city,
             origin_station=Station(str(from_obj.get("code") or from_obj.get("station_type") or from_obj.get("title")), from_obj.get("title") or origin_city.name, origin_city),
@@ -72,7 +72,7 @@ class YandexRaspMapper:
             departure_datetime=departure_dt,
             arrival_datetime=arrival_dt,
             duration_minutes=int((arrival_dt - departure_dt).total_seconds() // 60),
-            available_seats=999,
+            available_seats=None,
             price=self._price(item),
             metadata={"source": "Яндекс Расписания", "availability_unknown": True, "raw_transport_type": thread.get("transport_type")},
         )

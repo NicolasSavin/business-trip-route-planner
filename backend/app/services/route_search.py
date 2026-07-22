@@ -27,7 +27,7 @@ class RouteSearchService:
         api_rejected = [self._to_api_route(option, request.passengers) for option in rejected]
         if not include_unavailable and not request.strict_availability:
             api_rejected = []
-        diagnostic_rejected = api_rejected + (api_partial if request.strict_availability else [])
+        diagnostic_rejected = api_rejected
         logger.info(
             "route_search.serialization api_routes=%s api_partial=%s api_rejected=%s final_routes=%s",
             len(api_routes),
@@ -35,7 +35,7 @@ class RouteSearchService:
             len(api_rejected),
             len(api_routes),
         )
-        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial if not request.strict_availability else [], rejected_routes=diagnostic_rejected, search_summary=summary)
+        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=diagnostic_rejected, search_summary=summary)
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
@@ -80,7 +80,8 @@ class RouteSearchService:
                             is_stale=result.is_stale,
                         )
                     )
-                minimum = min((r.available_places_count for r in option.availability.segment_results), default=0)
+                known_counts = [r.available_places_count for r in option.availability.segment_results if r.available_places_count is not None]
+                minimum = min(known_counts) if known_counts else None
                 availability = RouteAvailability(
                     is_available=option.availability.status == AvailabilityStatus.CONFIRMED,
                     requested_passengers=passengers,
@@ -133,6 +134,7 @@ class RouteSearchService:
                 item.availability_message = {
                     AvailabilityStatus.CONFIRMED: "Все места подтверждены",
                     AvailabilityStatus.PARTIALLY_CONFIRMED: "Часть наличия не проверена",
+                    AvailabilityStatus.UNCONFIRMED: "Расписание найдено, наличие мест не подтверждено",
                     AvailabilityStatus.UNAVAILABLE: "Нет подходящих мест",
                     AvailabilityStatus.UNKNOWN: "Наличие мест неизвестно",
                     AvailabilityStatus.STALE: "Проверка устарела",
@@ -152,7 +154,7 @@ class RouteSearchService:
             total_price=sum((segment.price or 0) for segment in route.segments) or None,
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
-            is_available_for_group=option.availability.is_available if option.availability else all(segment.available_seats >= passengers for segment in route.segments),
+            is_available_for_group=option.availability.is_available if option.availability else all((segment.available_seats or 0) >= passengers for segment in route.segments),
             score=option.score,
             rank=option.rank,
             explanation=option.explanation,
