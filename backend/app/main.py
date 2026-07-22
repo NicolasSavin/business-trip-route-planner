@@ -8,6 +8,7 @@ from app.api import api_routers
 from app.browser.runtime import browser_manager
 from app.providers.unified import registry as provider_registry
 from app.providers.yandex.location_service import yandex_location_resolver
+from app.memory import log_memory
 
 app = FastAPI(title="Business Trip Route Planner API")
 logger = logging.getLogger("uvicorn.error")
@@ -47,13 +48,17 @@ def log_transport_provider_startup_diagnostics() -> None:
 
 @app.on_event("startup")
 async def log_browser_startup_diagnostics() -> None:
+    log_memory("before provider diagnostics")
     log_transport_provider_startup_diagnostics()
     yandex_location_resolver.warm_from_existing_cache()
+    log_memory("after Yandex directory metadata")
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
+    log_memory("after Yandex indexes")
     yandex_location_resolver.startup_refresh_background()
     try:
+        log_memory("before Playwright probe")
         diagnostics = await browser_manager.startup_diagnostics()
-        await browser_manager.start()
+        log_memory("after Chromium probe (not launched)")
     except Exception as exc:
         diagnostics = {
             "playwright_version": "unavailable",
@@ -65,6 +70,7 @@ async def log_browser_startup_diagnostics() -> None:
             "startup_exception": str(exc) or exc.__class__.__name__,
         }
 
+    log_memory("after startup")
     logger.info(
         "\n"
         "==================================================\n"

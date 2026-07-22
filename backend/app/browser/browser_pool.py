@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -16,8 +17,11 @@ class BrowserPool:
         self.metrics: BrowserMetrics = self.manager.metrics
         self._available: list[BrowserSession] = []
         self._leased: set[str] = set()
+        self._idle_stop_task: asyncio.Task | None = None
 
     async def acquire(self) -> BrowserSession:
+        if self._idle_stop_task and not self._idle_stop_task.done():
+            self._idle_stop_task.cancel()
         browser = await self.manager.ensure_browser()
         if self._available:
             session = self._available.pop()
@@ -38,6 +42,23 @@ class BrowserPool:
         if not session.destroyed:
             self._available.append(session)
         self.metrics.active_sessions = len(self._leased)
+        if not self._leased:
+            self._schedule_idle_shutdown()
+
+    def _schedule_idle_shutdown(self) -> None:
+        if not self.manager.browser_running:
+            return
+        async def stop_after_idle() -> None:
+            try:
+                await asyncio.sleep(self.manager.config.idle_timeout_seconds)
+                if not self._leased:
+                    for idle_session in self._available:
+                        await idle_session.destroy()
+                    self._available.clear()
+                    await self.manager.stop()
+            except asyncio.CancelledError:
+                return
+        self._idle_stop_task = asyncio.create_task(stop_after_idle())
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[BrowserSession]:
@@ -48,6 +69,8 @@ class BrowserPool:
             await self.release(acquired)
 
     async def shutdown(self) -> None:
+        if self._idle_stop_task and not self._idle_stop_task.done():
+            self._idle_stop_task.cancel()
         for session in self._available:
             await session.destroy()
         self._available.clear()

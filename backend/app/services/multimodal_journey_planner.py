@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -15,8 +16,8 @@ from app.services.segment_enrichment import SegmentEnrichmentService
 
 MAX_CANDIDATE_JOURNEYS = 80
 MAX_SEGMENTS_PER_QUERY = 500
-MAX_AVAILABILITY_CHECKS_PER_QUERY = 160
-MAX_PROVIDER_CONCURRENCY = 4
+MAX_AVAILABILITY_CHECKS_PER_QUERY = int(os.getenv("MAX_AVAILABILITY_CHECKS_PER_QUERY", "10"))
+MAX_PROVIDER_CONCURRENCY = int(os.getenv("MAX_PROVIDER_CONCURRENCY", "2"))
 
 
 class MultimodalJourneyPlanner:

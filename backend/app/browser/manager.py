@@ -44,8 +44,10 @@ class BrowserManager:
         return True
 
     async def startup_diagnostics(self) -> dict[str, str | bool]:
-        executable_path, startup_exception, launched, browser_version = await self._chromium_startup_probe()
-        status = "healthy" if launched else self.health().status.value
+        executable_path, startup_exception = self._chromium_executable_probe()
+        launched = False
+        browser_version = None
+        status = self.health().status.value
         return {
             "playwright_version": self._playwright_package_version(),
             "playwright_browsers_path": os.getenv("PLAYWRIGHT_BROWSERS_PATH", "not-set"),
@@ -64,35 +66,15 @@ class BrowserManager:
         except PackageNotFoundError:
             return "not-installed"
 
-    async def _chromium_startup_probe(self) -> tuple[str | None, str | None, bool, str | None]:
+    def _chromium_executable_probe(self) -> tuple[str | None, str | None]:
         if not self._installed:
-            return None, "Playwright package is not installed", False, None
-        from playwright.async_api import async_playwright
-
-        playwright = None
-        browser = None
-        executable_path: str | None = None
+            return None, "Playwright package is not installed"
         try:
-            playwright = await async_playwright().start()
-            executable_path = playwright.chromium.executable_path
-            if not os.path.exists(executable_path):
-                return executable_path, self._missing_chromium_message(executable_path), False, None
-            browser = await playwright.chromium.launch(headless=True)
-            browser_version = browser.version
-            return executable_path, None, True, browser_version
-        except Exception as exc:
-            return executable_path, str(exc) or exc.__class__.__name__, False, None
-        finally:
-            if browser is not None:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-            if playwright is not None:
-                try:
-                    await playwright.stop()
-                except Exception:
-                    pass
+            from playwright._impl._driver import compute_driver_executable  # type: ignore
+            # Avoid starting Playwright/Chromium; package-installed is enough for startup diagnostics.
+            return str(compute_driver_executable()[0]), None
+        except Exception:
+            return None, None
 
     def _missing_chromium_message(self, executable_path: str) -> str:
         return f"Chromium browser files are not installed at {executable_path}; run `python -m playwright install chromium` during build."

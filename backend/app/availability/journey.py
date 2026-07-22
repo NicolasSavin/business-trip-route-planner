@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import StrEnum
 from typing import Any
+from collections import OrderedDict
 
 from app.availability.models import SegmentAvailability as LegacySegmentAvailability
 
@@ -95,10 +96,11 @@ def aggregate_journey_availability(results: tuple[SegmentAvailabilityResult, ...
 
 
 class SegmentAvailabilityCache:
-    def __init__(self, ttl_seconds: int = 600, error_ttl_seconds: int = 60):
+    def __init__(self, ttl_seconds: int = 600, error_ttl_seconds: int = 60, max_size: int = 256):
         self.ttl_seconds = ttl_seconds
         self.error_ttl_seconds = error_ttl_seconds
-        self._items: dict[str, tuple[datetime, SegmentAvailabilityResult]] = {}
+        self.max_size = max_size
+        self._items: OrderedDict[str, tuple[datetime, SegmentAvailabilityResult]] = OrderedDict()
 
     def get(self, key: str) -> SegmentAvailabilityResult | None:
         item = self._items.get(key)
@@ -109,7 +111,16 @@ class SegmentAvailabilityCache:
         if datetime.now(timezone.utc) - stored_at > timedelta(seconds=ttl):
             self._items.pop(key, None)
             return None
+        self._items.move_to_end(key)
         return result
 
     def set(self, key: str, result: SegmentAvailabilityResult) -> None:
-        self._items[key] = (datetime.now(timezone.utc), result)
+        now = datetime.now(timezone.utc)
+        for item_key, (stored_at, cached) in list(self._items.items()):
+            ttl = self.error_ttl_seconds if cached.status == AvailabilityStatus.PROVIDER_ERROR else self.ttl_seconds
+            if now - stored_at > timedelta(seconds=ttl):
+                self._items.pop(item_key, None)
+        self._items[key] = (now, result)
+        self._items.move_to_end(key)
+        while len(self._items) > self.max_size:
+            self._items.popitem(last=False)

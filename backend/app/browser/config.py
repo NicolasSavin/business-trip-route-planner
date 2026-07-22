@@ -14,20 +14,24 @@ def _bool(value: str | None, default: bool) -> bool:
 class BrowserConfiguration:
     playwright_enabled: bool = False
     headless: bool = True
-    pool_size: int = 2
+    pool_size: int = 1
     timeout: int = 30
+    idle_timeout_seconds: int = 120
+    lazy_start: bool = True
     user_agent: str = ""
     proxy: str = ""
 
     @classmethod
     def from_env(cls) -> "BrowserConfiguration":
         return cls(
-            playwright_enabled=_bool(os.getenv("PLAYWRIGHT_ENABLED"), False),
+            playwright_enabled=_bool(os.getenv("TUTU_PLAYWRIGHT_ENABLED"), _bool(os.getenv("PLAYWRIGHT_ENABLED"), False)),
             headless=_bool(os.getenv("BROWSER_HEADLESS"), True),
-            pool_size=max(1, int(os.getenv("BROWSER_POOL_SIZE", "2"))),
+            pool_size=max(1, int(os.getenv("BROWSER_POOL_SIZE", "1"))),
             timeout=max(1, int(os.getenv("BROWSER_TIMEOUT", "30"))),
             user_agent=os.getenv("USER_AGENT", ""),
             proxy=os.getenv("PROXY", ""),
+            idle_timeout_seconds=max(1, int(os.getenv("BROWSER_IDLE_TIMEOUT_SECONDS", "120"))),
+            lazy_start=_bool(os.getenv("PLAYWRIGHT_LAZY_START"), True),
         )
 
     @property
@@ -42,4 +46,6 @@ class BrowserConfiguration:
             timeout=self.timeout,
             user_agent=self.user_agent,
             proxy=self.proxy,
+            idle_timeout_seconds=self.idle_timeout_seconds,
+            lazy_start=self.lazy_start,
         )
