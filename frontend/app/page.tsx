@@ -38,6 +38,8 @@ import {
   analyzeRoutes,
   compareRoutes,
   updateSavedSearch,
+  ApiError,
+  apiBaseUrl,
 } from "@/lib/api";
 import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, SavedSearch, TransportType } from "@/lib/types";
 
@@ -160,6 +162,7 @@ function TransportIllustration() {
 export default function Home() {
   const [formState, setFormState] = useState<FormState>(initialForm);
   const [routes, setRoutes] = useState<RouteOption[]>(demoResponse.routes);
+  const [apiDiagnostics, setApiDiagnostics] = useState<ApiDiagnostics | null>(null);
   const [notice, setNotice] = useState<{ kind: NoticeKind; text: string }>({
     kind: "demo",
     text: "Используются демонстрационные данные. Backend будет опрошен при поиске.",
@@ -224,6 +227,7 @@ export default function Home() {
       setDecisionByRoute({});
       setCompareIds([]);
       setComparison(null);
+      setApiDiagnostics(null);
       setNotice(
         data.routes.length
           ? { kind: "api", text: "Результаты получены из backend API." }
@@ -232,11 +236,12 @@ export default function Home() {
               text: "Нет маршрутов: попробуйте другую дату, транспорт или пересадки.",
             },
       );
-    } catch {
-      setRoutes(demoResponse.routes);
+    } catch (error) {
+      console.error("Route search failed", error);
+      setApiDiagnostics(buildApiDiagnostics(error, "/api/v1/routes/search"));
       setNotice({
         kind: "error",
-        text: "Backend недоступен — показаны демонстрационные данные.",
+        text: routeSearchErrorMessage(error),
       });
     } finally {
       setLoading(false);
@@ -254,7 +259,8 @@ export default function Home() {
       const next = Object.fromEntries(result.summaries.map((item) => [item.route_id, item]));
       setDecisionByRoute(next);
       setSelectedDecision(next[route.id] ?? null);
-    } catch {
+    } catch (error) {
+      console.error("Route analysis failed", error);
       const fallback = localDecision(route, lastPayload.passengers);
       setSelectedDecision(fallback);
     }
@@ -270,7 +276,8 @@ export default function Home() {
     if (picked.length !== 2) return;
     try {
       setComparison(await compareRoutes(picked[0], picked[1], lastPayload.passengers));
-    } catch {
+    } catch (error) {
+      console.error("Route comparison failed", error);
       setComparison(localCompare(picked[0], picked[1], lastPayload.passengers));
     }
   }
@@ -288,7 +295,8 @@ export default function Home() {
         ...current.filter((item) => item.id !== saved.id),
       ]);
       setNotice({ kind: "success", text: "Заявка сохранена." });
-    } catch {
+    } catch (error) {
+      console.error("Save search failed", error);
       setNotice({
         kind: "error",
         text: "Не удалось сохранить заявку: функция требует работающий backend.",
@@ -306,7 +314,8 @@ export default function Home() {
           ? "Заявки загружены."
           : "Заявок ещё нет. Сохраните поиск маршрута как заявку.",
       );
-    } catch {
+    } catch (error) {
+      console.error("Load saved searches failed", error);
       setRequestsNotice(
         "Backend недоступен: сохранённые заявки требуют работающий сервер.",
       );
@@ -326,7 +335,8 @@ export default function Home() {
   async function loadNotifications() {
     try {
       setNotifications(await listNotifications());
-    } catch {
+    } catch (error) {
+      console.error("Load notifications failed", error);
       setNotifications([]);
     }
   }
@@ -361,7 +371,8 @@ export default function Home() {
           ? "Проверка выполнена: доступны маршруты для группы."
           : "Проверка выполнена: доступных маршрутов нет.",
       );
-    } catch {
+    } catch (error) {
+      console.error("Saved search check failed", error);
       setRequestsNotice(
         "Проверка не удалась. Ошибка сохранена в заявке на backend, если сервер доступен.",
       );
@@ -381,7 +392,8 @@ export default function Home() {
       }));
       setRequestsNotice(result.summary);
       void loadNotifications();
-    } catch {
+    } catch (error) {
+      console.error("Monitoring check failed", error);
       setRequestsNotice("Monitoring Engine не смог выполнить проверку заявки.");
     } finally {
       setCheckingId(null);
@@ -404,7 +416,8 @@ export default function Home() {
       });
       setRequestsNotice(`Monitoring Engine проверил заявок: ${results.length}.`);
       void loadNotifications();
-    } catch {
+    } catch (error) {
+      console.error("Run all monitoring failed", error);
       setRequestsNotice("Не удалось запустить Monitoring Engine для всех заявок.");
     } finally {
       setRunningAll(false);
@@ -418,7 +431,8 @@ export default function Home() {
       const history = await monitoringHistory(item.id);
       setHistoryBySearch((current) => ({ ...current, [item.id]: history }));
       setRequestsNotice(history.length ? "История проверок загружена." : "История проверок пока пуста.");
-    } catch {
+    } catch (error) {
+      console.error("Load monitoring history failed", error);
       setRequestsNotice("Не удалось загрузить историю мониторинга.");
     }
   }
@@ -670,6 +684,9 @@ export default function Home() {
               )}{" "}
               {notice.text}
             </div>
+            {apiDiagnostics && isDiagnosticsEnabled() && (
+              <ApiDiagnosticsBlock diagnostics={apiDiagnostics} />
+            )}
             {!loading && routes.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-2">
                 <button type="button" onClick={saveCurrentSearch} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-brand px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-ink">
@@ -876,6 +893,86 @@ export default function Home() {
         </div>
       </footer>
     </main>
+  );
+}
+
+type ApiDiagnostics = {
+  apiBaseUrl: string;
+  requestPath: string;
+  status: string;
+  responsePreview: string;
+};
+
+function isDiagnosticsEnabled() {
+  return process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_DEBUG_API === "true";
+}
+
+function preview(value: string | undefined) {
+  return (value ?? "").slice(0, 2000);
+}
+
+function formatResponseBody(body: string | undefined) {
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (typeof parsed === "object" && parsed && "detail" in parsed) {
+      const detail = (parsed as { detail: unknown }).detail;
+      return typeof detail === "string" ? detail : JSON.stringify(detail);
+    }
+    return body;
+  } catch {
+    return body;
+  }
+}
+
+function routeSearchErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    const detail = formatResponseBody(error.responseBody);
+    if (error.message === "Backend вернул некорректный JSON") {
+      return "Backend вернул некорректный ответ";
+    }
+    if (error.status === 422) {
+      return `Ошибка параметров запроса${detail ? `: ${detail}` : ""}`;
+    }
+    if (error.status && error.status >= 500) {
+      return `Ошибка backend${detail ? `: ${detail}` : ""}`;
+    }
+    if (!error.status) {
+      return "Не удалось подключиться к backend";
+    }
+    return detail || `Ошибка API: HTTP ${error.status}`;
+  }
+  return "Не удалось выполнить поиск маршрута";
+}
+
+function buildApiDiagnostics(error: unknown, requestPath: string): ApiDiagnostics {
+  if (error instanceof ApiError) {
+    return {
+      apiBaseUrl: apiBaseUrl(),
+      requestPath,
+      status: error.status ? `${error.status} ${error.statusText ?? ""}`.trim() : "network error",
+      responsePreview: preview(error.responseBody ?? (error.cause instanceof Error ? error.cause.message : error.message)),
+    };
+  }
+  return {
+    apiBaseUrl: apiBaseUrl(),
+    requestPath,
+    status: "unknown error",
+    responsePreview: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function ApiDiagnosticsBlock({ diagnostics }: { diagnostics: ApiDiagnostics }) {
+  return (
+    <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+      <p className="font-semibold">API diagnostics</p>
+      <dl className="mt-2 grid gap-1">
+        <div><dt className="inline font-semibold">Base URL: </dt><dd className="inline break-all">{diagnostics.apiBaseUrl}</dd></div>
+        <div><dt className="inline font-semibold">Request path: </dt><dd className="inline break-all">{diagnostics.requestPath}</dd></div>
+        <div><dt className="inline font-semibold">HTTP status: </dt><dd className="inline">{diagnostics.status}</dd></div>
+        <div><dt className="font-semibold">Response preview:</dt><dd className="mt-1 whitespace-pre-wrap break-words">{diagnostics.responsePreview || "—"}</dd></div>
+      </dl>
+    </div>
   );
 }
 
