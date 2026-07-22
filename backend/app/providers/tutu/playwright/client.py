@@ -148,18 +148,10 @@ class TutuPlaywrightClient:
     async def _select_date(self, value: date) -> bool:
         assert self.page is not None
         form = await self._railway_form()
-        shortcut = self._date_shortcut(value)
-        if shortcut:
-            loc = await self._locator_first([f"role=button|{shortcut}", f"text=^{shortcut}$"], field="date_shortcut", root=form)
-            if loc is not None:
-                self.diagnostics["date_control_found"] = True; self._record("date_control_found", strategy="shortcut", label=shortcut); await loc.click()
-                return await self._verify_date_displayed(value)
-        await self._record_date_control_candidates(form)
         control = await self._date_control(form)
         if control is None:
             self.diagnostics["stage"] = "date_control_not_found"; await self._save_artifact("date_control_not_found", html=True, screenshot=True); return False
-        self.diagnostics["date_control_found"] = True; self._record("date_control_found", strategy="calendar")
-        await control.click()
+        self.diagnostics["date_control_found"] = True; self._record("date_control_found", strategy="dom_interactive_probe")
         calendar = await self._wait_calendar_open()
         if calendar is None:
             self.diagnostics["stage"] = "calendar_open_failed"; await self._save_artifact("calendar_open_failed", html=True, screenshot=True); return False
@@ -297,14 +289,115 @@ class TutuPlaywrightClient:
         return self.page.locator("body")
 
     async def _date_control(self, form: Any) -> Any | None:
-        selectors = ["role=button|Когда|Сегодня|Завтра|\\d{1,2}[./ ]", "button:has-text('Когда')", "button:has-text('Сегодня')", "button:has-text('Завтра')", "[role='button'][aria-label*='дата' i]", "[role='button'][aria-label*='календар' i]", "[role='button'][aria-label*='когда' i]", "[data-testid*='date' i]", "[data-testid*='calendar' i]", "[data-ti*='date' i]", "[data-ti*='calendar' i]", "[role='button']:has-text('Когда')", "div:has-text('Когда')"]
-        return await self._locator_first(selectors, field="date_control", root=form)
+        candidates = await self._discover_date_control_candidates(form)
+        self.diagnostics["date_control_candidates"] = [self._public_date_candidate(item) for item in candidates]
+        self._record("date_control_candidates", count=len(candidates), candidates=self.diagnostics["date_control_candidates"])
+        if not candidates:
+            await self._save_named_artifact("date_control_candidates", html=True, screenshot=True)
+            return None
+
+        for candidate in candidates:
+            locator = form.locator(self._interactive_elements_selector()).nth(candidate["i"])
+            before_expanded = candidate.get("aria_expanded", "")
+            before_dom = await self._dom_signature()
+            try:
+                await locator.scroll_into_view_if_needed(timeout=1000)
+                await locator.click(timeout=3000)
+            except Exception as exc:
+                candidate["click_error"] = str(exc)[:200]
+                candidate["opened_calendar"] = False
+                continue
+            await self.page.wait_for_timeout(2000)
+            after_expanded = ""
+            try:
+                after_expanded = await locator.get_attribute("aria-expanded", timeout=500) or ""
+            except Exception:
+                after_expanded = ""
+            calendar = await self._calendar_signal()
+            after_dom = await self._dom_signature()
+            candidate["aria_expanded_after"] = after_expanded
+            candidate["dom_changed"] = before_dom != after_dom
+            candidate["opened_calendar"] = bool(calendar) or after_expanded == "true" and before_expanded != "true"
+            self.diagnostics["date_control_candidates"] = [self._public_date_candidate(item) for item in candidates]
+            self._record("date_control_candidate_clicked", candidate=self._public_date_candidate(candidate))
+            if candidate["opened_calendar"]:
+                self.diagnostics["date_control_found"] = True
+                self.diagnostics["calendar_opened"] = True
+                self.diagnostics["date_control_opened_candidate"] = self._public_date_candidate(candidate)
+                return locator
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                pass
+        await self._save_named_artifact("date_control_candidates", html=True, screenshot=True)
+        self._record("date_control_candidates_exhausted", count=len(candidates), candidates=self.diagnostics["date_control_candidates"])
+        return None
 
     async def _record_date_control_candidates(self, form: Any) -> None:
-        try:
-            items = await form.locator("button, [role='button'], [aria-label], [data-testid], [data-ti], input, div").evaluate_all("""(els) => els.slice(0,80).map(el => ({tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', aria_label: el.getAttribute('aria-label') || '', text: (el.innerText || el.value || el.textContent || '').trim().slice(0,80), data_testid: el.getAttribute('data-testid') || el.getAttribute('data-ti') || '', visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)}))""")
-            self._record("date_control_candidates", count=len(items), candidates=items)
-        except Exception as exc: self._record("date_control_candidates", error=str(exc)[:200])
+        candidates = await self._discover_date_control_candidates(form)
+        self.diagnostics["date_control_candidates"] = [self._public_date_candidate(item) for item in candidates]
+        self._record("date_control_candidates", count=len(candidates), candidates=self.diagnostics["date_control_candidates"])
+
+    def _interactive_elements_selector(self) -> str:
+        return "button, input, div[role='button'], span[role='button'], [tabindex], [aria-haspopup], [aria-expanded], [data-testid], [onclick]"
+
+    async def _discover_date_control_candidates(self, form: Any) -> list[dict[str, Any]]:
+        selector = self._interactive_elements_selector()
+        items = await form.locator(selector).evaluate_all("""
+        (els) => els.map((el, i) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            const text = ((el.innerText || el.value || el.textContent || '') + '').trim().replace(/\\s+/g, ' ');
+            const nearby = [el, el.parentElement, el.previousElementSibling, el.nextElementSibling].filter(Boolean)
+                .map(n => ((n.innerText || n.textContent || '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.className || '') + ' ' + (n.getAttribute('data-testid') || ''))).join(' ');
+            return {
+                i,
+                tag: el.tagName.toLowerCase(),
+                text: text.slice(0, 160),
+                aria_label: el.getAttribute('aria-label') || '',
+                placeholder: el.getAttribute('placeholder') || '',
+                role: el.getAttribute('role') || '',
+                class: el.className ? String(el.className).slice(0, 240) : '',
+                data_testid: el.getAttribute('data-testid') || el.getAttribute('data-ti') || '',
+                bounding_box: {x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height)},
+                visible: !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none'),
+                enabled: !(el.disabled || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled')),
+                aria_expanded: el.getAttribute('aria-expanded') || '',
+                aria_haspopup: el.getAttribute('aria-haspopup') || '',
+                onclick: !!el.onclick || el.hasAttribute('onclick'),
+                pointer_cursor: style.cursor === 'pointer',
+                nearby: nearby.slice(0, 500),
+            };
+        })
+        """)
+        date_words = re.compile(r"когда|дата|сегодня|завтра|calendar|date|календар", re.I)
+        candidates = []
+        for item in items:
+            hay = " ".join(str(item.get(k, "")) for k in ("text", "aria_label", "placeholder", "role", "class", "data_testid", "nearby"))
+            if item.get("visible") and item.get("enabled") and date_words.search(hay):
+                item["opened_calendar"] = False
+                candidates.append(item)
+        return candidates
+
+    def _public_date_candidate(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {key: item.get(key) for key in ("tag", "text", "role", "aria_label", "placeholder", "class", "data_testid", "bounding_box", "visible", "enabled", "opened_calendar", "aria_expanded", "aria_expanded_after", "dom_changed", "click_error")}
+
+    async def _calendar_signal(self) -> Any | None:
+        assert self.page is not None
+        for selector in self.selectors["calendar_containers"]:
+            try:
+                loc = self._build_locator(selector)
+                if await loc.count() and await loc.first.is_visible(timeout=300):
+                    return loc.first
+            except Exception:
+                pass
+        if await self._has_visible_text(r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр"):
+            return self.page.locator("body")
+        return None
+
+    async def _dom_signature(self) -> str:
+        assert self.page is not None
+        return await self.page.locator("body").evaluate("el => String(el.innerHTML.length) + ':' + (el.innerText || '').length")
 
     async def _wait_suggestions(self, value: str) -> bool:
         assert self.page is not None
@@ -467,6 +560,16 @@ class TutuPlaywrightClient:
             path = artifact_dir / f"{timestamp}_{safe_name}.html"; path.write_text(await self.page.content(), encoding="utf-8"); paths["html"] = str(path)
         if screenshot:
             path = artifact_dir / f"{timestamp}_{safe_name}.png"; await self.page.screenshot(path=str(path), full_page=True); paths["screenshot"] = str(path)
+        self._record("artifact_saved", name=name, **paths)
+
+    async def _save_named_artifact(self, name: str, html: bool = False, screenshot: bool = False) -> None:
+        if self.page is None: return
+        artifact_dir = Path("/tmp/tutu-playwright-diagnostics"); artifact_dir.mkdir(parents=True, exist_ok=True)
+        paths = {}
+        if html:
+            path = artifact_dir / f"{name}.html"; path.write_text(await self.page.content(), encoding="utf-8"); paths["html"] = str(path)
+        if screenshot:
+            path = artifact_dir / f"{name}.png"; await self.page.screenshot(path=str(path), full_page=True); paths["screenshot"] = str(path)
         self._record("artifact_saved", name=name, **paths)
     async def _page_diagnostics(self) -> dict[str, Any]:
         if self.page is None: return {}
