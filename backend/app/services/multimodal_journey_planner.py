@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from app.engine import RouteEngine
 from app.models.routes import RouteSearchRequest, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.segment_enrichment import SegmentEnrichmentService
+
+logger = logging.getLogger(__name__)
 
 MAX_CANDIDATE_JOURNEYS = 80
 MAX_SEGMENTS_PER_QUERY = 500
@@ -56,11 +59,26 @@ class MultimodalJourneyPlanner:
             destination_provider_code=request.destination_provider_code,
             destination_location_type=request.destination_location_type,
         )[:MAX_CANDIDATE_JOURNEYS]
+        logger.info(
+            "route_search.candidates segments_loaded=%s candidate_journeys=%s truncated_to=%s",
+            self.route_engine.last_segments_count,
+            len(options),
+            MAX_CANDIDATE_JOURNEYS,
+        )
         checked = asyncio.run(self._attach_journey_availability(options, request)) if options else []
         confirmed = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.CONFIRMED]
         partial = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED]
         rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED}]
         routes = confirmed if request.strict_availability else confirmed + partial
+        logger.info(
+            "route_search.filters availability_checked=%s confirmed=%s partially_confirmed=%s rejected_by_confirmation=%s strict_availability=%s final_routes=%s",
+            len(checked),
+            len(confirmed),
+            len(partial),
+            len(rejected),
+            request.strict_availability,
+            len(routes),
+        )
         provider_diagnostics = getattr(self.provider, "last_diagnostics", {}) or {}
         warnings = list(provider_diagnostics.get("warnings", []))
         if self.route_engine.last_segments_count == 0 and provider_diagnostics.get("provider_errors"):
@@ -79,6 +97,7 @@ class MultimodalJourneyPlanner:
             providers_failed=provider_diagnostics.get("providers_failed", []),
             provider_errors=provider_diagnostics.get("provider_errors", {}),
             segments_by_provider=provider_diagnostics.get("segments_by_provider", {}),
+            provider_diagnostics=provider_diagnostics.get("provider_diagnostics", {}),
             warnings=warnings,
         )
         self.last_summary = summary

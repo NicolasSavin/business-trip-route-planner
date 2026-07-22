@@ -157,3 +157,38 @@ def test_valid_search_calls_provider_after_unknown_city_error():
     assert segments
     assert unified.last_diagnostics["providers_called"] == ["yandex_rasp"]
     assert registry.get("yandex_rasp").health == ProviderHealth.HEALTHY
+
+
+def test_unified_forwards_route_search_location_kwargs_to_schedule_provider():
+    class RecordingProvider(Provider):
+        def __init__(self):
+            super().__init__([seg("forwarded")])
+            self.calls = []
+
+        def get_segments(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return self.segments
+
+    provider = RecordingProvider()
+    registry = ProviderRegistry()
+    registry.register(provider, id="yandex_rasp", name="Yandex", priority=ProviderPriority.HIGH, capabilities=caps())
+    unified = UnifiedTransportProvider(registry)
+
+    segments = unified.get_segments(
+        DAY,
+        [TransportType.TRAIN],
+        origin="Москва",
+        destination="Бийск",
+        origin_provider_code="c213",
+        destination_provider_code="c975",
+        origin_location_type="settlement",
+        destination_location_type="settlement",
+    )
+
+    assert [item.id for item in segments] == ["forwarded"]
+    assert provider.calls[0][1]["origin"] == "Москва"
+    assert provider.calls[0][1]["destination"] == "Бийск"
+    assert provider.calls[0][1]["origin_provider_code"] == "c213"
+    assert provider.calls[0][1]["destination_provider_code"] == "c975"
+    assert provider.calls[0][1]["origin_location_type"] == "settlement"
+    assert provider.calls[0][1]["destination_location_type"] == "settlement"

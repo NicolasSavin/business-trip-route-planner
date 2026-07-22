@@ -31,6 +31,7 @@ class YandexRaspClient:
         self._client = http_client or httpx.Client(base_url=config.base_url, timeout=config.timeout_seconds, follow_redirects=True)
         self.last_status_code: int | None = None
         self.last_response_diagnostics: dict | None = None
+        self.last_request_params: dict | None = None
 
     def search(self, *, origin_code: str, destination_code: str, departure_date: date, allowed_transport: list[TransportType], transfers: bool = True) -> dict:
         transport_types = [YANDEX_TRANSPORT_TYPES[item] for item in allowed_transport if item in YANDEX_TRANSPORT_TYPES]
@@ -56,6 +57,7 @@ class YandexRaspClient:
         if not self.config.api_key:
             raise YandexRaspAuthError("YANDEX_RASP_API_KEY is not configured")
         request_params = {"apikey": self.config.api_key, **params}
+        self.last_request_params = {**params, "apikey": "***redacted***"}
         request = self._client.build_request("GET", path, params=request_params)
         try:
             response = self._client.send(request)
