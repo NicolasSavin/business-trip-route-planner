@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -11,11 +12,31 @@ from app.providers.tutu.playwright.models import SeatAvailability, TutuPlaywrigh
 class TutuPlaywrightClient:
     home_url = "https://www.tutu.ru/"
     selectors = {
-        "cookie_buttons": ["button:has-text('Принять')", "button:has-text('Согласен')", "button:has-text('Понятно')", "[data-ti='accept-cookies']"],
-        "origin_input": ["input[placeholder*='Откуда']", "input[aria-label*='Откуда']", "input[name='st1']"],
-        "destination_input": ["input[placeholder*='Куда']", "input[aria-label*='Куда']", "input[name='st2']"],
-        "date_input": ["input[placeholder*='Дата']", "input[aria-label*='Дата']", "input[name='date']"],
-        "search_button": ["button:has-text('Найти')", "button[type='submit']"],
+        "cookie_buttons": ["role=button|Принять", "role=button|Согласен", "role=button|Понятно", "[data-ti='accept-cookies']"],
+        "railway_tab": ["role=tab|Ж/д", "role=button|Ж/д", "role=link|Ж/д билеты", "text=Ж/д"],
+        "origin_input": [
+            "label=Откуда",
+            "placeholder=Откуда",
+            "role=combobox|Откуда",
+            "role=textbox|Откуда",
+            "input[autocomplete*='from' i]",
+            "input[name='st1']",
+            "input[name='stl']",
+            "input[placeholder*='Откуда']",
+            "input[aria-label*='Откуда']",
+        ],
+        "destination_input": [
+            "label=Куда",
+            "placeholder=Куда",
+            "role=combobox|Куда",
+            "role=textbox|Куда",
+            "input[autocomplete*='to' i]",
+            "input[name='st2']",
+            "input[placeholder*='Куда']",
+            "input[aria-label*='Куда']",
+        ],
+        "date_input": ["label=Дата", "placeholder=Дата", "role=textbox|Дата", "input[name='date']", "input[placeholder*='Дата']", "input[aria-label*='Дата']"],
+        "search_button": ["role=button|Найти", "button:has-text('Найти')", "button[type='submit']"],
         "result_cards": ["[data-ti*='train']:visible", "article:visible", ".train:visible", "[class*='card']:visible"],
     }
 
@@ -32,6 +53,7 @@ class TutuPlaywrightClient:
         await self.session.navigate(self.home_url)
         await self.page.wait_for_load_state("domcontentloaded")
         await self._close_cookie_popup()
+        await self._ensure_railway_tab()
         self._record("opened_home", url=self.page.url, title=await self.page.title())
 
     async def search(self, origin: str, destination: str, date: date, passengers: int = 1) -> None:
@@ -39,10 +61,14 @@ class TutuPlaywrightClient:
             await self.open_home()
         assert self.page is not None
         self._last_request = TutuPlaywrightSearchRequest(origin=origin, destination=destination, date=date, passengers=passengers)
-        await self._fill_station("origin_input", origin)
-        await self._fill_station("destination_input", destination)
-        await self._fill_date(date)
-        await self._click_first(self.selectors["search_button"])
+        if not await self._fill_station("origin_input", origin):
+            return
+        if not await self._fill_station("destination_input", destination):
+            return
+        if not await self._fill_date(date):
+            return
+        if not await self._click_first(self.selectors["search_button"]):
+            return
         await self.wait_results()
 
     async def wait_results(self) -> None:
@@ -110,8 +136,11 @@ class TutuPlaywrightClient:
         self.session = None
         self.page = None
 
-    async def _fill_station(self, key: str, value: str) -> None:
-        loc = await self._locator_first(self.selectors[key])
+    async def _fill_station(self, key: str, value: str) -> bool:
+        loc = await self._locator_first(self.selectors[key], field=key)
+        if loc is None:
+            return False
+        await self._save_artifact(f"before_typing_{key}", screenshot=True)
         await loc.click()
         await loc.press("Control+A")
         await loc.type(value, delay=40)
@@ -119,43 +148,113 @@ class TutuPlaywrightClient:
         await self.page.keyboard.press("ArrowDown")
         await self.page.keyboard.press("Enter")
         self._record("filled_station", field=key, value=value)
+        return True
 
-    async def _fill_date(self, value: date) -> None:
-        loc = await self._locator_first(self.selectors["date_input"])
+    async def _fill_date(self, value: date) -> bool:
+        loc = await self._locator_first(self.selectors["date_input"], field="date_input")
+        if loc is None:
+            return False
+        await self._save_artifact("before_typing_date_input", screenshot=True)
         await loc.click()
         await loc.press("Control+A")
         await loc.type(value.strftime("%d.%m.%Y"), delay=35)
         await self.page.keyboard.press("Enter")
         self._record("filled_date", value=value.isoformat())
+        return True
 
     async def _close_cookie_popup(self) -> None:
         if self.page is None:
             return
         for selector in self.selectors["cookie_buttons"]:
             try:
-                button = self.page.locator(selector).first
-                if await button.is_visible(timeout=1500):
-                    await button.click()
-                    self._record("cookie_popup_closed", selector=selector)
-                    return
-            except Exception:
+                buttons = self._build_locator(selector)
+                count = await buttons.count()
+                self._record("selector_checked", field="cookie_button", selector=selector, count=count)
+                for index in range(min(count, 5)):
+                    button = buttons.nth(index)
+                    if await button.is_visible(timeout=1500):
+                        await button.click()
+                        self._record("cookie_popup_closed", selector=selector, count=count, index=index)
+                        return
+            except Exception as exc:
+                self._record("selector_error", field="cookie_button", selector=selector, error=str(exc)[:200])
                 continue
 
-    async def _locator_first(self, selectors: list[str]) -> Any:
+    async def _locator_first(self, selectors: list[str], field: str = "element") -> Any | None:
         assert self.page is not None
+        misses: list[dict[str, Any]] = []
         for selector in selectors:
-            loc = self.page.locator(selector).first
+            loc = self._build_locator(selector)
             try:
-                if await loc.is_visible(timeout=3000):
-                    return loc
-            except Exception:
-                continue
-        raise RuntimeError(f"Visible element not found for selectors: {selectors}")
+                count = await loc.count()
+                self._record("selector_checked", field=field, selector=selector, count=count)
+                for index in range(min(count, 10)):
+                    item = loc.nth(index)
+                    if await item.is_visible(timeout=1000):
+                        self._record("selector_chosen", field=field, selector=selector, count=count, index=index)
+                        return item
+                misses.append({"selector": selector, "count": count, "reason": "no visible matches"})
+            except Exception as exc:
+                misses.append({"selector": selector, "error": str(exc)[:200]})
+                self._record("selector_error", field=field, selector=selector, error=str(exc)[:200])
+        self._record("selector_not_found", field=field, selectors=selectors, misses=misses)
+        await self._save_artifact(f"selector_not_found_{field}", html=True, screenshot=True)
+        return None
 
-    async def _click_first(self, selectors: list[str]) -> None:
-        loc = await self._locator_first(selectors)
+    async def _click_first(self, selectors: list[str]) -> bool:
+        loc = await self._locator_first(selectors, field="search_button")
+        if loc is None:
+            return False
         await loc.click()
         self._record("submitted_search")
+        return True
+
+    async def _ensure_railway_tab(self) -> None:
+        loc = await self._locator_first(self.selectors["railway_tab"], field="railway_tab")
+        if loc is None:
+            self._record("railway_tab_not_found_continuing")
+            return
+        try:
+            await loc.click()
+            try:
+                await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            await self.page.wait_for_timeout(1000)
+            self._record("railway_tab_opened", url=self.page.url)
+        except Exception as exc:
+            self._record("railway_tab_click_failed", error=str(exc)[:200])
+
+    def _build_locator(self, selector: str) -> Any:
+        assert self.page is not None
+        if selector.startswith("role="):
+            role, name = selector.removeprefix("role=").split("|", 1)
+            return self.page.get_by_role(role, name=re.compile(name, re.I))
+        if selector.startswith("label="):
+            return self.page.get_by_label(re.compile(selector.removeprefix("label="), re.I))
+        if selector.startswith("placeholder="):
+            return self.page.get_by_placeholder(re.compile(selector.removeprefix("placeholder="), re.I))
+        if selector.startswith("text="):
+            return self.page.get_by_text(re.compile(selector.removeprefix("text="), re.I))
+        return self.page.locator(selector)
+
+    async def _save_artifact(self, name: str, html: bool = False, screenshot: bool = False) -> None:
+        if self.page is None:
+            return
+        artifact_dir = Path("/tmp/tutu-playwright-diagnostics")
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", name)
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+        paths: dict[str, str] = {}
+        if html:
+            path = artifact_dir / f"{timestamp}_{safe_name}.html"
+            path.write_text(await self.page.content(), encoding="utf-8")
+            paths["html"] = str(path)
+        if screenshot:
+            path = artifact_dir / f"{timestamp}_{safe_name}.png"
+            await self.page.screenshot(path=str(path), full_page=True)
+            paths["screenshot"] = str(path)
+        self._record("artifact_saved", name=name, **paths)
 
     def _parse_card(self, item: dict[str, Any], request: TutuPlaywrightSearchRequest | None) -> TutuPlaywrightResult | None:
         text = item.get("text", "")
