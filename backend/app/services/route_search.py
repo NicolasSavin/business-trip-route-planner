@@ -1,9 +1,14 @@
+import logging
+
 from app.domain import RouteOption as DomainRouteOption
 from app.engine import RouteEngine
 from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult
 from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.multimodal_journey_planner import MultimodalJourneyPlanner
+
+
+logger = logging.getLogger(__name__)
 
 
 class RouteSearchService:
@@ -23,6 +28,13 @@ class RouteSearchService:
         if not include_unavailable and not request.strict_availability:
             api_rejected = []
         diagnostic_rejected = api_rejected + (api_partial if request.strict_availability else [])
+        logger.info(
+            "route_search.serialization api_routes=%s api_partial=%s api_rejected=%s final_routes=%s",
+            len(api_routes),
+            len(api_partial),
+            len(api_rejected),
+            len(api_routes),
+        )
         return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial if not request.strict_availability else [], rejected_routes=diagnostic_rejected, search_summary=summary)
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:

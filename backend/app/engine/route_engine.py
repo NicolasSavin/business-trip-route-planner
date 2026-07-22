@@ -1,4 +1,5 @@
 from datetime import date
+import logging
 from app.algorithms.search import GraphRouteSearch
 from app.availability import AvailabilityEngine, AvailabilityPolicy
 from app.domain import TransportProvider, TransportType
@@ -6,6 +7,9 @@ from app.graph.builder import GraphBuilder
 from app.intelligence import NearbyCityResolver, RouteComparator, StationResolver, TransferEngine
 from app.scoring.service import ScoringService
 from app.validators.validation import ValidationService
+
+
+logger = logging.getLogger(__name__)
 
 
 class RouteEngine:
@@ -32,6 +36,7 @@ class RouteEngine:
         self.search_algorithm = GraphRouteSearch(self.transfer_engine)
         self.availability_engine = availability_engine or AvailabilityEngine()
         self.last_segments_count = 0
+        self.last_diagnostics: dict = {}
 
     def search(
         self,
@@ -61,11 +66,13 @@ class RouteEngine:
         except TypeError:
             segments = self.provider.get_segments(departure_date, allowed_transport)
         self.last_segments_count = len(segments)
+        logger.info("route_search.segments_loaded count=%s origin=%r destination=%r", len(segments), origin, destination)
         self.validator.validate_segments(segments)
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)
         destination_cities = self.station_resolver.resolve_city_names(destination, segments)
         routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes, maximum_transfer_minutes, maximum_total_duration_minutes, allow_overnight_transfer, self._station_code(origin_location_id, origin_provider_code, origin_location_type), self._station_code(destination_location_id, destination_provider_code, destination_location_type))
+        logger.info("route_search.transfer_filter direct_and_transfer_candidates=%s max_transfers=%s min_transfer=%s max_transfer=%s", len(routes), max_transfers, minimum_transfer_minutes, maximum_transfer_minutes)
         if not routes:
             alternatives = self.nearby_city_resolver.alternatives_for(destination_cities[0])
             for alternative in alternatives:
@@ -73,6 +80,7 @@ class RouteEngine:
                 if routes:
                     break
         ranked = self.route_comparator.rank(routes)
+        logger.info("route_search.dedup_rank routes_before_rank=%s routes_after_rank=%s", len(routes), len(ranked))
         policy = AvailabilityPolicy.for_group(
             passengers,
             preferred_classes=tuple(preferred_classes),
@@ -80,9 +88,11 @@ class RouteEngine:
             allow_split_group=allow_split_group,
         )
         checked = [self.availability_engine.attach(option, policy) for option in ranked]
+        available = [option for option in checked if option.availability and option.availability.is_available]
+        logger.info("route_search.availability_filter checked=%s removed=%s include_unavailable=%s", len(checked), len(checked) - len(available), include_unavailable)
         if include_unavailable:
             return checked
-        return [option for option in checked if option.availability and option.availability.is_available]
+        return available
 
     def _station_code(self, location_id: str | None, provider_code: str | None, location_type: str | None) -> str | None:
         if location_type in {"station", "railway_station", "bus_station"}:

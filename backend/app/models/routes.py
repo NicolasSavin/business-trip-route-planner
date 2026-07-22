@@ -146,6 +146,7 @@ class SearchSummary(BaseModel):
     providers_failed: list[str] = Field(default_factory=list)
     provider_errors: dict[str, str | dict] = Field(default_factory=dict)
     segments_by_provider: dict[str, int] = Field(default_factory=dict)
+    provider_diagnostics: dict[str, object] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 

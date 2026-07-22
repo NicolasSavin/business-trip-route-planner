@@ -50,6 +50,7 @@ class YandexRaspProvider(TransportProvider):
                     diagnostics["attempts"].append(attempt_diag)
                     try:
                         payload = self.client.search(origin_code=origin_code, destination_code=destination_code, departure_date=departure_date, allowed_transport=allowed_transport, transfers=True)
+                        attempt_diag["request_params"] = getattr(self.client, "last_request_params", None)
                         self._validate_payload(payload, diagnostics)
                         raw_segments = payload["segments"]
                         attempt_diag.update({
@@ -59,7 +60,17 @@ class YandexRaspProvider(TransportProvider):
                             "pagination": {key: payload.get(key) for key in ("pagination", "page", "total", "limit", "offset") if key in payload},
                             "response_diagnostics": getattr(self.client, "last_response_diagnostics", None),
                         })
-                        for segment in self.mapper.to_segments(payload):
+                        mapped_segments = self.mapper.to_segments(payload)
+                        attempt_diag["mapped_segment_count"] = len(mapped_segments)
+                        logger.info(
+                            "route_search.yandex_response origin_code=%s destination_code=%s request=%s yandex_segments=%s mapped_segments=%s",
+                            origin_code,
+                            destination_code,
+                            getattr(self.client, "last_request_params", None),
+                            len(raw_segments),
+                            len(mapped_segments),
+                        )
+                        for segment in mapped_segments:
                             if segment.id in seen_ids:
                                 continue
                             seen_ids.add(segment.id)
