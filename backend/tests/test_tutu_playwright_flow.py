@@ -130,3 +130,24 @@ def test_timeout_diagnostics_without_runtime_error(client):
 
 def test_calendar_date_selection_uses_exact_date_labels(client):
     assert "15 августа" in client._date_labels(date(2026, 8, 15))
+
+
+def test_station_exact_match_accepts_requested_city(client):
+    normalized = client._normalize_station_text("Санкт-Петербург")
+    assert client._station_text_exact_match("Санкт-Петербург", normalized)
+    assert client._station_text_exact_match("Санкт-Петербург\nРоссия", normalized)
+    assert client._station_text_exact_match("г. Санкт-Петербург, Россия", normalized)
+
+
+def test_station_exact_match_rejects_partial_city(client):
+    normalized = client._normalize_station_text("Москва")
+    assert not client._station_text_exact_match("Московская область", normalized)
+
+
+def test_visible_autocomplete_selectors_include_modern_aria_and_testids(client):
+    # Source-level guard: station autocomplete discovery must cover current Tutu-style ARIA/test-id popups.
+    import inspect
+    source = inspect.getsource(client._suggestion_roots)
+    assert "[role='listbox']:visible" in source
+    assert "[role='combobox'][aria-expanded='true']:visible" in source
+    assert "data-testid" in source
