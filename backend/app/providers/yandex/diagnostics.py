@@ -147,6 +147,7 @@ def write_yandex_diagnostics(*, request: httpx.Request, response: httpx.Response
 
     base = {
         "request_url": request_payload["request_url"],
+        "final_response_url": str(response.url).split("?", 1)[0] if response is not None else None,
         "request_params": request_params,
         "status_code": response.status_code if response is not None else None,
         "content_type": content_type,
@@ -167,7 +168,7 @@ def write_yandex_diagnostics(*, request: httpx.Request, response: httpx.Response
     if verbose:
         base["traceback"] = exception_text
     else:
-        base = {k: base[k] for k in ("status_code", "content_type", "content_encoding", "response_keys", "raw_body_size_bytes", "artifact_paths")}
+        base = {k: base[k] for k in ("status_code", "content_type", "content_encoding", "final_response_url", "response_keys", "raw_body_size_bytes", "artifact_paths")}
 
     details = _trim_to_max_bytes(base, max_details_bytes)
     response_json_path.write_text(json.dumps(details, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

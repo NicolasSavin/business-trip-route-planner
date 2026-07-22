@@ -222,3 +222,89 @@ def test_yandex_pair_failure_does_not_abort_all_pairs_and_deduplicates():
 def test_yandex_resolver_diagnostic_empty_matches():
     payload = YandexLocationResolver().diagnostic("Неизвестныйгород")
     assert payload["matches"] == []
+
+
+def test_yandex_default_base_url_uses_new_domain(monkeypatch):
+    monkeypatch.delenv("YANDEX_RASP_BASE_URL", raising=False)
+
+    config = YandexRaspConfiguration.from_env()
+
+    assert config.base_url == "https://api.rasp.yandex-net.ru/v3.0"
+
+
+def test_yandex_base_url_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("YANDEX_RASP_BASE_URL", "https://example.test/v3.0")
+
+    config = YandexRaspConfiguration.from_env()
+
+    assert config.base_url == "https://example.test/v3.0"
+
+
+def test_yandex_client_json_response_is_parsed_and_search_params_are_documented():
+    seen = {}
+
+    def handler(request):
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"pagination": {}, "segments": [], "search": {}}, headers={"content-type": "application/json"})
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0"))
+
+    payload = client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN], transfers=True)
+
+    assert sorted(payload) == ["pagination", "search", "segments"]
+    assert seen["params"]["system"] == "yandex"
+    assert seen["params"]["limit"] == "100"
+    assert seen["params"]["offset"] == "0"
+    assert "page" not in seen["params"]
+
+
+def test_yandex_client_html_response_returns_unexpected_content_type_without_full_html():
+    html = "<html>" + ("secret-html" * 200) + "</html>"
+
+    def handler(request):
+        return httpx.Response(200, text=html, headers={"content-type": "text/html; charset=utf-8"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0"))
+
+    try:
+        client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN])
+    except Exception as exc:
+        error = exc.to_error()
+    else:
+        raise AssertionError("expected unexpected content type")
+
+    assert error["code"] == "unexpected_content_type"
+    assert error["message"] == "Яндекс Расписания вернули ответ не в формате JSON"
+    assert error["details"]["content_type"].startswith("text/html")
+    assert len(error["details"]["body_preview"]) == 1000
+    assert html not in str(error)
+    assert "secret" not in error["details"]["request_url"]
+
+
+def test_yandex_client_redirect_is_followed_and_final_url_saved():
+    def handler(request):
+        if request.url.host == "api.rasp.yandex-net.ru":
+            return httpx.Response(302, headers={"location": "https://redirected.example/v3.0/search/"}, request=request)
+        return httpx.Response(200, json={"pagination": {}, "segments": [], "search": {}}, headers={"content-type": "application/json"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0", follow_redirects=True))
+
+    client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN])
+
+    assert client.last_response_diagnostics["final_response_url"] == "https://redirected.example/v3.0/search/"
+
+
+def test_yandex_client_api_key_is_not_in_unexpected_content_type_diagnostics():
+    def handler(request):
+        return httpx.Response(200, text="<html>bad</html>", headers={"content-type": "text/html"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("top-secret-key", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0"))
+
+    try:
+        client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN])
+    except Exception as exc:
+        error = exc.to_error()
+    else:
+        raise AssertionError("expected unexpected content type")
+
+    assert "top-secret-key" not in __import__("json").dumps(error, ensure_ascii=False)
