@@ -35,12 +35,16 @@ class DecisionEngine:
     def _analyze_one(self, route, fastest, max_seats, policy):
         adv=[]; dis=[]; warn=[]; rec=[]; score=50.0
         min_seats=self._min_seats(route); wait=self._wait(route)
-        if route.is_available_for_group and min_seats >= policy.group_size:
+        availability_status = getattr(getattr(route, "availability", None), "status", None) or ("confirmed" if route.is_available_for_group else "unavailable")
+        if route.is_available_for_group and min_seats >= policy.group_size and str(availability_status) in {"confirmed", "AvailabilityStatus.CONFIRMED"}:
             score += policy.availability_bonus; adv.append(self._r("available", "Подходит для группы из %d человек." % policy.group_size, "advantage", policy.availability_bonus))
         else:
-            score -= policy.unavailable_penalty; warn.append(self._r("unavailable", "Недостаточно мест для всей группы.", "warning", -policy.unavailable_penalty))
+            penalty = policy.unavailable_penalty if "unavailable" in str(availability_status) else policy.unavailable_penalty * 0.75
+            score -= penalty; warn.append(self._r("unavailable", "Недостаточно мест или доступность одного из участков не подтверждена.", "warning", -penalty))
         if route.total_duration_minutes == fastest:
             score += policy.fastest_bonus; adv.append(self._r("fastest", "Самый быстрый маршрут.", "advantage", policy.fastest_bonus))
+        if "partially_confirmed" in str(availability_status) or "unknown" in str(availability_status):
+            score -= 25; warn.append(self._r("unknown_availability", "Неизвестная доступность получила сильный штраф.", "warning", -25))
         if route.transfers_count == 0:
             score += policy.direct_bonus; adv.append(self._r("direct", "Маршрут без пересадок.", "advantage", policy.direct_bonus))
         else:

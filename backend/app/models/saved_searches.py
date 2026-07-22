@@ -36,8 +36,14 @@ class SavedSearch(BaseModel):
     departure_date: RouteSearchRequest.model_fields["departure_date"].annotation
     passengers: int = Field(ge=1, le=100)
     allowed_transport: RouteSearchRequest.model_fields["allowed_transport"].annotation = Field(min_length=1)
-    max_transfers: Literal[0, 1, 2] = 1
+    max_transfers: Literal[0, 1, 2, 3] = 1
     minimum_transfer_minutes: int = Field(default=30, ge=0)
+    maximum_transfer_minutes: int = Field(default=360, ge=0)
+    maximum_total_duration_minutes: int | None = Field(default=None, ge=1)
+    allow_overnight_transfer: bool = True
+    strict_availability: bool = True
+    seat_policy_scope: RouteSearchRequest.model_fields["seat_policy_scope"].annotation = "every_rail_segment"
+    seat_preferences: RouteSearchRequest.model_fields["seat_preferences"].annotation = None
     preferred_classes: RouteSearchRequest.model_fields["preferred_classes"].annotation = Field(default_factory=list)
     require_group_together: bool = True
     allow_split_group: bool = False
@@ -65,6 +71,12 @@ class SavedSearch(BaseModel):
             allowed_transport=self.allowed_transport,
             max_transfers=self.max_transfers,
             minimum_transfer_minutes=self.minimum_transfer_minutes,
+            maximum_transfer_minutes=self.maximum_transfer_minutes,
+            maximum_total_duration_minutes=self.maximum_total_duration_minutes,
+            allow_overnight_transfer=self.allow_overnight_transfer,
+            strict_availability=self.strict_availability,
+            seat_policy_scope=self.seat_policy_scope,
+            seat_preferences=self.seat_preferences,
             preferred_classes=self.preferred_classes,
             require_group_together=self.require_group_together,
             allow_split_group=self.allow_split_group,
@@ -90,8 +102,14 @@ class SavedSearchUpdate(BaseModel):
     departure_date: RouteSearchRequest.model_fields["departure_date"].annotation | None = None
     passengers: int | None = Field(default=None, ge=1, le=100)
     allowed_transport: RouteSearchRequest.model_fields["allowed_transport"].annotation | None = None
-    max_transfers: Literal[0, 1, 2] | None = None
+    max_transfers: Literal[0, 1, 2, 3] | None = None
     minimum_transfer_minutes: int | None = Field(default=None, ge=0)
+    maximum_transfer_minutes: int | None = Field(default=None, ge=0)
+    maximum_total_duration_minutes: int | None = Field(default=None, ge=1)
+    allow_overnight_transfer: bool | None = None
+    strict_availability: bool | None = None
+    seat_policy_scope: RouteSearchRequest.model_fields["seat_policy_scope"].annotation | None = None
+    seat_preferences: RouteSearchRequest.model_fields["seat_preferences"].annotation = None
     preferred_classes: RouteSearchRequest.model_fields["preferred_classes"].annotation | None = None
     require_group_together: bool | None = None
     allow_split_group: bool | None = None

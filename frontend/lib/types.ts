@@ -19,6 +19,11 @@ export type RouteSegment = {
   destination_station?: string | null;
   carrier?: string | null;
   source?: string | null;
+  availability_source?: string | null;
+  availability_status?: string | null;
+  selected_places?: string[];
+  selected_carriages?: string[];
+  selected_compartments?: string[];
   availability_message?: string | null;
 };
 export type RouteOption = {
@@ -28,6 +33,9 @@ export type RouteOption = {
   segments: RouteSegment[];
   transfer_city: string | null;
   transfer_duration_minutes: number | null;
+  transfers?: Array<{ location: string; arrival_station: string; departure_station: string; duration_minutes: number; station_change_required: boolean; overnight: boolean; warnings: string[] }>;
+  total_wait_minutes?: number;
+  total_price?: number | null;
   total_duration_minutes: number;
   transfers_count: number;
   is_available_for_group: boolean;
@@ -52,7 +60,7 @@ export type DecisionSummary = {
 export type DecisionAnalyzeResponse = { summaries: DecisionSummary[]; best_route_id: string | null };
 export type DecisionCriterion = { name: string; left: string; right: string; winner: string | null; difference: string };
 export type DecisionCompareResponse = { winner_route_id: string | null; criteria: DecisionCriterion[]; differences: string[]; recommendations: DecisionReason[]; left_summary: DecisionSummary; right_summary: DecisionSummary };
-export type RouteSearchResponse = { routes: RouteOption[] };
+export type RouteSearchResponse = { routes: RouteOption[]; partially_confirmed_routes?: RouteOption[]; rejected_routes?: RouteOption[]; search_summary?: { segments_loaded: number; candidate_journeys: number; availability_checks: number; confirmed_routes: number; partially_confirmed_routes: number; rejected_routes: number } };
 export type LocationType = "city" | "station" | "bus_station" | "railway_station" | "settlement";
 export type LocationSuggestion = { id: string; name: string; display_name: string; type: LocationType; provider_code: string | null; region: string | null; country: string | null };
 export type LocationSuggestResponse = { items: LocationSuggestion[] };
@@ -70,6 +78,13 @@ export type RouteSearchPayload = {
   allowed_transport: TransportType[];
   max_transfers: number;
   minimum_transfer_minutes: number;
+  maximum_transfer_minutes?: number;
+  maximum_total_duration_minutes?: number | null;
+  allow_overnight_transfer?: boolean;
+  strict_availability?: boolean;
+  allowed_transport_types?: TransportType[];
+  seat_policy_scope?: "every_rail_segment" | "first_rail_segment_only" | "any_rail_segment";
+  seat_preferences?: { preferred_classes?: TransportClass[]; berth_preference?: "any" | "lower_only" | "upper_only"; require_same_compartment?: boolean; require_same_carriage?: boolean; allow_split_group?: boolean; maximum_compartments?: number | null; strict_preferences?: boolean };
   preferred_classes?: TransportClass[];
   require_group_together?: boolean;
   allow_split_group?: boolean;

@@ -9,4 +9,4 @@ service = RouteSearchService(unified_provider)
 
 @router.post("/search", response_model=RouteSearchResponse)
 def search_routes(request: RouteSearchRequest) -> RouteSearchResponse:
-    return RouteSearchResponse(routes=service.search(request))
+    return service.search_response(request)
