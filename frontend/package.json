@@ -3,7 +3,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:api": "rm -rf .test-dist && tsc -p tsconfig.api-test.json && node .test-dist/api.test.js"
   },
   "dependencies": {
     "@types/node": "20.14.10",

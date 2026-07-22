@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2022",
+    "outDir": ".test-dist",
+    "noEmit": false,
+    "types": [
+      "node"
+    ],
+    "moduleResolution": "node"
+  },
+  "include": [
+    "lib/api.ts",
+    "lib/api.test.ts",
+    "lib/types.ts"
+  ]
+}

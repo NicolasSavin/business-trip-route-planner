@@ -14,24 +14,78 @@ import type {
   DecisionCompareResponse,
 } from "@/lib/types";
 
+export class ApiError extends Error {
+  status?: number;
+  statusText?: string;
+  url: string;
+  responseBody?: string;
+  cause?: unknown;
+
+  constructor(
+    message: string,
+    options: {
+      status?: number;
+      statusText?: string;
+      url: string;
+      responseBody?: string;
+      cause?: unknown;
+    },
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.statusText = options.statusText;
+    this.url = options.url;
+    this.responseBody = options.responseBody;
+    this.cause = options.cause;
+  }
+}
+
 export function apiBaseUrl() {
   const hostname = process.env.NEXT_PUBLIC_API_HOSTNAME;
   return hostname ? `https://${hostname}` : "http://localhost:8000";
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  if (!response.ok)
-    throw new Error(
-      response.status === 404
-        ? "Заявка на командировку не найдена"
-        : "Backend недоступен",
+  const url = `${apiBaseUrl()}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ApiError(message || "Network request failed", { url, cause: error });
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ApiError(
+      response.status === 404 ? "Заявка на командировку не найдена" : response.statusText,
+      {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url || url,
+        responseBody: text,
+      },
     );
+  }
+
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new ApiError("Backend вернул некорректный JSON", {
+      status: response.status,
+      statusText: response.statusText,
+      url: response.url || url,
+      responseBody: text.slice(0, 2000),
+      cause: error,
+    });
+  }
 }
 
 export function searchRoutes(payload: RouteSearchPayload) {
