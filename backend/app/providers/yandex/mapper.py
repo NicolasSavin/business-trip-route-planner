@@ -9,9 +9,19 @@ from app.domain import Carrier, City, Station, TransportClass, TransportSegment,
 class YandexRaspMapper:
     def to_segments(self, payload: dict[str, Any]) -> list[TransportSegment]:
         segments: list[TransportSegment] = []
-        for item in payload.get("segments", []):
+        raw_segments = payload.get("segments")
+        if not isinstance(raw_segments, list):
+            return []
+        for item in raw_segments:
+            if not isinstance(item, dict):
+                continue
             if item.get("has_transfers"):
-                for detail in item.get("details", []):
+                details = item.get("details") or []
+                if not isinstance(details, list):
+                    continue
+                for detail in details:
+                    if not isinstance(detail, dict):
+                        continue
                     segment = self._segment(detail, parent=item)
                     if segment:
                         segments.append(segment)
@@ -23,8 +33,12 @@ class YandexRaspMapper:
 
     def _segment(self, item: dict[str, Any], parent: dict[str, Any] | None = None) -> TransportSegment | None:
         thread = item.get("thread") or {}
-        from_obj = item.get("from") or parent and parent.get("from") or {}
-        to_obj = item.get("to") or parent and parent.get("to") or {}
+        if not isinstance(thread, dict):
+            thread = {}
+        from_obj = item.get("from") or (parent and parent.get("from")) or {}
+        to_obj = item.get("to") or (parent and parent.get("to")) or {}
+        if not isinstance(from_obj, dict) or not isinstance(to_obj, dict):
+            return None
         departure = item.get("departure")
         arrival = item.get("arrival")
         if not departure or not arrival or not from_obj or not to_obj:
@@ -33,8 +47,16 @@ class YandexRaspMapper:
         arrival_dt = datetime.fromisoformat(arrival)
         transport_type = self._transport_type(thread.get("transport_type"))
         carrier = thread.get("carrier") or item.get("carrier") or {}
-        origin_city = City((from_obj.get("settlement") or {}).get("title") or from_obj.get("title") or "")
-        destination_city = City((to_obj.get("settlement") or {}).get("title") or to_obj.get("title") or "")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        from_settlement = from_obj.get("settlement") or {}
+        to_settlement = to_obj.get("settlement") or {}
+        if not isinstance(from_settlement, dict):
+            from_settlement = {}
+        if not isinstance(to_settlement, dict):
+            to_settlement = {}
+        origin_city = City(from_settlement.get("title") or from_obj.get("title") or "")
+        destination_city = City(to_settlement.get("title") or to_obj.get("title") or "")
         uid = thread.get("uid") or f"{from_obj.get('code')}-{to_obj.get('code')}-{departure}"
         return TransportSegment(
             id=f"yandex-{uid}-{departure}",
@@ -61,7 +83,12 @@ class YandexRaspMapper:
         return TransportType.TRAIN
 
     def _price(self, item: dict[str, Any]) -> float | None:
-        price = item.get("tickets_info", {}).get("places", [{}])[0].get("price")
+        tickets_info = item.get("tickets_info") or {}
+        if not isinstance(tickets_info, dict):
+            return None
+        places = tickets_info.get("places") or []
+        first_place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else {}
+        price = first_place.get("price")
         if isinstance(price, dict):
             return price.get("whole")
         return price

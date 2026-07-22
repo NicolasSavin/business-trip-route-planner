@@ -59,9 +59,14 @@ def test_multiple_transfer_details_are_mapped_for_route_engine():
     assert routes and routes[0].route.transfers_count == 1
 
 
-def test_empty_response_returns_no_segments():
+def test_empty_response_returns_structured_error():
     provider, _ = provider_with_payload({"segments": []})
-    assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург") == []
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    except Exception:
+        assert provider.last_error_payload["code"] == "empty_provider_response"
+    else:
+        raise AssertionError("expected empty provider response")
 
 
 def test_provider_raises_auth_timeout_429_and_500_errors():
@@ -139,13 +144,81 @@ def test_yandex_resolver_unknown_city():
 
 def test_yandex_provider_passes_resolved_station_codes_to_search():
     provider, client = provider_with_payload({"segments": []})
-    provider.get_segments(DAY, [TransportType.TRAIN, TransportType.BUS], origin="Сарапул", destination="Бийск")
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN, TransportType.BUS], origin="Сарапул", destination="Бийск")
+    except Exception:
+        pass
     assert client.kwargs["origin_code"] in {"s9612363", "s9635668"}
     assert client.kwargs["destination_code"] in {"s9610404", "s9657040"}
 
 
 def test_yandex_provider_no_direct_segments_is_diagnostic_not_unknown_city():
     provider, _ = provider_with_payload({"segments": []})
-    assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Сарапул", destination="Бийск") == []
-    assert provider.last_diagnostics["reason"] == "no_direct_segments"
-    assert provider.last_error is None
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Сарапул", destination="Бийск")
+    except Exception:
+        assert provider.last_error_payload["code"] == "empty_provider_response"
+        assert provider.last_error_payload["details"]["resolved_origin_codes"]
+    else:
+        raise AssertionError("expected empty provider response")
+
+
+def test_yandex_mapper_handles_missing_transport_subtype_and_empty_prices():
+    payload = {"segments": [segment(None, "001А") | {"tickets_info": {"places": []}}]}
+    provider, _ = provider_with_payload(payload)
+    segments = provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert segments[0].transport_type == TransportType.TRAIN
+    assert segments[0].price is None
+
+
+def test_yandex_mapper_skips_missing_station_code_without_index_error():
+    bad = segment()
+    bad["from"] = {"title": "Москва", "settlement": {"title": "Москва"}}
+    provider, _ = provider_with_payload({"segments": [bad]})
+    segments = provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert segments[0].origin_station.code == "Москва"
+
+
+def test_yandex_empty_segments_raise_structured_error_not_index_error():
+    provider, _ = provider_with_payload({"segments": []})
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    except Exception:
+        assert provider.last_error_payload["code"] == "empty_provider_response"
+        assert provider.last_error_payload["message"] == "Яндекс Расписания не вернули сегменты"
+        assert "list index out of range" not in provider.last_error_payload["message"]
+    else:
+        raise AssertionError("expected empty provider response")
+
+
+def test_yandex_invalid_json_structure_is_structured_error():
+    provider, _ = provider_with_payload({"unexpected": []})
+    try:
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    except Exception:
+        assert provider.last_error_payload["code"] == "invalid_provider_response"
+        assert provider.last_diagnostics["pair_errors"][0]["error"]["code"] == "invalid_provider_response"
+    else:
+        raise AssertionError("expected invalid provider response")
+
+
+def test_yandex_pair_failure_does_not_abort_all_pairs_and_deduplicates():
+    class Client:
+        last_status_code = 200
+        def stations_list(self):
+            return {}
+        def search(self, **kwargs):
+            self.kwargs = kwargs
+            if kwargs["origin_code"] == "s2000003":
+                return {"unexpected": []}
+            return {"segments": [segment(), segment()]}
+    client = Client()
+    provider = YandexRaspProvider(YandexRaspConfiguration("key", enabled=True), client=client, resolver=YandexLocationResolver())
+    segments = provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert len(segments) == 1
+    assert provider.last_diagnostics["attempts"][0]["error"]["code"] == "invalid_provider_response"
+
+
+def test_yandex_resolver_diagnostic_empty_matches():
+    payload = YandexLocationResolver().diagnostic("Неизвестныйгород")
+    assert payload["matches"] == []
