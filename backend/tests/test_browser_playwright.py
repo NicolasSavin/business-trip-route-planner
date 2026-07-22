@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.browser import BrowserConfiguration, BrowserManager, BrowserMetrics, BrowserPool, BrowserStatus
@@ -10,31 +12,31 @@ class FakePage:
     def __init__(self) -> None:
         self.url = "about:blank"
     def set_default_timeout(self, _timeout: int) -> None: pass
-    def goto(self, url: str, **_kwargs): self.url = url; return object()
-    def wait_for_load_state(self, _state: str) -> None: pass
-    def content(self) -> str: return "<html><head><title>Example Domain</title></head><body>ok</body></html>"
-    def screenshot(self, **_kwargs) -> bytes: return b"\x89PNG\r\n\x1a\nfake"
-    def evaluate(self, expression: str, *args):
+    async def goto(self, url: str, **_kwargs): self.url = url; return object()
+    async def wait_for_load_state(self, _state: str, **_kwargs) -> None: pass
+    async def content(self) -> str: return "<html><head><title>Example Domain</title></head><body>ok</body></html>"
+    async def screenshot(self, **_kwargs) -> bytes: return b"\x89PNG\r\n\x1a\nfake"
+    async def evaluate(self, expression: str, *args):
         if "document.title" in expression: return "Example Domain"
         if "window.location.href" in expression: return self.url
         return None
-    def close(self) -> None: pass
+    async def close(self) -> None: pass
 
 class FakeContext:
-    def new_page(self): return FakePage()
-    def close(self) -> None: pass
-    def cookies(self): return []
+    async def new_page(self): return FakePage()
+    async def close(self) -> None: pass
+    async def cookies(self): return []
 
 class FakeBrowser:
     version = "chromium-fake"
-    def new_context(self, **_kwargs): return FakeContext()
-    def close(self) -> None: pass
+    async def new_context(self, **_kwargs): return FakeContext()
+    async def close(self) -> None: pass
 
 class FakeManager(BrowserManager):
     def __init__(self):
         super().__init__(BrowserConfiguration(playwright_enabled=True, pool_size=1), BrowserMetrics())
         self._browser = FakeBrowser(); self._running = True; self._installed = True; self._version = "chromium-fake"
-    def ensure_browser(self): return self._browser
+    async def ensure_browser(self): return self._browser
 
 
 def test_browser_manager_health_ready_when_playwright_enabled():
@@ -46,17 +48,19 @@ def test_browser_manager_health_ready_when_playwright_enabled():
 
 
 def test_browser_pool_uses_real_browser_boundary_and_metrics():
-    pool = BrowserPool(FakeManager(), max_size=1)
-    with pool.session() as session:
-        session.new_page()
-        session.navigate("https://example.com")
-        assert session.evaluate("() => document.title") == "Example Domain"
-        assert len(session.capture_html()) > 10
-        assert session.capture_screenshot().startswith(b"\x89PNG")
-    assert pool.metrics.pages_opened == 1
-    assert pool.metrics.pages_closed == 1
-    assert pool.metrics.active_sessions == 0
-    assert pool.metrics.average_page_load_ms >= 0
+    async def run():
+        pool = BrowserPool(FakeManager(), max_size=1)
+        async with pool.session() as session:
+            await session.new_page()
+            await session.navigate("https://example.com")
+            assert await session.evaluate("() => document.title") == "Example Domain"
+            assert len(await session.capture_html()) > 10
+            assert (await session.capture_screenshot()).startswith(b"\x89PNG")
+        assert pool.metrics.pages_opened == 1
+        assert pool.metrics.pages_closed == 1
+        assert pool.metrics.active_sessions == 0
+        assert pool.metrics.average_page_load_ms >= 0
+    asyncio.run(run())
 
 
 def test_browser_ping_and_screenshot_api(monkeypatch):

@@ -50,25 +50,25 @@ def disable_provider(provider_id: str) -> ProviderRegistration:
 
 
 @router.get("/tutu/test")
-def test_tutu_provider() -> dict:
+async def test_tutu_provider() -> dict:
     from app.providers.tutu.playwright import TutuPlaywrightClient, TutuPlaywrightMapper
 
     tomorrow = date.today() + timedelta(days=1)
     client = TutuPlaywrightClient()
     mapper = TutuPlaywrightMapper()
     try:
-        client.open_home()
-        client.search(origin="Москва", destination="Санкт-Петербург", date=tomorrow, passengers=1)
-        results = client.parse_results()
+        await client.open_home()
+        await client.search(origin="Москва", destination="Санкт-Петербург", date=tomorrow, passengers=1)
+        results = await client.parse_results()
         routes = [mapper.to_route_option(result, "Москва", "Санкт-Петербург", rank=index + 1) for index, result in enumerate(results[:5])]
     finally:
-        client.close()
+        await client.close()
     return jsonable_encoder({"origin": "Москва", "destination": "Санкт-Петербург", "date": tomorrow, "routes": routes})
 
 
 @router.post("/tutu/live-test")
-def live_test_tutu_provider(payload: TutuLiveTestRequest) -> dict:
+async def live_test_tutu_provider(payload: TutuLiveTestRequest) -> dict:
     from app.providers.tutu.playwright import TutuPlaywrightClient
 
     client = TutuPlaywrightClient()
-    return jsonable_encoder(client.live_test(payload.origin, payload.destination, payload.date))
+    return jsonable_encoder(await client.live_test(payload.origin, payload.destination, payload.date))

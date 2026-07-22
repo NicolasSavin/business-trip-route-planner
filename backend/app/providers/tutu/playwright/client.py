@@ -26,42 +26,42 @@ class TutuPlaywrightClient:
         self._last_request: TutuPlaywrightSearchRequest | None = None
         self.diagnostics: dict[str, Any] = {}
 
-    def open_home(self) -> None:
-        self.session = self.pool.acquire()
-        self.page = self.session.new_page()
-        self.session.navigate(self.home_url)
-        self.page.wait_for_load_state("domcontentloaded")
-        self._close_cookie_popup()
-        self._record("opened_home", url=self.page.url, title=self.page.title())
+    async def open_home(self) -> None:
+        self.session = await self.pool.acquire()
+        self.page = await self.session.new_page()
+        await self.session.navigate(self.home_url)
+        await self.page.wait_for_load_state("domcontentloaded")
+        await self._close_cookie_popup()
+        self._record("opened_home", url=self.page.url, title=await self.page.title())
 
-    def search(self, origin: str, destination: str, date: date, passengers: int = 1) -> None:
+    async def search(self, origin: str, destination: str, date: date, passengers: int = 1) -> None:
         if self.page is None:
-            self.open_home()
+            await self.open_home()
         assert self.page is not None
         self._last_request = TutuPlaywrightSearchRequest(origin=origin, destination=destination, date=date, passengers=passengers)
-        self._fill_station("origin_input", origin)
-        self._fill_station("destination_input", destination)
-        self._fill_date(date)
-        self._click_first(self.selectors["search_button"])
-        self.wait_results()
+        await self._fill_station("origin_input", origin)
+        await self._fill_station("destination_input", destination)
+        await self._fill_date(date)
+        await self._click_first(self.selectors["search_button"])
+        await self.wait_results()
 
-    def wait_results(self) -> None:
+    async def wait_results(self) -> None:
         if self.page is None:
             raise RuntimeError("Tutu page is not opened")
-        self.page.wait_for_load_state("domcontentloaded")
+        await self.page.wait_for_load_state("domcontentloaded")
         try:
-            self.page.wait_for_load_state("networkidle", timeout=30000)
+            await self.page.wait_for_load_state("networkidle", timeout=30000)
         except Exception as exc:
             self._record("networkidle_timeout", error=str(exc)[:300])
         for selector in self.selectors["result_cards"]:
             try:
-                self.page.locator(selector).first.wait_for(state="visible", timeout=15000)
+                await self.page.locator(selector).first.wait_for(state="visible", timeout=15000)
                 self._record("results_visible", selector=selector, url=self.page.url)
                 return
             except Exception as exc:
                 self._record("results_wait_miss", selector=selector, error=str(exc)[:200])
 
-    def parse_results(self) -> list[TutuPlaywrightResult]:
+    async def parse_results(self) -> list[TutuPlaywrightResult]:
         if self.page is None:
             raise RuntimeError("Tutu page is not opened")
         request = self._last_request
@@ -69,10 +69,10 @@ class TutuPlaywrightClient:
         for selector in self.selectors["result_cards"]:
             try:
                 loc = self.page.locator(selector)
-                for index in range(min(loc.count(), 30)):
+                for index in range(min(await loc.count(), 30)):
                     item = loc.nth(index)
-                    if item.is_visible():
-                        text = item.inner_text(timeout=2000).replace("\xa0", " ")
+                    if await item.is_visible():
+                        text = (await item.inner_text(timeout=2000)).replace("\xa0", " ")
                         text = re.sub(r"\s+", " ", text).strip()
                         if len(text) > 20:
                             parsed.append({"text": text, "selector": selector})
@@ -92,68 +92,69 @@ class TutuPlaywrightClient:
                     seen.add(key)
         return results
 
-    def live_test(self, origin: str, destination: str, departure_date: date) -> dict[str, Any]:
+    async def live_test(self, origin: str, destination: str, departure_date: date) -> dict[str, Any]:
         try:
-            self.open_home()
-            self.search(origin, destination, departure_date)
-            results = self.parse_results()
+            await self.open_home()
+            await self.search(origin, destination, departure_date)
+            results = await self.parse_results()
             return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": len(results), "routes": [self._route_json(r) for r in results], "diagnostics": self.diagnostics if not results else {"url": self.page.url if self.page else None}}
         except Exception as exc:
             self._record("error", type=exc.__class__.__name__, message=str(exc))
-            return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": 0, "routes": [], "diagnostics": self.diagnostics | self._page_diagnostics()}
+            return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": 0, "routes": [], "diagnostics": self.diagnostics | await self._page_diagnostics()}
         finally:
-            self.close()
+            await self.close()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self.session is not None:
-            self.pool.release(self.session)
+            await self.pool.release(self.session)
         self.session = None
         self.page = None
 
-    def _fill_station(self, key: str, value: str) -> None:
-        loc = self._locator_first(self.selectors[key])
-        loc.click()
-        loc.press("Control+A")
-        loc.type(value, delay=40)
-        self.page.wait_for_timeout(600)
-        self.page.keyboard.press("ArrowDown")
-        self.page.keyboard.press("Enter")
+    async def _fill_station(self, key: str, value: str) -> None:
+        loc = await self._locator_first(self.selectors[key])
+        await loc.click()
+        await loc.press("Control+A")
+        await loc.type(value, delay=40)
+        await self.page.wait_for_timeout(600)
+        await self.page.keyboard.press("ArrowDown")
+        await self.page.keyboard.press("Enter")
         self._record("filled_station", field=key, value=value)
 
-    def _fill_date(self, value: date) -> None:
-        loc = self._locator_first(self.selectors["date_input"])
-        loc.click()
-        loc.press("Control+A")
-        loc.type(value.strftime("%d.%m.%Y"), delay=35)
-        self.page.keyboard.press("Enter")
+    async def _fill_date(self, value: date) -> None:
+        loc = await self._locator_first(self.selectors["date_input"])
+        await loc.click()
+        await loc.press("Control+A")
+        await loc.type(value.strftime("%d.%m.%Y"), delay=35)
+        await self.page.keyboard.press("Enter")
         self._record("filled_date", value=value.isoformat())
 
-    def _close_cookie_popup(self) -> None:
+    async def _close_cookie_popup(self) -> None:
         if self.page is None:
             return
         for selector in self.selectors["cookie_buttons"]:
             try:
                 button = self.page.locator(selector).first
-                if button.is_visible(timeout=1500):
-                    button.click()
+                if await button.is_visible(timeout=1500):
+                    await button.click()
                     self._record("cookie_popup_closed", selector=selector)
                     return
             except Exception:
                 continue
 
-    def _locator_first(self, selectors: list[str]) -> Any:
+    async def _locator_first(self, selectors: list[str]) -> Any:
         assert self.page is not None
         for selector in selectors:
             loc = self.page.locator(selector).first
             try:
-                if loc.is_visible(timeout=3000):
+                if await loc.is_visible(timeout=3000):
                     return loc
             except Exception:
                 continue
         raise RuntimeError(f"Visible element not found for selectors: {selectors}")
 
-    def _click_first(self, selectors: list[str]) -> None:
-        self._locator_first(selectors).click()
+    async def _click_first(self, selectors: list[str]) -> None:
+        loc = await self._locator_first(selectors)
+        await loc.click()
         self._record("submitted_search")
 
     def _parse_card(self, item: dict[str, Any], request: TutuPlaywrightSearchRequest | None) -> TutuPlaywrightResult | None:
@@ -236,10 +237,10 @@ class TutuPlaywrightClient:
     def _record(self, event: str, **data: Any) -> None:
         self.diagnostics.setdefault("events", []).append({"event": event, **data})
 
-    def _page_diagnostics(self) -> dict[str, Any]:
+    async def _page_diagnostics(self) -> dict[str, Any]:
         if self.page is None:
             return {}
         try:
-            return {"url": self.page.url, "title": self.page.title(), "visible_text_sample": self.page.locator("body").inner_text(timeout=2000)[:2000]}
+            return {"url": self.page.url, "title": await self.page.title(), "visible_text_sample": (await self.page.locator("body").inner_text(timeout=2000))[:2000]}
         except Exception:
             return {"url": getattr(self.page, "url", None)}

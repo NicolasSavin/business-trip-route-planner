@@ -20,84 +20,92 @@ class BrowserSession:
     page: Any | None = None
     context: Any | None = None
 
-    def open(self) -> "BrowserSession":
+    async def open(self) -> "BrowserSession":
         self.is_open = True
         return self
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self.page is not None:
-            self.page.close()
+            await self.page.close()
             self.page = None
             self.metrics.record_page_closed()
         if self.context is not None:
-            self.context.close()
+            await self.context.close()
             self.context = None
         self.is_open = False
 
-    def new_page(self) -> Any:
+    async def new_page(self) -> Any:
         if self.context is None:
             options: dict[str, Any] = {}
             if self.user_agent:
                 options["user_agent"] = self.user_agent
-            self.context = self.browser.new_context(**options)
+            self.context = await self.browser.new_context(**options)
         if self.page is not None:
-            self.page.close()
+            await self.page.close()
             self.metrics.record_page_closed()
-        self.page = self.context.new_page()
+        self.page = await self.context.new_page()
         self.page.set_default_timeout(self.timeout_seconds * 1000)
         self.metrics.record_page_opened()
         return self.page
 
-    def _require_page(self) -> Any:
-        return self.page or self.new_page()
+    async def _require_page(self) -> Any:
+        return self.page or await self.new_page()
 
-    def navigate(self, url: str) -> Any:
-        page = self._require_page()
+    async def navigate(self, url: str) -> Any:
+        page = await self._require_page()
         started = perf_counter()
-        response = page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_seconds * 1000)
+        response = await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_seconds * 1000)
         self.metrics.record_page_load((perf_counter() - started) * 1000)
         return response
 
-    def wait_ready(self, *_args: Any, **_kwargs: Any) -> bool:
-        self._require_page().wait_for_load_state("domcontentloaded")
+    async def wait_ready(self, *_args: Any, **_kwargs: Any) -> bool:
+        page = await self._require_page()
+        await page.wait_for_load_state("domcontentloaded")
         return True
 
-    def capture_html(self) -> str:
-        return self._require_page().content()
+    async def capture_html(self) -> str:
+        page = await self._require_page()
+        return await page.content()
 
-    def capture_screenshot(self) -> bytes:
-        return self._require_page().screenshot(type="png", full_page=True)
+    async def capture_screenshot(self) -> bytes:
+        page = await self._require_page()
+        return await page.screenshot(type="png", full_page=True)
 
-    def capture_pdf(self) -> bytes:
-        return self._require_page().pdf()
+    async def capture_pdf(self) -> bytes:
+        page = await self._require_page()
+        return await page.pdf()
 
-    def evaluate(self, expression: str, arg: Any | None = None) -> Any:
-        page = self._require_page()
+    async def evaluate(self, expression: str, arg: Any | None = None) -> Any:
+        page = await self._require_page()
         if arg is None:
-            return page.evaluate(expression)
-        return page.evaluate(expression, arg)
+            return await page.evaluate(expression)
+        return await page.evaluate(expression, arg)
 
-    def click(self, selector: str, **kwargs: Any) -> None:
-        self._require_page().locator(selector).first.click(**kwargs)
+    async def click(self, selector: str, **kwargs: Any) -> None:
+        page = await self._require_page()
+        await page.locator(selector).first.click(**kwargs)
 
-    def fill(self, selector: str, value: str, **kwargs: Any) -> None:
-        self._require_page().locator(selector).first.fill(value, **kwargs)
+    async def fill(self, selector: str, value: str, **kwargs: Any) -> None:
+        page = await self._require_page()
+        await page.locator(selector).first.fill(value, **kwargs)
 
-    def select(self, selector: str, value: str | list[str], **kwargs: Any) -> Any:
-        return self._require_page().locator(selector).first.select_option(value, **kwargs)
+    async def select(self, selector: str, value: str | list[str], **kwargs: Any) -> Any:
+        page = await self._require_page()
+        return await page.locator(selector).first.select_option(value, **kwargs)
 
-    def wait_for(self, selector: str | None = None, **kwargs: Any) -> bool:
+    async def wait_for(self, selector: str | None = None, **kwargs: Any) -> bool:
         if selector is None:
-            return self.wait_ready()
-        self._require_page().locator(selector).first.wait_for(**kwargs)
+            return await self.wait_ready()
+        page = await self._require_page()
+        await page.locator(selector).first.wait_for(**kwargs)
         return True
 
-    def cookies(self) -> list[dict[str, Any]]:
-        return self.context.cookies() if self.context is not None else []
+    async def cookies(self) -> list[dict[str, Any]]:
+        return await self.context.cookies() if self.context is not None else []
 
-    def headers(self) -> dict[str, str]:
+    async def headers(self) -> dict[str, str]:
         return {}
 
-    def destroy(self) -> None:
-        self.close()
+    async def destroy(self) -> None:
+        await self.close()
         self.destroyed = True

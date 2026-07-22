@@ -4,7 +4,7 @@ This project now connects the existing Browser Automation Infrastructure to real
 
 ## How the browser starts
 
-`BrowserManager` owns the Playwright process and the Chromium browser instance. When `BrowserManager.start()` is called with `PLAYWRIGHT_ENABLED=true`, it starts `sync_playwright()`, launches headless Chromium, stores the browser version, and updates browser lifecycle metrics. `BrowserManager.stop()` closes the browser, stops Playwright, and records browser lifetime.
+`BrowserManager` owns the Playwright process and the Chromium browser instance. When `await BrowserManager.start()` is called with `PLAYWRIGHT_ENABLED=true`, it starts Playwright through the Async API, launches headless Chromium, stores the browser version, and updates browser lifecycle metrics. `await BrowserManager.stop()` closes the browser, stops Playwright, and records browser lifetime.
 
 Render installs Playwright during the backend build with:
 
