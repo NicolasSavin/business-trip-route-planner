@@ -129,8 +129,14 @@ function totalSeats(route: RouteOption) {
 
 function availabilityBadge(route: RouteOption) {
   const statuses = route.segments.map((segment) => segment.availability_status);
+  if (statuses.includes("provider_error")) {
+    return { className: "bg-rose-50 text-rose-700", text: "Проверка временно недоступна" };
+  }
   if (statuses.includes("unconfirmed") || statuses.includes("unknown") || statuses.includes("partially_confirmed")) {
     return { className: "bg-amber-50 text-amber-700", text: "Наличие мест не проверено" };
+  }
+  if (statuses.includes("confirmed")) {
+    return { className: "bg-emerald-50 text-emerald-700", text: "Наличие мест подтверждено" };
   }
   return route.is_available_for_group
     ? { className: "bg-emerald-50 text-emerald-700", text: "Доступно для группы" }
@@ -867,13 +873,12 @@ export default function Home() {
                                 {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-1 text-[11px] font-semibold">
-                                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Расписание подтверждено</span>
-                                {segment.availability_status === "unconfirmed" && (
-                                  <>
-                                    <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">Наличие мест не проверено</span>
-                                    <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места и одно купе требуют дополнительной проверки</span>
-                                  </>
-                                )}
+                                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Расписание найдено</span>
+                                {segment.availability_status === "confirmed" && <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Наличие мест подтверждено</span>}
+                                {(!segment.availability_status || ["unconfirmed", "unknown", "partially_confirmed"].includes(segment.availability_status)) && <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">Наличие мест не проверено</span>}
+                                {segment.availability_status === "provider_error" && <span className="rounded-full bg-rose-50 px-2 py-1 text-rose-700">Проверка временно недоступна</span>}
+                                {segment.availability_status === "confirmed" && formState.lower_only && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места подтверждены</span>}
+                                {segment.availability_status === "confirmed" && formState.same_compartment && segment.selected_compartments?.length === 1 && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Одно купе подтверждено</span>}
                               </div>
                             </div>
                           </div>

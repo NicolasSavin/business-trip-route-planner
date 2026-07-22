@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      TUTU_PLAYWRIGHT_ENABLED: "false"
+      TUTU_PLAYWRIGHT_SERVICE_URL: http://tutu-playwright-service:8000
+      TUTU_PLAYWRIGHT_SERVICE_TOKEN: ${SERVICE_API_TOKEN:-local-dev-token}
+      TUTU_MAX_JOURNEYS_TO_ENRICH: "3"
+    ports:
+      - "8000:8000"
+    depends_on:
+      tutu-playwright-service:
+        condition: service_healthy
+  tutu-playwright-service:
+    build:
+      context: ./tutu-playwright-service
+    environment:
+      TUTU_PLAYWRIGHT_ENABLED: "false"
+      TUTU_PLAYWRIGHT_HEADLESS: "true"
+      TUTU_PLAYWRIGHT_TIMEOUT_SECONDS: "45"
+      TUTU_PLAYWRIGHT_CONCURRENCY: "1"
+      TUTU_PLAYWRIGHT_CACHE_TTL_SECONDS: "300"
+      TUTU_PLAYWRIGHT_ARTIFACT_DIR: /tmp/tutu-playwright-artifacts
+      TUTU_PLAYWRIGHT_MOCK: "true"
+      SERVICE_API_TOKEN: ${SERVICE_API_TOKEN:-local-dev-token}
+      PORT: "8000"
+    ports:
+      - "8010:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

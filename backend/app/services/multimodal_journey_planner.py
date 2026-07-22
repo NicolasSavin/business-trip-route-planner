@@ -14,6 +14,7 @@ from app.engine import RouteEngine
 from app.models.routes import RouteSearchRequest, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.segment_enrichment import SegmentEnrichmentService
+from app.providers.tutu_playwright import TutuPlaywrightAvailabilityClient
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ MAX_CANDIDATE_JOURNEYS = 80
 MAX_SEGMENTS_PER_QUERY = 500
 MAX_AVAILABILITY_CHECKS_PER_QUERY = int(os.getenv("MAX_AVAILABILITY_CHECKS_PER_QUERY", "10"))
 MAX_PROVIDER_CONCURRENCY = int(os.getenv("MAX_PROVIDER_CONCURRENCY", "2"))
+TUTU_MAX_JOURNEYS_TO_ENRICH = int(os.getenv("TUTU_MAX_JOURNEYS_TO_ENRICH", "3"))
 
 
 class MultimodalJourneyPlanner:
@@ -32,6 +34,7 @@ class MultimodalJourneyPlanner:
         self.route_engine = RouteEngine(provider, availability_engine=self.availability_engine)
         self.seat_allocator = SeatAllocationService()
         self.enrichment = SegmentEnrichmentService()
+        self.tutu_playwright = TutuPlaywrightAvailabilityClient()
         self.cache = SegmentAvailabilityCache()
         self.concurrency = max(1, concurrency)
         self.last_summary = SearchSummary()
@@ -107,16 +110,17 @@ class MultimodalJourneyPlanner:
         sem = asyncio.Semaphore(self.concurrency)
         async def one(option: DomainRouteOption) -> DomainRouteOption:
             async with sem:
+                enrich_with_tutu = option in options[:TUTU_MAX_JOURNEYS_TO_ENRICH]
                 results = []
                 for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]:
-                    results.append(await asyncio.to_thread(self._check_segment, segment, request))
+                    results.append(await asyncio.to_thread(self._check_segment, segment, request, enrich_with_tutu))
                 journey = aggregate_journey_availability(tuple(results))
                 warnings = (*option.warnings, *journey.warnings)
                 explanation = self._explain(option, journey)
                 return replace(option, availability=journey, warnings=warnings, explanation=explanation)
         return await asyncio.gather(*(one(option) for option in options))
 
-    def _check_segment(self, segment: TransportSegment, request: RouteSearchRequest) -> SegmentAvailabilityResult:
+    def _check_segment(self, segment: TransportSegment, request: RouteSearchRequest, enrich_with_tutu: bool = False) -> SegmentAvailabilityResult:
         key = self._cache_key(segment, request)
         cached = self.cache.get(key)
         if cached:
@@ -128,7 +132,13 @@ class MultimodalJourneyPlanner:
             if segment.metadata.get("availability_unknown") or "Источник расписаний не подтверждает наличие и расположение мест" in result.warnings:
                 result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=(), warnings=(*result.warnings, "Нижние места и одно купе требуют дополнительной проверки" if request.seat_preferences else ""))
                 result = replace(result, warnings=tuple(w for w in result.warnings if w))
-            if segment.transport_type == TransportType.TRAIN and request.seat_preferences:
+            if segment.available_seats == 999:
+                result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, warnings=(*result.warnings, "Yandex returned 999 seats placeholder; real availability is unconfirmed"))
+            if enrich_with_tutu and segment.transport_type == TransportType.TRAIN:
+                tutu_result = self.tutu_playwright.check_segment(segment, request)
+                if tutu_result is not None:
+                    result = tutu_result
+            elif segment.transport_type == TransportType.TRAIN and request.seat_preferences:
                 result = self._apply_railway_preferences(segment, request, result)
             if segment.transport_type != TransportType.TRAIN:
                 result = replace(result, seat_preferences_status=AvailabilityStatus.CONFIRMED if result.passengers_supported else result.status)
