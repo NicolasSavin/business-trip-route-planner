@@ -122,7 +122,7 @@ class YandexRaspProvider(TransportProvider):
         for item in pair_errors:
             error_details = (item.get("error") or {}).get("details")
             if error_details:
-                return error_details | {"route_context": details}
+                return error_details
         return details
 
     def _codes_for_transport(self, match: YandexLocationMatch, allowed_transport: list[TransportType]) -> tuple[str, ...]:
