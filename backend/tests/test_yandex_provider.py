@@ -229,7 +229,7 @@ def test_yandex_default_base_url_uses_new_domain(monkeypatch):
 
     config = YandexRaspConfiguration.from_env()
 
-    assert config.base_url == "https://api.rasp.yandex-net.ru/v3.0"
+    assert config.base_url == "https://api.rasp.yandex-net.ru/v3.0/"
 
 
 def test_yandex_base_url_can_be_overridden(monkeypatch):
@@ -237,7 +237,45 @@ def test_yandex_base_url_can_be_overridden(monkeypatch):
 
     config = YandexRaspConfiguration.from_env()
 
-    assert config.base_url == "https://example.test/v3.0"
+    assert config.base_url == "https://example.test/v3.0/"
+
+
+def test_yandex_client_search_preserves_api_version_path_in_request_url():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url.copy_with(query=None))
+        return httpx.Response(200, json={"pagination": {}, "segments": [], "search": {}}, headers={"content-type": "application/json"}, request=request)
+
+    config = YandexRaspConfiguration("secret", enabled=True, base_url="https://api.rasp.yandex-net.ru/v3.0")
+    client = YandexRaspClient(
+        config,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler), base_url=config.base_url),
+    )
+
+    client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN])
+
+    assert seen["url"] == "https://api.rasp.yandex-net.ru/v3.0/search/"
+    assert seen["url"] != "https://api.rasp.yandex-net.ru/search/"
+
+
+def test_yandex_client_stations_list_preserves_api_version_path_in_request_url():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url.copy_with(query=None))
+        return httpx.Response(200, json={"countries": []}, headers={"content-type": "application/json"}, request=request)
+
+    config = YandexRaspConfiguration("secret", enabled=True, base_url="https://api.rasp.yandex-net.ru/v3.0")
+    client = YandexRaspClient(
+        config,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler), base_url=config.base_url),
+    )
+
+    client.stations_list()
+
+    assert seen["url"] == "https://api.rasp.yandex-net.ru/v3.0/stations_list/"
+    assert seen["url"] != "https://api.rasp.yandex-net.ru/stations_list/"
 
 
 def test_yandex_client_json_response_is_parsed_and_search_params_are_documented():
