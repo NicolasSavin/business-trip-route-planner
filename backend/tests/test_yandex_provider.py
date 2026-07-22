@@ -108,3 +108,44 @@ def test_yandex_missing_api_key_is_not_silently_swallowed():
         assert "YANDEX_RASP_API_KEY" in str(exc)
     else:
         raise AssertionError("expected Yandex Rasp API key error")
+
+
+def test_yandex_resolver_resolves_required_cities_aliases_case_and_yo():
+    resolver = YandexLocationResolver()
+    assert resolver.resolve("Сарапул").code == "c42"
+    assert resolver.resolve("бийск").code == "c197"
+    assert resolver.resolve("МОСКВА").code == "c213"
+    assert resolver.resolve("СПб").code == "c2"
+    assert resolver.resolve("санкт-петербург").code == "c2"
+    assert resolver.resolve("Екатеринбург").code == "c54"
+    assert resolver.resolve("Новосибирск").code == "c65"
+    assert YandexLocationResolver.normalize("Ёлка") == YandexLocationResolver.normalize("Елка")
+
+
+def test_yandex_resolver_returns_multiple_station_codes_for_city():
+    match = YandexLocationResolver().resolve("Бийск")
+    assert set(match.station_codes) >= {"s9610404", "s9657040"}
+    assert match.type == "city"
+
+
+def test_yandex_resolver_unknown_city():
+    try:
+        YandexLocationResolver().resolve("Неизвестныйгород")
+    except Exception as exc:
+        assert getattr(exc, "code", "") == "unknown_location"
+    else:
+        raise AssertionError("expected unknown location")
+
+
+def test_yandex_provider_passes_resolved_station_codes_to_search():
+    provider, client = provider_with_payload({"segments": []})
+    provider.get_segments(DAY, [TransportType.TRAIN, TransportType.BUS], origin="Сарапул", destination="Бийск")
+    assert client.kwargs["origin_code"] in {"s9612363", "s9635668"}
+    assert client.kwargs["destination_code"] in {"s9610404", "s9657040"}
+
+
+def test_yandex_provider_no_direct_segments_is_diagnostic_not_unknown_city():
+    provider, _ = provider_with_payload({"segments": []})
+    assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Сарапул", destination="Бийск") == []
+    assert provider.last_diagnostics["reason"] == "no_direct_segments"
+    assert provider.last_error is None
