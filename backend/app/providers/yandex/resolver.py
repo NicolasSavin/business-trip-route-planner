@@ -108,11 +108,30 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
         return {"storage": "sqlite", "path": str(self.path), "exists": exists, "locations": count, "mtime": self.path.stat().st_mtime if exists else None}
     def resolve(self, query, transport_types=None):
         self._ensure_schema(); key = normalize(query); rows=[]
+        if len(key) < 2:
+            return []
+        alias_pattern = f"%|{key}|%"
+        prefix = f"{key}%"
+        contains = f"%{key}%"
         with self._connect() as con:
-            rows = list(con.execute("SELECT * FROM locations WHERE normalized_title=? OR code=? OR aliases LIKE ? OR normalized_settlement=? LIMIT 20", (key, query, f"%|{key}|%", key)))
-            if not rows and len(key) >= 4:
-                rows = list(con.execute("SELECT * FROM locations WHERE normalized_title LIKE ? OR normalized_settlement LIKE ? LIMIT 20", (key+"%", key+"%")))
-        return [self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)]
+            rows = list(con.execute("""
+                SELECT *,
+                    CASE
+                        WHEN normalized_title=? OR code=? OR normalized_settlement=? OR aliases LIKE ? THEN 0
+                        WHEN point_type='city' AND (normalized_title LIKE ? OR normalized_settlement LIKE ?) THEN 1
+                        WHEN normalized_title LIKE ? OR normalized_settlement LIKE ? THEN 2
+                        WHEN point_type='city' AND (normalized_title LIKE ? OR normalized_settlement LIKE ?) THEN 3
+                        WHEN normalized_title LIKE ? OR normalized_settlement LIKE ? THEN 4
+                        ELSE 5
+                    END AS rank
+                FROM locations
+                WHERE normalized_title=? OR code=? OR normalized_settlement=? OR aliases LIKE ?
+                   OR normalized_title LIKE ? OR normalized_settlement LIKE ?
+                   OR normalized_title LIKE ? OR normalized_settlement LIKE ?
+                ORDER BY rank, CASE point_type WHEN 'city' THEN 0 ELSE 1 END, title
+                LIMIT 50
+            """, (key, query, key, alias_pattern, prefix, prefix, prefix, prefix, contains, contains, contains, contains, key, query, key, alias_pattern, prefix, prefix, contains, contains)))
+        return self._dedupe([self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)])[:20]
     def get_by_code(self, code):
         self._ensure_schema()
         with self._connect() as con: row = con.execute("SELECT * FROM locations WHERE code=?", (code,)).fetchone()
@@ -226,16 +245,40 @@ class YandexLocationResolver:
         if YANDEX_STATIONS_AUTO_SYNC: logger.warning("YANDEX_STATIONS_AUTO_SYNC is enabled; prefer build-job sync in production")
     def stats(self): return self._stations_repository.cache_info() | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
     def _local(self, query):
-        key=normalize(query); res=[]
+        key=normalize(query); ranked=[]
+        if len(key) < 2:
+            return []
         for m in LOCAL_POINTS:
-            keys={normalize(m.title), normalize(m.code), *(normalize(a) for a in m.aliases_used)}
-            if key in keys: res.append(m)
-        return res
+            keys={normalize(m.title), normalize(m.code), normalize(m.settlement or ""), *(normalize(a) for a in m.aliases_used)}
+            station_keys={normalize(s.title) for s in m.stations} | {normalize(s.settlement or "") for s in m.stations}
+            all_keys=keys | station_keys
+            score = None
+            if key in all_keys:
+                score = 0
+            elif any(text.startswith(key) for text in all_keys):
+                score = 1
+            elif any(key in text for text in all_keys):
+                score = 2
+            if score is not None:
+                ranked.append((score, 0 if m.type == "city" else 1, m.title, m))
+        return self._dedupe([m for *_ignore, m in sorted(ranked)])
     def _fallback_repository(self, query):
         matches=[]
         for item in self._repository.suggest(query, 10):
             if item.provider_code:
                 pt: YandexPointType = "city" if item.type in {"city", "settlement"} else "station"
                 matches.append(YandexLocationMatch(item.provider_code, item.name, pt, source="location_repository", region=item.region, country=item.country, settlement=item.name if pt == "city" else None))
-        return matches
+        return self._dedupe(matches)
+    def _dedupe(self, matches):
+        result=[]; seen_codes=set(); seen_city_titles=set()
+        for m in matches:
+            city_key=normalize(m.settlement or m.title)
+            if m.code in seen_codes:
+                continue
+            if m.type == "station" and city_key in seen_city_titles and normalize(m.title) == city_key:
+                continue
+            result.append(m); seen_codes.add(m.code)
+            if m.type == "city":
+                seen_city_titles.add(city_key)
+        return result
     def _with_cache_hit(self, m): return YandexLocationMatch(**{**m.__dict__, "cache_hit": True})
