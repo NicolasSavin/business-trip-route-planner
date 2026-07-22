@@ -25,9 +25,9 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def log_browser_startup_diagnostics() -> None:
+async def log_browser_startup_diagnostics() -> None:
     try:
-        diagnostics = BrowserManager().startup_diagnostics()
+        diagnostics = await BrowserManager().startup_diagnostics()
     except Exception as exc:
         diagnostics = {
             "playwright_version": "unavailable",
@@ -35,6 +35,7 @@ def log_browser_startup_diagnostics() -> None:
             "browser_executable_path": "unavailable",
             "browser_exists": False,
             "browser_manager_status": "diagnostics-failed",
+            "browser_launch_message": "Browser launch unavailable",
             "startup_exception": str(exc) or exc.__class__.__name__,
         }
 
@@ -46,6 +47,7 @@ def log_browser_startup_diagnostics() -> None:
         "PLAYWRIGHT_BROWSERS_PATH:\n%s\n\n"
         "Executable:\n%s\n\n"
         "Exists: %s\n\n"
+        "%s\n\n"
         "BrowserManager status: %s\n\n"
         "Startup exception: %s\n\n"
         "==================================================",
@@ -53,6 +55,7 @@ def log_browser_startup_diagnostics() -> None:
         diagnostics["playwright_browsers_path"],
         diagnostics["browser_executable_path"],
         str(diagnostics["browser_exists"]).lower(),
+        diagnostics.get("browser_launch_message", "Browser launch unavailable"),
         diagnostics["browser_manager_status"],
         diagnostics["startup_exception"],
     )

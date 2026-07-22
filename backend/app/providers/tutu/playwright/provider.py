@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any
 
@@ -18,15 +19,18 @@ class TutuPlaywrightProvider:
     def healthcheck(self) -> bool:
         return True
 
-    def get_segments(self, departure_date: date, allowed_transport: list[TransportType] | None = None, origin: str | None = None, destination: str | None = None, passengers: int = 1, **_: Any) -> list[TransportSegment]:
+    def get_segments(self, departure_date: date, allowed_transport: list[TransportType] | None = None, origin: str | None = None, destination: str | None = None, passengers: int = 1, **kwargs: Any) -> list[TransportSegment]:
+        return asyncio.run(self.get_segments_async(departure_date, allowed_transport, origin, destination, passengers, **kwargs))
+
+    async def get_segments_async(self, departure_date: date, allowed_transport: list[TransportType] | None = None, origin: str | None = None, destination: str | None = None, passengers: int = 1, **_: Any) -> list[TransportSegment]:
         if allowed_transport and TransportType.TRAIN not in allowed_transport:
             return []
         if not origin or not destination:
             return []
         try:
-            self.client.open_home()
-            self.client.search(origin=origin, destination=destination, date=departure_date, passengers=passengers)
-            results = self.client.parse_results()
+            await self.client.open_home()
+            await self.client.search(origin=origin, destination=destination, date=departure_date, passengers=passengers)
+            results = await self.client.parse_results()
             return self.mapper.to_segments(results, origin, destination)
         finally:
-            self.client.close()
+            await self.client.close()

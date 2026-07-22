@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 
@@ -42,7 +43,7 @@ def test_browser_configuration_from_env(monkeypatch):
 def test_browser_manager_disabled_does_not_start_real_browser():
     metrics = BrowserMetrics()
     manager = BrowserManager(BrowserConfiguration(playwright_enabled=False), metrics)
-    manager.start()
+    asyncio.run(manager.start())
     health = manager.health()
     assert health.status == BrowserStatus.DISABLED
     assert health.healthy is True
@@ -57,7 +58,7 @@ def test_browser_manager_restart_updates_metrics_when_enabled():
     manager._running = True
     manager.started_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
     metrics.active_browsers = 1
-    manager.stop()
+    asyncio.run(manager.stop())
     assert metrics.active_browsers == 0
     assert metrics.average_lifetime >= 0
 
@@ -66,24 +67,28 @@ def test_browser_pool_reuses_sessions_and_enforces_limit():
     from test_browser_playwright import FakeManager
     manager = FakeManager()
     pool = BrowserPool(manager)
-    first = pool.acquire()
-    with pytest.raises(BrowserPoolExhaustedError):
-        pool.acquire()
-    pool.release(first)
-    second = pool.acquire()
-    assert second.id == first.id
-    pool.release(second)
-    assert manager.metrics.active_sessions == 0
+    async def run():
+        first = await pool.acquire()
+        with pytest.raises(BrowserPoolExhaustedError):
+            await pool.acquire()
+        await pool.release(first)
+        second = await pool.acquire()
+        assert second.id == first.id
+        await pool.release(second)
+        assert manager.metrics.active_sessions == 0
+    asyncio.run(run())
 
 
 def test_browser_pool_context_releases_session_and_tracks_pages():
     from test_browser_playwright import FakeManager
     pool = BrowserPool(FakeManager())
-    with pool.session() as session:
-        assert session.is_open
-        assert session.new_page() is not None
-    assert pool.metrics.active_sessions == 0
-    assert pool.metrics.pages_opened == 1
+    async def run():
+        async with pool.session() as session:
+            assert session.is_open
+            assert await session.new_page() is not None
+        assert pool.metrics.active_sessions == 0
+        assert pool.metrics.pages_opened == 1
+    asyncio.run(run())
 
 
 def test_browser_provider_status_boundary_is_safe():
@@ -111,24 +116,27 @@ def test_browser_manager_reports_missing_chromium_without_crashing(monkeypatch):
         pass
 
     class FakeChromium:
-        def launch(self, **_kwargs):
+        async def launch(self, **_kwargs):
             raise FakePlaywrightError("Executable doesn't exist at /tmp/chromium")
 
     class FakePlaywrightRuntime:
         chromium = FakeChromium()
 
-        def stop(self):
+        async def stop(self):
             pass
+
+    async def fake_start():
+        return FakePlaywrightRuntime()
 
     fake_sync_api = types.SimpleNamespace(
         Error=FakePlaywrightError,
-        sync_playwright=lambda: types.SimpleNamespace(start=lambda: FakePlaywrightRuntime()),
+        async_playwright=lambda: types.SimpleNamespace(start=fake_start),
     )
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_sync_api)
 
     manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
     manager._installed = True
-    manager.start()
+    asyncio.run(manager.start())
 
     health = manager.health()
     assert health.status == BrowserStatus.DEGRADED
@@ -138,31 +146,47 @@ def test_browser_manager_reports_missing_chromium_without_crashing(monkeypatch):
 
 
 def test_browser_manager_startup_diagnostics_reports_chromium_path(monkeypatch):
+    class FakeBrowser:
+        version = "chromium-fake"
+
+        async def close(self):
+            pass
+
     class FakeChromium:
         executable_path = "/tmp/fake-playwright/chromium"
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
 
     class FakePlaywrightRuntime:
         chromium = FakeChromium()
 
-        def stop(self):
+        async def stop(self):
             pass
 
+    async def fake_start():
+        return FakePlaywrightRuntime()
+
     fake_sync_api = types.SimpleNamespace(
-        sync_playwright=lambda: types.SimpleNamespace(start=lambda: FakePlaywrightRuntime()),
+        async_playwright=lambda: types.SimpleNamespace(start=fake_start),
     )
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_sync_api)
     monkeypatch.setattr("app.browser.manager.os.path.exists", lambda path: path == "/tmp/fake-playwright/chromium")
     monkeypatch.setattr("app.browser.manager.package_version", lambda package: "1.54.0")
 
     manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
     manager._installed = True
 
-    assert manager.startup_diagnostics() == {
+    diagnostics = asyncio.run(manager.startup_diagnostics())
+    diagnostics.pop("browser_launch_success", None)
+    diagnostics.pop("browser_version", None)
+    diagnostics.pop("browser_launch_message", None)
+    assert diagnostics == {
         "playwright_version": "1.54.0",
         "playwright_browsers_path": "not-set",
         "browser_executable_path": "/tmp/fake-playwright/chromium",
         "browser_exists": True,
-        "browser_manager_status": "ready",
+        "browser_manager_status": "healthy",
         "startup_exception": "none",
     }
 
@@ -171,7 +195,11 @@ def test_browser_manager_startup_diagnostics_reports_missing_playwright():
     manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
     manager._installed = False
 
-    assert manager.startup_diagnostics() == {
+    diagnostics = asyncio.run(manager.startup_diagnostics())
+    diagnostics.pop("browser_launch_success", None)
+    diagnostics.pop("browser_version", None)
+    diagnostics.pop("browser_launch_message", None)
+    assert diagnostics == {
         "playwright_version": "not-installed",
         "playwright_browsers_path": "not-set",
         "browser_executable_path": "unavailable",
