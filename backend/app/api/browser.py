@@ -58,12 +58,21 @@ async def browser_screenshot() -> Response:
 @router.get("/health")
 def browser_health() -> dict[str, Any]:
     health = _manager.health()
+    running = _manager.browser_running
+    installed = health.configured
+    if not health.enabled:
+        status = "stopped"
+    elif not installed:
+        status = "unavailable"
+    else:
+        status = "running" if running else "stopped"
     return {
-        "playwright_installed": health.configured,
-        "browser_running": _manager.browser_running,
+        "configured": health.enabled,
+        "installed": installed,
+        "running": running,
+        "healthy_if_running": health.healthy if running else None,
+        "status": status,
         "browser_version": health.version,
-        "status": health.status,
-        "healthy": health.healthy,
     }
 
 

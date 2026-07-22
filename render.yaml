@@ -17,7 +17,25 @@ services:
           name: business-trip-route-planner-frontend
           envVarKey: RENDER_EXTERNAL_HOSTNAME
       - key: PLAYWRIGHT_ENABLED
+        value: false
+      - key: TUTU_PLAYWRIGHT_ENABLED
+        value: false
+      - key: PLAYWRIGHT_LAZY_START
         value: true
+      - key: BROWSER_IDLE_TIMEOUT_SECONDS
+        value: 120
+      - key: BROWSER_POOL_SIZE
+        value: 1
+      - key: YANDEX_STATIONS_LAZY_LOAD
+        value: true
+      - key: YANDEX_STATIONS_STORAGE
+        value: sqlite
+      - key: YANDEX_STATIONS_AUTO_SYNC
+        value: false
+      - key: MAX_PROVIDER_CONCURRENCY
+        value: 2
+      - key: MAX_AVAILABILITY_CHECKS_PER_QUERY
+        value: 10
       - key: BROWSER_HEADLESS
         value: true
       - key: PLAYWRIGHT_BROWSERS_PATH

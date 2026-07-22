@@ -13,8 +13,14 @@ class TutuPlaywrightProvider:
     provider_name = "tutu_playwright"
 
     def __init__(self, client: TutuPlaywrightClient | None = None, mapper: TutuPlaywrightMapper | None = None) -> None:
-        self.client = client or TutuPlaywrightClient()
+        self._client = client
         self.mapper = mapper or TutuPlaywrightMapper()
+
+    @property
+    def client(self) -> TutuPlaywrightClient:
+        if self._client is None:
+            self._client = TutuPlaywrightClient()
+        return self._client
 
     def healthcheck(self) -> bool:
         return True

@@ -81,7 +81,7 @@ def build_default_registry() -> ProviderRegistry:
         id="tutu_playwright",
         name="Tutu Playwright",
         priority=ProviderPriority.LOW,
-        enabled=False,
+        enabled=os.getenv("TUTU_PLAYWRIGHT_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
         capabilities=ProviderCapabilities(
             supported_transport=[TransportType.TRAIN],
             supports_availability=True,
