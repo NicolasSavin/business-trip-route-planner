@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any
 
 from app.browser.config import BrowserConfiguration
@@ -31,6 +33,38 @@ class BrowserManager:
         except ImportError:
             return False
         return True
+
+    def startup_diagnostics(self) -> dict[str, str | bool]:
+        executable_path = self._chromium_executable_path()
+        return {
+            "playwright_version": self._playwright_package_version(),
+            "browser_executable_path": executable_path or "unavailable",
+            "browser_exists": bool(executable_path and os.path.exists(executable_path)),
+        }
+
+    def _playwright_package_version(self) -> str:
+        try:
+            return package_version("playwright")
+        except PackageNotFoundError:
+            return "not-installed"
+
+    def _chromium_executable_path(self) -> str | None:
+        if not self._installed:
+            return None
+        from playwright.sync_api import sync_playwright
+
+        playwright = None
+        try:
+            playwright = sync_playwright().start()
+            return playwright.chromium.executable_path
+        except Exception:
+            return None
+        finally:
+            if playwright is not None:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
 
     def start(self) -> None:
         if not self.config.playwright_enabled:
