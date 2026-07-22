@@ -35,11 +35,14 @@ class BrowserManager:
         return True
 
     def startup_diagnostics(self) -> dict[str, str | bool]:
-        executable_path = self._chromium_executable_path()
+        executable_path, startup_exception = self._chromium_executable_path()
         return {
             "playwright_version": self._playwright_package_version(),
+            "playwright_browsers_path": os.getenv("PLAYWRIGHT_BROWSERS_PATH", "not-set"),
             "browser_executable_path": executable_path or "unavailable",
             "browser_exists": bool(executable_path and os.path.exists(executable_path)),
+            "browser_manager_status": self.health().status.value,
+            "startup_exception": startup_exception or "none",
         }
 
     def _playwright_package_version(self) -> str:
@@ -48,17 +51,17 @@ class BrowserManager:
         except PackageNotFoundError:
             return "not-installed"
 
-    def _chromium_executable_path(self) -> str | None:
+    def _chromium_executable_path(self) -> tuple[str | None, str | None]:
         if not self._installed:
-            return None
+            return None, "Playwright package is not installed"
         from playwright.sync_api import sync_playwright
 
         playwright = None
         try:
             playwright = sync_playwright().start()
-            return playwright.chromium.executable_path
-        except Exception:
-            return None
+            return playwright.chromium.executable_path, None
+        except Exception as exc:
+            return None, str(exc) or exc.__class__.__name__
         finally:
             if playwright is not None:
                 try:
