@@ -35,9 +35,28 @@ class TutuPlaywrightClient:
             "input[placeholder*='Куда']",
             "input[aria-label*='Куда']",
         ],
-        "date_input": ["label=Дата", "placeholder=Дата", "role=textbox|Дата", "input[name='date']", "input[placeholder*='Дата']", "input[aria-label*='Дата']"],
-        "search_button": ["role=button|Найти", "button:has-text('Найти')", "button[type='submit']"],
-        "result_cards": ["[data-ti*='train']:visible", "article:visible", ".train:visible", "[class*='card']:visible"],
+        "date_control": [
+            "testid=date",
+            "testid=departure-date",
+            "testid=search-date",
+            "role=button|Дата|Сегодня|Завтра|\\d{1,2}\\s+[а-я]+|\\d{1,2}\\.\\d{1,2}",
+            "text=Сегодня",
+            "text=Завтра",
+            "label=Дата",
+            "input[name='date']",
+            "input[placeholder*='Дата']",
+            "input[aria-label*='Дата']",
+            "[role='button']:has-text('Дата')",
+            "[role='button']:has-text('Сегодня')",
+            "[role='button']:has-text('Завтра')",
+            "button:has-text('Дата')",
+            "button:has-text('Сегодня')",
+            "button:has-text('Завтра')",
+        ],
+        "calendar_containers": ["role=dialog|", "[role='dialog']:visible", "[class*='calendar' i]:visible", "[data-testid*='calendar' i]:visible"],
+        "search_button": ["role=button|Найти поезд", "role=button|Найти", "button:has-text('Найти поезд')", "button:has-text('Найти')", "button[type='submit']"],
+        "results_containers": ["main:has-text('Выберите поезд')", "main:has-text('поезд')", "[data-testid*='result' i]", "[data-ti*='result' i]", "[class*='result' i]"],
+        "result_cards": ["[data-testid*='train' i]:visible", "[data-ti*='train' i]:visible", "article:has-text('мест'):visible", "[class*='train' i]:has-text('мест'):visible", "[class*='card' i]:has-text('мест'):visible"],
     }
 
     def __init__(self, pool: BrowserPool | None = None) -> None:
@@ -65,9 +84,9 @@ class TutuPlaywrightClient:
             return
         if not await self._fill_station("destination_input", destination):
             return
-        if not await self._fill_date(date):
+        if not await self._select_date(date):
             return
-        if not await self._click_first(self.selectors["search_button"]):
+        if not await self._submit_search():
             return
         await self.wait_results()
 
@@ -82,7 +101,7 @@ class TutuPlaywrightClient:
         for selector in self.selectors["result_cards"]:
             try:
                 await self.page.locator(selector).first.wait_for(state="visible", timeout=15000)
-                self._record("results_visible", selector=selector, url=self.page.url)
+                self._record("results_page_loaded", selector=selector, url=self.page.url)
                 return
             except Exception as exc:
                 self._record("results_wait_miss", selector=selector, error=str(exc)[:200])
@@ -92,9 +111,10 @@ class TutuPlaywrightClient:
             raise RuntimeError("Tutu page is not opened")
         request = self._last_request
         parsed: list[dict[str, Any]] = []
+        container = await self._results_container()
         for selector in self.selectors["result_cards"]:
             try:
-                loc = self.page.locator(selector)
+                loc = container.locator(selector)
                 for index in range(min(await loc.count(), 30)):
                     item = loc.nth(index)
                     if await item.is_visible():
@@ -116,6 +136,9 @@ class TutuPlaywrightClient:
                 if key not in seen:
                     results.append(result)
                     seen.add(key)
+        self._record("valid_route_cards_found", count=len(results))
+        if not results:
+            await self._save_artifact("result_cards_not_found", html=True, screenshot=True)
         return results
 
     async def live_test(self, origin: str, destination: str, departure_date: date) -> dict[str, Any]:
@@ -123,7 +146,9 @@ class TutuPlaywrightClient:
             await self.open_home()
             await self.search(origin, destination, departure_date)
             results = await self.parse_results()
-            return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": len(results), "routes": [self._route_json(r) for r in results], "diagnostics": self.diagnostics if not results else {"url": self.page.url if self.page else None}}
+            if not results:
+                return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": 0, "routes": [], "diagnostics": self.diagnostics | await self._page_diagnostics()}
+            return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": len(results), "routes": [self._route_json(r) for r in results], "diagnostics": self.diagnostics | await self._page_diagnostics()}
         except Exception as exc:
             self._record("error", type=exc.__class__.__name__, message=str(exc))
             return {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "routes_found": 0, "routes": [], "diagnostics": self.diagnostics | await self._page_diagnostics()}
@@ -147,20 +172,94 @@ class TutuPlaywrightClient:
         await self.page.wait_for_timeout(600)
         await self.page.keyboard.press("ArrowDown")
         await self.page.keyboard.press("Enter")
-        self._record("filled_station", field=key, value=value)
+        self._record("origin_selected" if key == "origin_input" else "destination_selected", field=key, value=value)
         return True
 
-    async def _fill_date(self, value: date) -> bool:
-        loc = await self._locator_first(self.selectors["date_input"], field="date_input")
-        if loc is None:
+    async def _select_date(self, value: date) -> bool:
+        assert self.page is not None
+        shortcut = self._date_shortcut(value)
+        if shortcut:
+            loc = await self._locator_first([f"role=button|{shortcut}", f"text={shortcut}"], field="date_shortcut")
+            if loc is not None:
+                self._record("date_control_found", strategy="shortcut", label=shortcut)
+                await loc.click()
+                self._record("requested_date_selected", value=value.isoformat(), strategy=shortcut)
+                return await self._verify_date_displayed(value)
+
+        control = await self._locator_first(self.selectors["date_control"], field="date_control")
+        if control is None:
+            await self._save_artifact("date_control_not_found", html=True, screenshot=True)
             return False
-        await self._save_artifact("before_typing_date_input", screenshot=True)
-        await loc.click()
-        await loc.press("Control+A")
-        await loc.type(value.strftime("%d.%m.%Y"), delay=35)
-        await self.page.keyboard.press("Enter")
-        self._record("filled_date", value=value.isoformat())
+        self._record("date_control_found", strategy="calendar")
+        await control.click()
+        if not await self._wait_calendar_open():
+            await self._save_artifact("date_selection_failed", html=True, screenshot=True)
+            return False
+        if not await self._click_calendar_date(value):
+            await self._save_artifact("date_selection_failed", html=True, screenshot=True)
+            return False
+        self._record("requested_date_selected", value=value.isoformat(), strategy="calendar")
+        return await self._verify_date_displayed(value)
+
+    async def _wait_calendar_open(self) -> bool:
+        for selector in self.selectors["calendar_containers"]:
+            try:
+                loc = self._build_locator(selector)
+                if await loc.count() and await loc.first.is_visible(timeout=3000):
+                    self._record("calendar_opened", selector=selector)
+                    return True
+            except Exception as exc:
+                self._record("calendar_open_miss", selector=selector, error=str(exc)[:200])
+        return False
+
+    async def _click_calendar_date(self, value: date) -> bool:
+        labels = self._date_labels(value)
+        candidates = []
+        for label in labels:
+            candidates.extend([f"role=button|^{re.escape(label)}$", f"label=^{re.escape(label)}$", f"text=^{re.escape(label)}$"])
+        for selector in candidates:
+            loc = await self._locator_first([selector], field="calendar_date")
+            if loc is not None:
+                await loc.click()
+                return True
+        return False
+
+    async def _verify_date_displayed(self, value: date) -> bool:
+        text = await self.page.locator("body").inner_text(timeout=3000)
+        shortcut = self._date_shortcut(value)
+        ok = any(label in text for label in self._date_labels(value)) or (shortcut is not None and shortcut in text)
+        if not ok:
+            self._record("date_selection_failed", value=value.isoformat())
+            await self._save_artifact("date_selection_failed", html=True, screenshot=True)
+            return False
+        self._record("date_selected", value=value.isoformat())
         return True
+
+    async def _submit_search(self) -> bool:
+        assert self.page is not None
+        before_url = self.page.url
+        loc = await self._locator_first(self.selectors["search_button"], field="search_button")
+        if loc is None:
+            await self._save_artifact("search_submission_failed", html=True, screenshot=True)
+            return False
+        await loc.click()
+        self._record("search_button_clicked")
+        submitted = False
+        try:
+            await self.page.wait_for_url(lambda url: url != before_url, timeout=10000)
+            submitted = True
+        except Exception:
+            for selector in self.selectors["results_containers"] + self.selectors["result_cards"]:
+                try:
+                    await self._build_locator(selector).first.wait_for(state="visible", timeout=3000)
+                    submitted = True
+                    break
+                except Exception:
+                    pass
+        self.diagnostics["search_submitted"] = submitted
+        if not submitted:
+            await self._save_artifact("search_submission_failed", html=True, screenshot=True)
+        return submitted
 
     async def _close_cookie_popup(self) -> None:
         if self.page is None:
@@ -236,6 +335,8 @@ class TutuPlaywrightClient:
             return self.page.get_by_placeholder(re.compile(selector.removeprefix("placeholder="), re.I))
         if selector.startswith("text="):
             return self.page.get_by_text(re.compile(selector.removeprefix("text="), re.I))
+        if selector.startswith("testid="):
+            return self.page.get_by_test_id(selector.removeprefix("testid="))
         return self.page.locator(selector)
 
     async def _save_artifact(self, name: str, html: bool = False, screenshot: bool = False) -> None:
@@ -258,12 +359,15 @@ class TutuPlaywrightClient:
 
     def _parse_card(self, item: dict[str, Any], request: TutuPlaywrightSearchRequest | None) -> TutuPlaywrightResult | None:
         text = item.get("text", "")
-        times = re.findall(r"\b\d{1,2}:\d{2}\b", text)
+        times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", text)
         if len(times) < 2 or request is None:
             return None
-        train = re.search(r"(?:№\s*)?([0-9]{1,3}[А-ЯA-Z]?)", text)
+        train = re.search(r"(?:поезд\s*|№\s*)([0-9]{1,3}[А-ЯA-Z]{0,2}(?:/[0-9]{1,3}[А-ЯA-Z]{0,2})?)\b|\b([0-9]{1,3}[А-ЯA-Z]{1,2}(?:/[0-9]{1,3}[А-ЯA-Z]{1,2})?)\b", text, re.I)
+        if train is None:
+            return None
+        train_number = train.group(1) or train.group(2)
         return TutuPlaywrightResult(
-            train_number=train.group(1) if train else "Unknown",
+            train_number=train_number,
             train_name=self._train_name(text),
             origin_station=request.origin,
             destination_station=request.destination,
@@ -336,10 +440,34 @@ class TutuPlaywrightClient:
     def _record(self, event: str, **data: Any) -> None:
         self.diagnostics.setdefault("events", []).append({"event": event, **data})
 
+
+    async def _results_container(self) -> Any:
+        assert self.page is not None
+        for selector in self.selectors["results_containers"]:
+            try:
+                loc = self._build_locator(selector)
+                if await loc.count() and await loc.first.is_visible(timeout=1000):
+                    return loc.first
+            except Exception:
+                pass
+        return self.page.locator("body")
+
+    def _date_shortcut(self, value: date) -> str | None:
+        today = date.today()
+        if value == today:
+            return "Сегодня"
+        if value == today + timedelta(days=1):
+            return "Завтра"
+        return None
+
+    def _date_labels(self, value: date) -> list[str]:
+        months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+        return [value.strftime("%d.%m.%Y"), value.strftime("%d.%m"), f"{value.day} {months[value.month - 1]}", str(value.day)]
+
     async def _page_diagnostics(self) -> dict[str, Any]:
         if self.page is None:
             return {}
         try:
-            return {"url": self.page.url, "title": await self.page.title(), "visible_text_sample": (await self.page.locator("body").inner_text(timeout=2000))[:2000]}
+            return {"stage": self.diagnostics.get("events", [{}])[-1].get("event"), "current_url": self.page.url, "page_title": await self.page.title(), "search_submitted": self.diagnostics.get("search_submitted", False), "calendar_opened": any(e.get("event") == "calendar_opened" for e in self.diagnostics.get("events", [])), "date_selected": any(e.get("event") == "date_selected" for e in self.diagnostics.get("events", [])), "visible_text_sample": (await self.page.locator("body").inner_text(timeout=2000))[:2000]}
         except Exception:
             return {"url": getattr(self.page, "url", None)}
