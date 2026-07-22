@@ -23,7 +23,7 @@ class UnifiedTransportProvider(TransportProvider):
         called: list[str] = []
         succeeded: list[str] = []
         failed: list[str] = []
-        errors: dict[str, str] = {}
+        errors: dict[str, str | dict] = {}
         segments_by_provider: dict[str, int] = {}
         for registration, provider in self.registry.enabled(allowed_transport, schedule_only=True):
             called.append(registration.id)
@@ -38,7 +38,7 @@ class UnifiedTransportProvider(TransportProvider):
             except Exception as exc:
                 self.registry.mark_error(registration.id, exc)
                 failed.append(registration.id)
-                errors[registration.id] = str(exc) or exc.__class__.__name__
+                errors[registration.id] = getattr(provider, "last_error_payload", None) or (str(exc) or exc.__class__.__name__)
                 segments_by_provider[registration.id] = 0
                 continue
             for segment in segments:
@@ -62,6 +62,9 @@ class UnifiedTransportProvider(TransportProvider):
             "segments_by_provider": segments_by_provider,
             "warnings": warnings,
         }
+        provider_details = {registration.id: getattr(provider, "last_diagnostics", {}) for registration, provider in self.registry.enabled(allowed_transport, schedule_only=True) if getattr(provider, "last_diagnostics", {})}
+        if provider_details:
+            self.last_diagnostics["provider_diagnostics"] = provider_details
         return merged
 
     def _normalize(self, segment: TransportSegment, provider_id: str) -> TransportSegment:
