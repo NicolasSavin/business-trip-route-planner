@@ -20,6 +20,8 @@ services:
         value: true
       - key: BROWSER_HEADLESS
         value: true
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/.cache/ms-playwright
 
   - type: web
     name: business-trip-route-planner-frontend

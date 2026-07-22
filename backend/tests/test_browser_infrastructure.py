@@ -135,3 +135,30 @@ def test_browser_manager_reports_missing_chromium_without_crashing(monkeypatch):
     assert health.healthy is False
     assert "Chromium browser files are not installed" in health.message
     assert manager.version() == "chromium-unavailable"
+
+
+def test_browser_manager_startup_diagnostics_reports_chromium_path(monkeypatch):
+    class FakeChromium:
+        executable_path = "/tmp/fake-playwright/chromium"
+
+    class FakePlaywrightRuntime:
+        chromium = FakeChromium()
+
+        def stop(self):
+            pass
+
+    fake_sync_api = types.SimpleNamespace(
+        sync_playwright=lambda: types.SimpleNamespace(start=lambda: FakePlaywrightRuntime()),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setattr("app.browser.manager.os.path.exists", lambda path: path == "/tmp/fake-playwright/chromium")
+    monkeypatch.setattr("app.browser.manager.package_version", lambda package: "1.54.0")
+
+    manager = BrowserManager(BrowserConfiguration(playwright_enabled=True), BrowserMetrics())
+    manager._installed = True
+
+    assert manager.startup_diagnostics() == {
+        "playwright_version": "1.54.0",
+        "browser_executable_path": "/tmp/fake-playwright/chromium",
+        "browser_exists": True,
+    }
