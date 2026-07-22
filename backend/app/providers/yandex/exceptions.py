@@ -13,6 +13,8 @@ class YandexRaspError(Exception):
         payload = {"code": self.code, "message": self.message}
         if self.query is not None:
             payload["query"] = self.query
+        if self.diagnostics:
+            payload["details"] = self.diagnostics
         return payload
 
 
@@ -49,8 +51,3 @@ class YandexRaspEmptyResponseError(YandexRaspError):
 
     code = "empty_provider_response"
 
-    def to_error(self) -> dict:
-        payload = super().to_error()
-        if self.diagnostics:
-            payload["details"] = self.diagnostics
-        return payload
