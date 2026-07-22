@@ -1,9 +1,12 @@
+import logging
+
 from fastapi import APIRouter, Header, HTTPException, Query, status
 
 from app.locations import LocationSuggestResponse, LocationSuggestion, location_repository
 from app.providers.yandex.location_service import yandex_location_resolver
 
 router = APIRouter(prefix="/api/v1/locations", tags=["locations"])
+logger = logging.getLogger(__name__)
 
 
 def _to_suggestion(match) -> LocationSuggestion:
@@ -18,7 +21,11 @@ def _to_suggestion(match) -> LocationSuggestion:
 @router.get("/suggest", response_model=LocationSuggestResponse)
 def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Query(default=10, ge=1, le=20)) -> LocationSuggestResponse:
     if len(q.strip()) >= 2:
-        matches = yandex_location_resolver.resolve_all(q)[:limit]
+        try:
+            matches = yandex_location_resolver.resolve_all(q)[:limit]
+        except Exception as exc:
+            logger.warning("Yandex location suggestions failed for %r: %s", q, exc)
+            matches = []
         if matches:
             return LocationSuggestResponse(items=[_to_suggestion(item) for item in matches])
     return LocationSuggestResponse(items=location_repository.suggest(q, min(limit, 10)))

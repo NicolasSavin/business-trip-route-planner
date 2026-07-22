@@ -42,6 +42,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [active, setActive] = useState(-1);
   const showHint = value.trim().length > 0 && !selected;
 
@@ -56,6 +57,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   useEffect(() => {
     abortRef.current?.abort();
     setError(false);
+    setHasSearched(false);
     setActive(-1);
     if (value.trim().length < 2) {
       setItems([]);
@@ -69,9 +71,15 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
       try {
         const response = await suggestLocations(value, 8, controller.signal);
         setItems(response.items);
+        setHasSearched(true);
         setOpen(true);
       } catch (err) {
-        if (!controller.signal.aborted) setError(true);
+        if (!controller.signal.aborted) {
+          setItems([]);
+          setHasSearched(true);
+          setError(true);
+          setOpen(true);
+        }
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -96,7 +104,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
     if (event.key === "Enter" && active >= 0 && items[active]) { event.preventDefault(); pick(items[active]); }
   }
 
-  const stateText = value.trim().length < 2 ? "Начните вводить название города или станции" : loading ? "Ищем варианты…" : error ? "Сервис подсказок временно недоступен" : items.length ? "Выберите город, регион и конкретную станцию" : "Ничего не найдено";
+  const stateText = value.trim().length < 2 ? "Начните вводить название города или станции" : loading || !hasSearched ? "Ищем варианты…" : error ? "Сервис подсказок временно недоступен" : items.length ? "Выберите город, регион и конкретную станцию" : "Ничего не найдено";
 
   return (
     <label ref={rootRef} className="relative space-y-2 text-sm font-semibold text-ink">
