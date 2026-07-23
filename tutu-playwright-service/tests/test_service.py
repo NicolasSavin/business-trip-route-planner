@@ -439,3 +439,116 @@ async def test_debug_connectivity_endpoint_does_not_return_plain_500(monkeypatch
     assert data["error_type"] == "RuntimeError"
     assert data["message"] == "unexpected endpoint failure"
     assert "traceback" in data
+
+
+class MockStickyOption(MockOption):
+    async def click(self, timeout=None):
+        self.page.autocomplete_open = False
+
+
+class MockStickyLocator(MockLocator):
+    def nth(self, index):
+        return MockStickyOption(self.page, self.options[index])
+
+
+class MockStickyPage(MockPage):
+    def get_by_role(self, role):
+        if role in {"listbox", "option"}:
+            return MockStickyLocator(self, self.options)
+        raise AssertionError(f"unexpected role: {role}")
+
+    def locator(self, selector):
+        return MockStickyLocator(self, self.options)
+
+
+@pytest.mark.asyncio
+async def test_select_location_autocomplete_not_opened_records_station_diagnostics(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    monkeypatch.setattr(service_module, "LOCATION_AUTOCOMPLETE_TIMEOUT_MS", 1)
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockPage([])
+
+    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+        await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    assert diagnostics["station_steps"][0]["failure_reason"] == "autocomplete_not_opened"
+    assert diagnostics["origin_station_selection"]["requested_city"] == "Рязань"
+    assert "origin" in diagnostics["autocomplete_discovery"]
+
+
+@pytest.mark.asyncio
+async def test_select_location_popup_without_match_records_candidates(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockPage(["Тула"])
+
+    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+        await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    assert diagnostics["station_steps"][0]["failure_reason"] == "matching_candidate_not_found"
+    assert diagnostics["popup_candidates"]["origin"]
+
+
+@pytest.mark.asyncio
+async def test_select_location_success_records_station_step(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockPage(["Рязань, Рязанская область"])
+
+    value = await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    assert value == "Рязань, Рязанская область"
+    assert diagnostics["station_steps"][0]["station_selected"] is True
+    assert diagnostics["origin_station_selection"]["clicked_candidate"] == "Рязань, Рязанская область"
+
+
+@pytest.mark.asyncio
+async def test_select_location_value_not_persisted_after_click_records_failure(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockStickyPage(["Рязань-1"])
+
+    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+        await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    assert diagnostics["station_steps"][0]["failure_reason"] == "selected_value_not_persisted"
+    assert diagnostics["origin_station_selection"]["clicked_candidate"] == "Рязань-1"
+
+
+@pytest.mark.asyncio
+async def test_provider_error_response_contains_station_steps_and_popup_candidates(monkeypatch):
+    from app.models import Diagnostics
+    from app.service import TutuDiagnosticError, service as service_instance
+
+    async def fake_playwright(req):
+        raise TutuDiagnosticError(
+            "Location suggestion not found: Рязань",
+            Diagnostics(
+                station_steps=[{"field_name": "origin", "requested_city": "Рязань", "failure_reason": "matching_candidate_not_found"}],
+                origin_station_selection={"field_name": "origin", "requested_city": "Рязань"},
+                popup_candidates={"origin": [{"text": "Тула"}]},
+            ),
+        )
+
+    service_instance.cache.items.clear()
+    monkeypatch.setattr(service, "_playwright", fake_playwright)
+    monkeypatch.setattr("app.service.settings.mock_mode", False)
+    monkeypatch.setattr("app.service.settings.enabled", True)
+    payload={"origin":"Рязань","destination":"Москва","departure_date":"2026-08-10","train_number":"008С","passengers":1}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r=await c.post("/api/v1/availability/check", json=payload)
+
+    data = r.json()
+    assert r.status_code == 200
+    assert data["status"] == "provider_error"
+    assert data["diagnostics"]["station_steps"][0]["requested_city"] == "Рязань"
+    assert data["diagnostics"]["popup_candidates"]["origin"][0]["text"] == "Тула"
