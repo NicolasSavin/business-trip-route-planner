@@ -13,6 +13,52 @@ ROUTE_FIELD_LABELS = {
     "destination": ("куда", "город прибытия", "пункт прибытия", "станция прибытия"),
 }
 
+MAX_DIAGNOSTIC_ITEMS = 50
+MAX_DIAGNOSTIC_STRING = 500
+
+
+def _safe_text(value, limit: int = MAX_DIAGNOSTIC_STRING):
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return text[:limit]
+
+
+def _limit_diagnostic(value, max_items: int = MAX_DIAGNOSTIC_ITEMS):
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, list):
+        return [_limit_diagnostic(item, max_items) for item in value[:max_items]]
+    if isinstance(value, tuple):
+        return [_limit_diagnostic(item, max_items) for item in value[:max_items]]
+    if isinstance(value, dict):
+        return {str(k)[:80]: _limit_diagnostic(v, max_items) for k, v in list(value.items())[:max_items]}
+    return value
+
+
+def _ensure_station_diagnostics(diagnostics: dict | None):
+    if diagnostics is None:
+        return None
+    diagnostics.setdefault("station_steps", [])
+    diagnostics.setdefault("origin_station_selection", {})
+    diagnostics.setdefault("destination_station_selection", {})
+    diagnostics.setdefault("popup_candidates", {})
+    diagnostics.setdefault("autocomplete_discovery", {})
+    diagnostics.setdefault("selected_inputs", {})
+    return diagnostics
+
+
+def _station_log(event: str, step: dict, popup_count: int = 0, option_count: int = 0) -> None:
+    logger.info(event, extra={
+        "field_name": step.get("field_name"),
+        "city_name": step.get("requested_city"),
+        "requested_city": step.get("requested_city"),
+        "current_textbox_value": step.get("current_textbox_value") or step.get("value_after_blur") or step.get("value_after_clicking_suggestion") or step.get("textbox_value_after_typing"),
+        "popup_count": popup_count,
+        "option_count": option_count,
+        "failure_reason": step.get("failure_reason"),
+    })
+
 
 class TutuDiagnosticError(Exception):
     def __init__(self, message: str, diagnostics: Diagnostics):
@@ -107,6 +153,46 @@ async def _save_step_artifact(page, step: str, artifacts: dict[str, list[str]] |
         logger.info("tutu step artifacts saved", extra={"step": step, "screenshot": str(screenshot), "html_artifact": str(html)})
     except Exception:
         logger.exception("tutu step artifact capture caught exception", extra={"step": step})
+
+
+async def collect_autocomplete_discovery(page, field_name: str, city_name: str) -> dict:
+    selector = "[role='listbox'], [role='menu'], [role='dialog'], [role='option'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i], [class*='dropdown' i], [data-testid*='suggest' i], [data-testid*='autocomplete' i]"
+    try:
+        discovery = await page.locator(selector).evaluate_all(
+            """
+            elements => {
+                const safe = value => (value || '').toString().trim().replace(/\\s+/g, ' ').slice(0, 500);
+                const attrs = element => {
+                    const names = ['id','class','role','aria-label','aria-selected','aria-expanded','aria-hidden','aria-controls','data-testid','data-ti','name'];
+                    const out = {};
+                    names.forEach(name => { const value = element.getAttribute(name); if (value) out[name] = safe(value); });
+                    return out;
+                };
+                const visible = element => {
+                    const style = window.getComputedStyle(element);
+                    return !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length) && style.display !== 'none' && style.visibility !== 'hidden';
+                };
+                const box = element => { const r = element.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
+                const describe = (element, index) => ({index, text: safe(element.innerText || element.textContent), attrs: attrs(element), bounding_box: box(element), visible: visible(element)});
+                const visibleElements = elements.filter(visible).slice(0, 50);
+                return {
+                    containers: visibleElements.map(describe),
+                    options: Array.from(document.querySelectorAll('[role="option"]')).filter(visible).slice(0, 50).map(describe),
+                    iframes: Array.from(document.querySelectorAll('iframe')).slice(0, 20).map((frame, index) => ({index, attrs: attrs(frame), bounding_box: box(frame), visible: visible(frame)})),
+                    shadow_roots: Array.from(document.querySelectorAll('*')).filter(e => e.shadowRoot).slice(0, 20).map((host, index) => ({index, host: host.tagName.toLowerCase(), attrs: attrs(host), text: safe(host.shadowRoot.textContent), bounding_box: box(host), visible: visible(host)})),
+                    body_text_sample: safe(document.body ? document.body.innerText : ''),
+                };
+            }
+            """
+        )
+    except Exception:
+        logger.exception("station autocomplete discovery failed", extra={"field_name": field_name, "city_name": city_name})
+        discovery = {"containers": [], "options": [], "iframes": [], "shadow_roots": [], "body_text_sample": None}
+    if not isinstance(discovery, dict):
+        discovery = {"containers": discovery or [], "options": discovery or [], "iframes": [], "shadow_roots": [], "body_text_sample": None}
+    discovery = _limit_diagnostic(discovery)
+    logger.info("station_autocomplete_discovered", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "current_textbox_value": None, "failure_reason": None})
+    return discovery
 
 
 async def inspect_textboxes(page) -> list[dict]:
@@ -311,30 +397,87 @@ async def _fail_location_not_found(page, field_name: str, city_name: str) -> Non
     raise ValueError(f"Location suggestion not found: {city_name}")
 
 
+async def _textbox_value(textbox) -> str:
+    try:
+        return (await textbox.input_value() or "").strip()
+    except Exception:
+        try:
+            return (await textbox.evaluate("el => el.value || el.textContent || ''") or "").strip()
+        except Exception:
+            return ""
+
+
+async def _finish_station_step(diagnostics: dict | None, field_name: str, step: dict) -> None:
+    target = _ensure_station_diagnostics(diagnostics)
+    if target is None:
+        return
+    limited = _limit_diagnostic(step)
+    target["station_steps"].append(limited)
+    target[f"{field_name}_station_selection"] = limited
+
+
+async def _fail_location_not_found_with_step(page, field_name: str, city_name: str, step: dict, diagnostics: dict | None, reason: str) -> None:
+    step["failure_reason"] = reason
+    step["station_selected"] = False
+    step["current_textbox_value"] = await _textbox_value(step.get("textbox_ref")) if step.get("textbox_ref") is not None else None
+    step.pop("textbox_ref", None)
+    await _save_step_artifact(page, f"{field_name}_selection_failed", step.get("artifacts_ref"))
+    step.pop("artifacts_ref", None)
+    await _finish_station_step(diagnostics, field_name, step)
+    _station_log("station_selection_failed", step, len((step.get("autocomplete_discovery") or {}).get("containers", [])), len((step.get("autocomplete_discovery") or {}).get("options", [])))
+    await _fail_location_not_found(page, field_name, city_name)
+
+
 async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None):
+    diagnostics = _ensure_station_diagnostics(diagnostics)
+    step = {
+        "requested_city": city_name,
+        "field_name": field_name,
+        "textbox_value_before_typing": None,
+        "textbox_value_after_typing": None,
+        "value_after_waiting_for_autocomplete": None,
+        "value_after_clicking_suggestion": None,
+        "value_after_blur": None,
+        "station_selected": False,
+        "failure_reason": None,
+        "clicked_candidate": None,
+        "textbox_ref": textbox,
+        "artifacts_ref": artifacts,
+    }
+    _station_log("station_selection_started", step)
+    await _save_step_artifact(page, f"{field_name}_before_typing", artifacts)
     try:
         await textbox.focus()
     except Exception:
         pass
+    step["textbox_value_before_typing"] = await _textbox_value(textbox)
+    _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_before_typing"]})
+
     await textbox.fill(city_name)
     try:
         await textbox.evaluate("""(el, value) => { el.value = value; el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value})); el.dispatchEvent(new Event('change', {bubbles: true})); }""", city_name)
     except Exception:
         pass
-    await _save_step_artifact(page, f"after_filling_{field_name}", artifacts)
+    step["textbox_value_after_typing"] = await _textbox_value(textbox)
+    await _save_step_artifact(page, f"{field_name}_after_typing", artifacts)
+    _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_after_typing"]})
+
     deadline = time.monotonic() + LOCATION_AUTOCOMPLETE_TIMEOUT_MS / 1000
     options = None
+    count = 0
     while time.monotonic() < deadline:
         options = await _candidate_options(page)
         count = await _visible_locator_count(options)
         if count:
-            logger.info("autocomplete opened", extra={"field_name": field_name, "city_name": city_name})
-            logger.info("autocomplete options counted", extra={"field_name": field_name, "city_name": city_name, "options_count": count})
             break
         await asyncio.sleep(0.2)
-    else:
-        count = 0
-        logger.info("autocomplete options counted", extra={"field_name": field_name, "city_name": city_name, "options_count": 0})
+    step["value_after_waiting_for_autocomplete"] = await _textbox_value(textbox)
+    discovery = await collect_autocomplete_discovery(page, field_name, city_name)
+    step["autocomplete_discovery"] = discovery
+    if diagnostics is not None:
+        diagnostics["autocomplete_discovery"][field_name] = discovery
+    await _save_step_artifact(page, f"{field_name}_after_waiting", artifacts)
+    _station_log("station_selection_step", {**step, "current_textbox_value": step["value_after_waiting_for_autocomplete"]}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
 
     candidates = []
     if options is not None:
@@ -352,23 +495,49 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
                 candidates.append((rank, index, text, option, matched))
     popup_texts = await inspect_popup_candidates(page, textbox, field_name, city_name)
     candidate_texts = [c[2] for c in candidates]
+    popup_payload = discovery.get("options") or discovery.get("containers") or candidate_texts or popup_texts
     if diagnostics is not None:
-        diagnostics.setdefault("popup_candidates", {})[field_name] = candidate_texts or popup_texts
+        diagnostics.setdefault("popup_candidates", {})[field_name] = _limit_diagnostic(popup_payload)
+    step["popup_candidates"] = _limit_diagnostic(popup_payload)
     logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": candidate_texts})
+
+    if not count and not candidates:
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_not_opened")
 
     matches = sorted((c for c in candidates if c[4]), key=lambda c: (c[0], c[1]))
     if matches:
         rank, _index, text, option, _matched = matches[0]
+        step["clicked_candidate"] = text
+        await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
-        logger.info("autocomplete candidate selected", extra={"field_name": field_name, "city_name": city_name, "selected_candidate": text, "match_rank": rank})
-        await _save_step_artifact(page, f"after_selecting_{field_name}", artifacts)
+        logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
+        step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
+        await _save_step_artifact(page, f"{field_name}_after_click", artifacts)
     else:
-        await _fail_location_not_found(page, field_name, city_name)
+        await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "matching_candidate_not_found")
 
-    final_value = (await textbox.input_value()).strip()
-    logger.info("final textbox value", extra={"field_name": field_name, "city_name": city_name, "final_textbox_value": final_value})
-    if normalize_location_text(city_name) not in normalize_location_text(final_value) and normalize_location_text(final_value) not in normalize_location_text(city_name):
-        await _fail_location_not_found(page, field_name, city_name)
+    try:
+        await textbox.blur()
+    except Exception:
+        try:
+            await page.locator("body").click(timeout=1000)
+        except Exception:
+            pass
+    step["value_after_blur"] = await _textbox_value(textbox)
+    final_value = step["value_after_blur"] or step["value_after_clicking_suggestion"] or ""
+    clicked_norm = normalize_location_text(step.get("clicked_candidate") or "")
+    final_norm = normalize_location_text(final_value)
+    city_norm = normalize_location_text(city_name)
+    clicked_persisted = not clicked_norm or clicked_norm == final_norm or clicked_norm in final_norm
+    city_persisted = city_norm in final_norm or final_norm in city_norm
+    if not clicked_persisted or not city_persisted:
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "selected_value_not_persisted")
+    step["station_selected"] = True
+    step.pop("textbox_ref", None)
+    step.pop("artifacts_ref", None)
+    await _finish_station_step(diagnostics, field_name, step)
+    _station_log("station_selection_finished", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
     return final_value
 
 class TTLCache:
@@ -435,7 +604,7 @@ class TutuAvailabilityService:
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
         browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.timeout_seconds*1000)
-        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "popup_candidates": {}}
+        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
             await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded")
@@ -467,7 +636,7 @@ class TutuAvailabilityService:
             logger.info("journey matched", extra={"matched_train": matched, "train_number": req.train_number})
             logger.info("seat availability extraction started")
             logger.info("seat availability extracted", extra={"available_seats": None})
-            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(matched_by="train_number" if matched else None, page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], popup_candidates=diagnostic_payload["popup_candidates"]))
+            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(matched_by="train_number" if matched else None, page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], station_steps=diagnostic_payload["station_steps"], origin_station_selection=diagnostic_payload["origin_station_selection"], destination_station_selection=diagnostic_payload["destination_station_selection"], popup_candidates=diagnostic_payload["popup_candidates"], autocomplete_discovery=diagnostic_payload["autocomplete_discovery"]))
         except Exception as exc:
             stamp=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             sp=os.path.join(settings.artifact_dir,f"error-{stamp}.png"); hp=os.path.join(settings.artifact_dir,f"error-{stamp}.html")
@@ -475,7 +644,7 @@ class TutuAvailabilityService:
             except Exception:
                 logger.exception("artifact capture caught exception")
             logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls, "selected_inputs": diagnostic_payload["selected_inputs"], "popup_candidates": diagnostic_payload["popup_candidates"]})
-            raise TutuDiagnosticError(str(exc), Diagnostics(page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], popup_candidates=diagnostic_payload["popup_candidates"])) from exc
+            raise TutuDiagnosticError(str(exc), Diagnostics(page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], station_steps=diagnostic_payload["station_steps"], origin_station_selection=diagnostic_payload["origin_station_selection"], destination_station_selection=diagnostic_payload["destination_station_selection"], popup_candidates=diagnostic_payload["popup_candidates"], autocomplete_discovery=diagnostic_payload["autocomplete_discovery"])) from exc
         finally:
             await context.close()
 service=TutuAvailabilityService()

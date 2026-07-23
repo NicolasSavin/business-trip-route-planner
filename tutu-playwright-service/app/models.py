@@ -20,7 +20,11 @@ class JourneyAvailabilityRequest(BaseModel):
 class Diagnostics(BaseModel):
     matched_by: str | None = None; page_url: str | None = None; screenshots: list[str] = Field(default_factory=list); html_artifacts: list[str] = Field(default_factory=list)
     selected_inputs: dict[str, Any] = Field(default_factory=dict)
-    popup_candidates: dict[str, list[str]] = Field(default_factory=dict)
+    station_steps: list[dict[str, Any]] = Field(default_factory=list)
+    origin_station_selection: dict[str, Any] = Field(default_factory=dict)
+    destination_station_selection: dict[str, Any] = Field(default_factory=dict)
+    popup_candidates: dict[str, list[Any]] = Field(default_factory=dict)
+    autocomplete_discovery: dict[str, Any] = Field(default_factory=dict)
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
