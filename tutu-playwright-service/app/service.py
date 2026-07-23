@@ -8,6 +8,16 @@ from .settings import settings
 
 logger = logging.getLogger(__name__)
 LOCATION_AUTOCOMPLETE_TIMEOUT_MS = 20_000
+ROUTE_FIELD_LABELS = {
+    "origin": ("откуда", "город отправления", "пункт отправления", "станция отправления"),
+    "destination": ("куда", "город прибытия", "пункт прибытия", "станция прибытия"),
+}
+
+
+class TutuDiagnosticError(Exception):
+    def __init__(self, message: str, diagnostics: Diagnostics):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 def normalize_location_text(value: str) -> str:
@@ -79,6 +89,145 @@ async def _capture_location_artifacts(page, field_name: str, city_name: str) -> 
         logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": str(sp), "html_artifact": str(hp)})
     except Exception:
         logger.exception("location autocomplete artifact capture caught exception", extra={"field_name": field_name, "city_name": city_name})
+
+
+async def _save_step_artifact(page, step: str, artifacts: dict[str, list[str]] | None = None) -> None:
+    artifact_dir = Path(settings.artifact_dir) / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    safe_step = re.sub(r"[^a-z0-9_-]+", "_", step.lower())
+    screenshot = artifact_dir / f"{safe_step}-{stamp}.png"
+    html = artifact_dir / f"{safe_step}-{stamp}.html"
+    try:
+        await page.screenshot(path=str(screenshot), full_page=True)
+        html.write_text(await page.content(), encoding="utf-8")
+        if artifacts is not None:
+            artifacts.setdefault("screenshots", []).append(str(screenshot))
+            artifacts.setdefault("html_artifacts", []).append(str(html))
+        logger.info("tutu step artifacts saved", extra={"step": step, "screenshot": str(screenshot), "html_artifact": str(html)})
+    except Exception:
+        logger.exception("tutu step artifact capture caught exception", extra={"step": step})
+
+
+async def inspect_textboxes(page) -> list[dict]:
+    try:
+        inventory = await page.locator("input, textarea, [role='textbox'], [contenteditable='true']").evaluate_all(
+            """
+            elements => elements.map((element, index) => {
+                const text = node => (node && (node.innerText || node.textContent) || '').trim().replace(/\\s+/g, ' ').slice(0, 500);
+                const domPath = node => {
+                    const parts = [];
+                    while (node && node.nodeType === Node.ELEMENT_NODE) {
+                        let part = node.tagName.toLowerCase();
+                        if (node.id) part += `#${node.id}`;
+                        const parent = node.parentElement;
+                        if (parent) {
+                            const siblings = Array.from(parent.children).filter(child => child.tagName === node.tagName);
+                            if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+                        }
+                        parts.unshift(part);
+                        node = parent;
+                    }
+                    return parts.join(' > ');
+                };
+                const labelTexts = [];
+                if (element.id) document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`).forEach(label => labelTexts.push(text(label)));
+                const wrappingLabel = element.closest('label');
+                if (wrappingLabel) labelTexts.push(text(wrappingLabel));
+                const labelledBy = (element.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean);
+                labelledBy.forEach(id => labelTexts.push(text(document.getElementById(id))));
+                let ancestor = element.parentElement;
+                const nearby = [];
+                for (let depth = 0; ancestor && depth < 4; depth += 1, ancestor = ancestor.parentElement) {
+                    nearby.push(text(ancestor));
+                }
+                const form = element.closest('form');
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                const visible = !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length) && style.visibility !== 'hidden' && style.display !== 'none';
+                return {
+                    index,
+                    tag_name: element.tagName.toLowerCase(),
+                    type: element.getAttribute('type'),
+                    name: element.getAttribute('name'),
+                    id: element.id || null,
+                    placeholder: element.getAttribute('placeholder'),
+                    aria_label: element.getAttribute('aria-label'),
+                    autocomplete: element.getAttribute('autocomplete'),
+                    current_value: element.value || element.textContent || '',
+                    bounding_box: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
+                    nearby_label_text: Array.from(new Set(labelTexts.concat(nearby).filter(Boolean))).slice(0, 8),
+                    ancestor_form_text: text(form),
+                    visible,
+                    enabled: !element.disabled && element.getAttribute('aria-disabled') !== 'true',
+                    editable: !element.readOnly && !element.disabled,
+                    aria_controls: element.getAttribute('aria-controls'),
+                    aria_expanded: element.getAttribute('aria-expanded'),
+                    dom_path: domPath(element),
+                };
+            })
+            """
+        )
+    except Exception:
+        logger.exception("textbox inventory collection caught exception")
+        return []
+    logger.info("tutu textbox inventory", extra={"textbox_count": len(inventory), "textboxes": inventory})
+    for item in inventory:
+        logger.info("tutu textbox inventory item", extra={"textbox": item})
+    return inventory
+
+
+async def detect_route_input(page, field_name: str):
+    inventory = await inspect_textboxes(page)
+    labels = ROUTE_FIELD_LABELS[field_name]
+    scored = []
+    for item in inventory:
+        haystack = " ".join(str(item.get(k) or "") for k in ("name", "id", "placeholder", "aria_label", "ancestor_form_text") ) + " " + " ".join(item.get("nearby_label_text") or [])
+        haystack = haystack.lower()
+        score = sum(10 for label in labels if label in haystack)
+        if "поезд" in haystack or "ж/д" in haystack or "poezd" in haystack or "train" in haystack:
+            score += 3
+        if item.get("visible"):
+            score += 2
+        if item.get("enabled") and item.get("editable"):
+            score += 2
+        if score:
+            scored.append((score, item))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]["index"]))
+    if not scored:
+        logger.info("tutu route input semantic detection failed", extra={"field_name": field_name, "inventory": inventory})
+        raise ValueError(f"Tutu route {field_name} input not found")
+    selected = scored[0][1]
+    logger.info("tutu route input selected", extra={"field_name": field_name, "score": scored[0][0], "selected_input": selected})
+    return page.locator("input, textarea, [role='textbox'], [contenteditable='true']").nth(selected["index"]), selected, inventory
+
+
+async def inspect_popup_candidates(page, textbox, field_name: str, city_name: str) -> list[str]:
+    await _log_autocomplete_diagnostics(page, field_name, city_name)
+    try:
+        linked = await textbox.evaluate(
+            """
+            element => {
+                const ids = (element.getAttribute('aria-controls') || '').split(/\\s+/).filter(Boolean);
+                const out = [];
+                ids.forEach(id => {
+                    const target = document.getElementById(id);
+                    if (target) out.push((target.innerText || target.textContent || '').trim());
+                });
+                return out.filter(Boolean);
+            }
+            """
+        )
+        logger.info("autocomplete linked popup descendants", extra={"field_name": field_name, "city_name": city_name, "linked_popup_texts": linked})
+    except Exception:
+        pass
+    selector = "[role='listbox'], [role='option'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i], [class*='dropdown' i]"
+    try:
+        texts = await page.locator(selector).evaluate_all("els => els.filter(e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 50)")
+    except Exception:
+        texts = []
+    logger.info("autocomplete popup candidate inventory", extra={"field_name": field_name, "city_name": city_name, "popup_candidate_texts": texts})
+    return texts
 
 
 async def _log_autocomplete_diagnostics(page, field_name: str, city_name: str) -> None:
@@ -162,8 +311,17 @@ async def _fail_location_not_found(page, field_name: str, city_name: str) -> Non
     raise ValueError(f"Location suggestion not found: {city_name}")
 
 
-async def select_location(page, textbox, city_name, field_name):
+async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None):
+    try:
+        await textbox.focus()
+    except Exception:
+        pass
     await textbox.fill(city_name)
+    try:
+        await textbox.evaluate("""(el, value) => { el.value = value; el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value})); el.dispatchEvent(new Event('change', {bubbles: true})); }""", city_name)
+    except Exception:
+        pass
+    await _save_step_artifact(page, f"after_filling_{field_name}", artifacts)
     deadline = time.monotonic() + LOCATION_AUTOCOMPLETE_TIMEOUT_MS / 1000
     options = None
     while time.monotonic() < deadline:
@@ -192,13 +350,18 @@ async def select_location(page, textbox, city_name, field_name):
             if text:
                 rank, matched = location_matches(text, city_name)
                 candidates.append((rank, index, text, option, matched))
-    logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": [c[2] for c in candidates]})
+    popup_texts = await inspect_popup_candidates(page, textbox, field_name, city_name)
+    candidate_texts = [c[2] for c in candidates]
+    if diagnostics is not None:
+        diagnostics.setdefault("popup_candidates", {})[field_name] = candidate_texts or popup_texts
+    logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": candidate_texts})
 
     matches = sorted((c for c in candidates if c[4]), key=lambda c: (c[0], c[1]))
     if matches:
         rank, _index, text, option, _matched = matches[0]
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
         logger.info("autocomplete candidate selected", extra={"field_name": field_name, "city_name": city_name, "selected_candidate": text, "match_rank": rank})
+        await _save_step_artifact(page, f"after_selecting_{field_name}", artifacts)
     else:
         await _fail_location_not_found(page, field_name, city_name)
 
@@ -242,7 +405,8 @@ class TutuAvailabilityService:
                 res=AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="Tutu availability check timed out")
             except Exception as exc:
                 logger.exception("availability check caught exception", extra={"reason": "provider_error"})
-                res=AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="Tutu provider error", warnings=[str(exc)])
+                diagnostics = exc.diagnostics if isinstance(exc, TutuDiagnosticError) else Diagnostics()
+                res=AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="Tutu provider error", warnings=[str(exc), "Tutu route field diagnostics are included when available; seats were not confirmed"], diagnostics=diagnostics)
             self.cache.set(k,res); return res
     async def check_journey(self, segments):
         results=[await self.check(s) for s in segments]
@@ -271,13 +435,28 @@ class TutuAvailabilityService:
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
         browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.timeout_seconds*1000)
-        shots=[]; htmls=[]
+        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "popup_candidates": {}}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
             await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded")
-            # Public UI only. Locators are intentionally semantic, but Tutu markup may change.
-            await select_location(page, page.get_by_role("textbox").first, req.origin, "origin")
-            await select_location(page, page.get_by_role("textbox").nth(1), req.destination, "destination")
+            frame_infos = [{"url": frame.url, "name": frame.name} for frame in page.frames]
+            logger.info("tutu frame inventory", extra={"frame_count": len(frame_infos), "frames": frame_infos})
+            if len(page.frames) > 1:
+                logger.info("tutu search widget iframe candidates detected", extra={"frames": frame_infos})
+            await _save_step_artifact(page, "before_filling_origin", {"screenshots": shots, "html_artifacts": htmls})
+
+            # Public UI only. Inputs are selected from live DOM metadata rather than positional textboxes.
+            origin_input, origin_meta, _ = await detect_route_input(page, "origin")
+            diagnostic_payload["selected_inputs"]["origin"] = origin_meta
+            await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
+
+            destination_input, destination_meta, _ = await detect_route_input(page, "destination")
+            diagnostic_payload["selected_inputs"]["destination"] = destination_meta
+            try:
+                await select_location(page, destination_input, req.destination, "destination", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
+            except Exception:
+                await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
+                raise
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
             await page.get_by_role("button", name="Найти", exact=False).click()
             logger.info("search submitted")
@@ -288,15 +467,15 @@ class TutuAvailabilityService:
             logger.info("journey matched", extra={"matched_train": matched, "train_number": req.train_number})
             logger.info("seat availability extraction started")
             logger.info("seat availability extracted", extra={"available_seats": None})
-            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN if matched else AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", diagnostics=Diagnostics(matched_by="train_number" if matched else None, page_url=page.url))
+            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(matched_by="train_number" if matched else None, page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], popup_candidates=diagnostic_payload["popup_candidates"]))
         except Exception as exc:
             stamp=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             sp=os.path.join(settings.artifact_dir,f"error-{stamp}.png"); hp=os.path.join(settings.artifact_dir,f"error-{stamp}.html")
             try: await page.screenshot(path=sp, full_page=True); Path(hp).write_text(await page.content(), encoding="utf-8"); shots.append(sp); htmls.append(hp)
             except Exception:
                 logger.exception("artifact capture caught exception")
-            logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls})
-            raise exc
+            logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls, "selected_inputs": diagnostic_payload["selected_inputs"], "popup_candidates": diagnostic_payload["popup_candidates"]})
+            raise TutuDiagnosticError(str(exc), Diagnostics(page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], popup_candidates=diagnostic_payload["popup_candidates"])) from exc
         finally:
             await context.close()
 service=TutuAvailabilityService()
