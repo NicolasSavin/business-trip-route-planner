@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, hashlib, json, logging, os, time
+import asyncio, hashlib, json, logging, os, re, time
 from datetime import datetime, timezone
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -7,6 +7,138 @@ from .models import AvailabilityCheckRequest, AvailabilityCheckResponse, Availab
 from .settings import settings
 
 logger = logging.getLogger(__name__)
+LOCATION_AUTOCOMPLETE_TIMEOUT_MS = 12_000
+
+
+def normalize_location_text(value: str) -> str:
+    value = (value or "").split(",", 1)[0].lower().replace("ё", "е").strip()
+    return re.sub(r"[\s\-]+", " ", value).strip()
+
+
+def location_matches(candidate: str, city_name: str) -> tuple[int, bool]:
+    candidate_norm = normalize_location_text(candidate)
+    city_norm = normalize_location_text(city_name)
+    if not candidate_norm or not city_norm:
+        return (99, False)
+    if candidate_norm == city_norm:
+        return (0, True)
+    if candidate_norm.startswith(city_norm) or city_norm.startswith(candidate_norm):
+        return (1, True)
+    if city_norm in candidate_norm or candidate_norm in city_norm:
+        return (2, True)
+    return (99, False)
+
+
+async def _locator_count(locator) -> int:
+    try:
+        return await locator.count()
+    except Exception:
+        return 0
+
+
+async def _visible_locator_count(locator) -> int:
+    total = await _locator_count(locator)
+    visible = 0
+    for index in range(total):
+        item = locator.nth(index)
+        try:
+            if await item.is_visible(timeout=200):
+                visible += 1
+        except Exception:
+            continue
+    return visible
+
+
+async def _candidate_options(page):
+    locators = [
+        page.get_by_role("listbox").get_by_role("option"),
+        page.get_by_role("option"),
+        page.locator('[role="combobox"][aria-expanded="true"] [role="option"]'),
+        page.locator('[role="listbox"] [role="option"]'),
+        page.locator('[data-testid*="suggest" i], [class*="suggest" i], [class*="autocomplete" i], [class*="popup" i]').locator('text=/\\S/'),
+    ]
+    for locator in locators:
+        if await _visible_locator_count(locator):
+            return locator
+    return locators[-1]
+
+
+async def _autocomplete_is_closed(page) -> bool:
+    options = await _candidate_options(page)
+    return await _visible_locator_count(options) == 0
+
+
+async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_field = re.sub(r"[^a-zA-Z0-9_.-]+", "-", field_name).strip("-") or "location"
+    base = f"location-{safe_field}-{stamp}"
+    sp = os.path.join(settings.artifact_dir, f"{base}.png")
+    hp = os.path.join(settings.artifact_dir, f"{base}.html")
+    try:
+        await page.screenshot(path=sp, full_page=True)
+        Path(hp).write_text(await page.content(), encoding="utf-8")
+        logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": sp, "html_artifact": hp})
+    except Exception:
+        logger.exception("location autocomplete artifact capture caught exception", extra={"field_name": field_name, "city_name": city_name})
+
+
+async def select_location(page, textbox, city_name, field_name):
+    await textbox.fill(city_name)
+    deadline = time.monotonic() + LOCATION_AUTOCOMPLETE_TIMEOUT_MS / 1000
+    options = None
+    while time.monotonic() < deadline:
+        options = await _candidate_options(page)
+        count = await _visible_locator_count(options)
+        if count:
+            logger.info("autocomplete opened", extra={"field_name": field_name, "city_name": city_name})
+            logger.info("autocomplete options counted", extra={"field_name": field_name, "city_name": city_name, "options_count": count})
+            break
+        await asyncio.sleep(0.2)
+    else:
+        count = 0
+        logger.info("autocomplete options counted", extra={"field_name": field_name, "city_name": city_name, "options_count": 0})
+
+    candidates = []
+    if options is not None:
+        total = await _locator_count(options)
+        for index in range(total):
+            option = options.nth(index)
+            try:
+                if not await option.is_visible(timeout=200):
+                    continue
+                text = (await option.inner_text(timeout=1000)).strip()
+            except Exception:
+                continue
+            if text:
+                rank, matched = location_matches(text, city_name)
+                candidates.append((rank, index, text, option, matched))
+    logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": [c[2] for c in candidates]})
+
+    matches = sorted((c for c in candidates if c[4]), key=lambda c: (c[0], c[1]))
+    if matches:
+        rank, _index, text, option, _matched = matches[0]
+        await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
+        logger.info("autocomplete candidate selected", extra={"field_name": field_name, "city_name": city_name, "selected_candidate": text, "match_rank": rank})
+    else:
+        logger.info("autocomplete fallback used", extra={"field_name": field_name, "city_name": city_name, "fallback": "ArrowDown+Enter"})
+        try:
+            await textbox.press("ArrowDown")
+            await textbox.press("Enter")
+            await asyncio.sleep(0.2)
+        except Exception:
+            logger.exception("autocomplete fallback caught exception", extra={"field_name": field_name, "city_name": city_name})
+        final_after_fallback = (await textbox.input_value()).strip()
+        if normalize_location_text(final_after_fallback) == normalize_location_text(city_name) and await _autocomplete_is_closed(page):
+            logger.info("autocomplete fallback accepted", extra={"field_name": field_name, "city_name": city_name})
+        else:
+            await _capture_location_artifacts(page, field_name, city_name)
+            raise ValueError(f"Location suggestion not found: {city_name}")
+
+    final_value = (await textbox.input_value()).strip()
+    logger.info("final textbox value", extra={"field_name": field_name, "city_name": city_name, "final_textbox_value": final_value})
+    if normalize_location_text(city_name) not in normalize_location_text(final_value) and normalize_location_text(final_value) not in normalize_location_text(city_name):
+        raise ValueError(f"Location suggestion not found: {city_name}")
+    return final_value
 
 class TTLCache:
     def __init__(self, ttl:int): self.ttl=ttl; self.items={}
@@ -76,10 +208,8 @@ class TutuAvailabilityService:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
             await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded")
             # Public UI only. Locators are intentionally semantic, but Tutu markup may change.
-            await page.get_by_role("textbox").first.fill(req.origin)
-            await page.get_by_text(req.origin, exact=False).first.click(timeout=5000)
-            await page.get_by_role("textbox").nth(1).fill(req.destination)
-            await page.get_by_text(req.destination, exact=False).first.click(timeout=5000)
+            await select_location(page, page.get_by_role("textbox").first, req.origin, "origin")
+            await select_location(page, page.get_by_role("textbox").nth(1), req.destination, "destination")
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
             await page.get_by_role("button", name="Найти", exact=False).click()
             logger.info("search submitted")
