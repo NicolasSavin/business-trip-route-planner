@@ -7,7 +7,7 @@ from .models import AvailabilityCheckRequest, AvailabilityCheckResponse, Availab
 from .settings import settings
 
 logger = logging.getLogger(__name__)
-LOCATION_AUTOCOMPLETE_TIMEOUT_MS = 12_000
+LOCATION_AUTOCOMPLETE_TIMEOUT_MS = 20_000
 
 
 def normalize_location_text(value: str) -> str:
@@ -69,17 +69,97 @@ async def _autocomplete_is_closed(page) -> bool:
 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    safe_field = re.sub(r"[^a-zA-Z0-9_.-]+", "-", field_name).strip("-") or "location"
-    base = f"location-{safe_field}-{stamp}"
-    sp = os.path.join(settings.artifact_dir, f"{base}.png")
-    hp = os.path.join(settings.artifact_dir, f"{base}.html")
+    artifact_dir = Path(settings.artifact_dir) / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    sp = artifact_dir / "location_not_found.png"
+    hp = artifact_dir / "location_not_found.html"
     try:
-        await page.screenshot(path=sp, full_page=True)
-        Path(hp).write_text(await page.content(), encoding="utf-8")
-        logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": sp, "html_artifact": hp})
+        await page.screenshot(path=str(sp), full_page=True)
+        hp.write_text(await page.content(), encoding="utf-8")
+        logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": str(sp), "html_artifact": str(hp)})
     except Exception:
         logger.exception("location autocomplete artifact capture caught exception", extra={"field_name": field_name, "city_name": city_name})
+
+
+async def _log_autocomplete_diagnostics(page, field_name: str, city_name: str) -> None:
+    selector = "[role='listbox'], [role='option'], [role='combobox'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i], [class*='dropdown' i], [data-testid*='suggest' i], [data-testid*='autocomplete' i], [data-ti*='suggest' i], [data-ti*='autocomplete' i]"
+    try:
+        containers = await page.locator(selector).evaluate_all(
+            """
+            elements => elements.map((element, index) => {
+                const domPath = node => {
+                    const parts = [];
+                    while (node && node.nodeType === Node.ELEMENT_NODE) {
+                        let part = node.tagName.toLowerCase();
+                        if (node.id) part += `#${node.id}`;
+                        const parent = node.parentElement;
+                        if (parent) {
+                            const siblings = Array.from(parent.children).filter(child => child.tagName === node.tagName);
+                            if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+                        }
+                        parts.unshift(part);
+                        node = parent;
+                    }
+                    return parts.join(' > ');
+                };
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                const options = Array.from(element.querySelectorAll('[role="option"], li, button, [data-testid], [data-ti], a, div, span'))
+                    .map(option => ({
+                        text: (option.innerText || option.textContent || '').trim(),
+                        dom_path: domPath(option),
+                        visibility: {
+                            visible: !!(option.offsetWidth || option.offsetHeight || option.getClientRects().length),
+                            display: window.getComputedStyle(option).display,
+                            visibility: window.getComputedStyle(option).visibility,
+                            opacity: window.getComputedStyle(option).opacity,
+                        },
+                        role: option.getAttribute('role'),
+                        aria_expanded: option.getAttribute('aria-expanded'),
+                        aria_selected: option.getAttribute('aria-selected'),
+                        aria_hidden: option.getAttribute('aria-hidden'),
+                        classes: option.className,
+                    }))
+                    .filter(option => option.text);
+                return {
+                    index,
+                    text: (element.innerText || element.textContent || '').trim(),
+                    dom_path: domPath(element),
+                    visibility: {
+                        visible: !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length),
+                        display: style.display,
+                        visibility: style.visibility,
+                        opacity: style.opacity,
+                        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                    },
+                    role: element.getAttribute('role'),
+                    aria_expanded: element.getAttribute('aria-expanded'),
+                    aria_hidden: element.getAttribute('aria-hidden'),
+                    classes: element.className,
+                    options,
+                };
+            })
+            """
+        )
+    except Exception:
+        logger.exception("autocomplete diagnostics collection caught exception", extra={"field_name": field_name, "city_name": city_name})
+        return
+    if not containers:
+        logger.info("no autocomplete popup found", extra={"field_name": field_name, "city_name": city_name})
+        return
+    logger.info("autocomplete containers found", extra={"field_name": field_name, "city_name": city_name, "containers_count": len(containers)})
+    for container in containers:
+        logger.info("autocomplete container diagnostics", extra={"field_name": field_name, "city_name": city_name, "container": container})
+        if not container.get("options"):
+            logger.info("autocomplete container has no options", extra={"field_name": field_name, "city_name": city_name, "dom_path": container.get("dom_path")})
+        for option in container.get("options", []):
+            logger.info("autocomplete option diagnostics", extra={"field_name": field_name, "city_name": city_name, "container_dom_path": container.get("dom_path"), "option": option})
+
+
+async def _fail_location_not_found(page, field_name: str, city_name: str) -> None:
+    await _capture_location_artifacts(page, field_name, city_name)
+    await _log_autocomplete_diagnostics(page, field_name, city_name)
+    raise ValueError(f"Location suggestion not found: {city_name}")
 
 
 async def select_location(page, textbox, city_name, field_name):
@@ -120,24 +200,12 @@ async def select_location(page, textbox, city_name, field_name):
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
         logger.info("autocomplete candidate selected", extra={"field_name": field_name, "city_name": city_name, "selected_candidate": text, "match_rank": rank})
     else:
-        logger.info("autocomplete fallback used", extra={"field_name": field_name, "city_name": city_name, "fallback": "ArrowDown+Enter"})
-        try:
-            await textbox.press("ArrowDown")
-            await textbox.press("Enter")
-            await asyncio.sleep(0.2)
-        except Exception:
-            logger.exception("autocomplete fallback caught exception", extra={"field_name": field_name, "city_name": city_name})
-        final_after_fallback = (await textbox.input_value()).strip()
-        if normalize_location_text(final_after_fallback) == normalize_location_text(city_name) and await _autocomplete_is_closed(page):
-            logger.info("autocomplete fallback accepted", extra={"field_name": field_name, "city_name": city_name})
-        else:
-            await _capture_location_artifacts(page, field_name, city_name)
-            raise ValueError(f"Location suggestion not found: {city_name}")
+        await _fail_location_not_found(page, field_name, city_name)
 
     final_value = (await textbox.input_value()).strip()
     logger.info("final textbox value", extra={"field_name": field_name, "city_name": city_name, "final_textbox_value": final_value})
     if normalize_location_text(city_name) not in normalize_location_text(final_value) and normalize_location_text(final_value) not in normalize_location_text(city_name):
-        raise ValueError(f"Location suggestion not found: {city_name}")
+        await _fail_location_not_found(page, field_name, city_name)
     return final_value
 
 class TTLCache:

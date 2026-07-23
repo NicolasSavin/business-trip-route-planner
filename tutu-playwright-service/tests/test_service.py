@@ -71,6 +71,30 @@ class MockLocator:
     def locator(self, selector):
         return self
 
+    async def evaluate_all(self, script):
+        return [
+            {
+                "index": index,
+                "text": text,
+                "dom_path": f"html > body > div:nth-of-type({index + 1})",
+                "visibility": {"visible": self.page.autocomplete_open},
+                "role": "option",
+                "aria_expanded": None,
+                "aria_hidden": None,
+                "classes": "mock-option",
+                "options": [
+                    {
+                        "text": text,
+                        "dom_path": f"html > body > div:nth-of-type({index + 1})",
+                        "visibility": {"visible": self.page.autocomplete_open},
+                        "role": "option",
+                        "classes": "mock-option",
+                    }
+                ],
+            }
+            for index, text in enumerate(self.options)
+        ]
+
     async def count(self):
         return len(self.options)
 
@@ -131,14 +155,17 @@ async def test_select_location_partial_match():
 
 
 @pytest.mark.asyncio
-async def test_select_location_arrow_down_enter_fallback():
-    from app.service import select_location
+async def test_select_location_mismatch_fails_without_arrow_fallback(tmp_path, monkeypatch):
+    from app import service as service_module
 
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
     page = MockPage(["Тула"])
-    value = await select_location(page, page.textbox, "Рязань", "origin")
 
-    assert value == "Рязань"
-    assert page.textbox.pressed == ["ArrowDown", "Enter"]
+    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+        await service_module.select_location(page, page.textbox, "Рязань", "origin")
+
+    assert page.textbox.pressed == []
+    assert (tmp_path / "artifacts" / "location_not_found.html").exists()
 
 
 @pytest.mark.asyncio
@@ -153,4 +180,4 @@ async def test_select_location_no_suggestion_saves_artifacts(tmp_path, monkeypat
         await service_module.select_location(page, page.textbox, "Рязань", "origin")
 
     assert page.screenshots
-    assert list(tmp_path.glob("location-origin-*.html"))
+    assert (tmp_path / "artifacts" / "location_not_found.html").exists()
