@@ -1,6 +1,8 @@
 import logging
+import traceback
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from .models import AvailabilityCheckRequest, JourneyAvailabilityRequest
 from .connectivity import run_connectivity_diagnostics
 from .service import service
@@ -44,4 +46,17 @@ async def debug_test_search(req: AvailabilityCheckRequest):
 
 @app.get("/api/v1/debug/connectivity", dependencies=[Depends(require_token)])
 async def debug_connectivity():
-    return await run_connectivity_diagnostics()
+    try:
+        return await run_connectivity_diagnostics()
+    except Exception as exc:
+        logger.exception("connectivity diagnostics endpoint failed")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "diagnostics_completed": False,
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            },
+        )
