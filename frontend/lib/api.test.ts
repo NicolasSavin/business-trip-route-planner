@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ApiError, searchRoutes } from "./api";
-import type { RouteSearchPayload } from "./types";
+import type { RouteOption, RouteSearchPayload, RouteSearchResponse } from "./types";
 import { buildRouteSearchPayload, type RouteFormState } from "./locationPayload";
+import { hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "./routePresentation";
 
 const payload: RouteSearchPayload = {
   origin: "Москва",
@@ -160,4 +161,40 @@ test("buildRouteSearchPayload strips UI suffix fallback when no selected locatio
   });
   assert.equal(actual.origin, "Санкт-Петербург");
   assert.equal(actual.origin_provider_code, null);
+});
+
+const partialRoute: RouteOption = {
+  id: "route-partial",
+  origin: "Москва",
+  destination: "Санкт-Петербург",
+  segments: [
+    {
+      id: "seg-partial",
+      origin: "Москва",
+      destination: "Санкт-Петербург",
+      transport_type: "train",
+      number: "001А",
+      departure_time: "2026-08-10T10:00:00Z",
+      arrival_time: "2026-08-10T14:00:00Z",
+      available_seats: null,
+      availability_status: "unconfirmed",
+    },
+  ],
+  transfer_city: null,
+  transfer_duration_minutes: null,
+  total_duration_minutes: 240,
+  transfers_count: 0,
+  is_available_for_group: null,
+};
+
+test("strict empty response with partial routes surfaces unconfirmed state instead of empty routes", () => {
+  const response: RouteSearchResponse = { routes: [], partially_confirmed_routes: [partialRoute] };
+  assert.equal(hasHiddenUnconfirmedRoutes(response, true), true);
+  assert.equal(routeSearchNotice(response, true).text, "Расписания найдены, но наличие мест не подтверждено. Отключите “Только подтверждённые варианты”, чтобы посмотреть маршруты.");
+  assert.notEqual(routeSearchNotice(response, true).text, "Нет маршрутов: попробуйте другую дату, транспорт или пересадки.");
+});
+
+test("turning strict availability off reuses already loaded partial routes", () => {
+  const response: RouteSearchResponse = { routes: [], partially_confirmed_routes: [partialRoute] };
+  assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
 });

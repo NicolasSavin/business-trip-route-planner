@@ -121,7 +121,7 @@ class TutuProviderErrorClient:
     def __init__(self, messages):
         self.messages = messages
     async def check_segment(self, segment, request):
-        from app.availability.journey import SegmentAvailabilityResult
+        from app.availability.journey import SegmentAvailabilityResult, aggregate_journey_availability
         message = self.messages.get(segment.id, "Location suggestion not found: Рязань")
         return SegmentAvailabilityResult(
             segment_id=segment.id,
@@ -168,7 +168,7 @@ def test_multiple_tutu_segment_errors_are_not_overwritten_and_warnings_deduped()
     assert [e["message"] for e in errors] == ["first", "second"]
     assert len(routes[0].warnings) == len(set(routes[0].warnings))
 
-from app.availability.journey import SegmentAvailabilityResult
+from app.availability.journey import SegmentAvailabilityResult, aggregate_journey_availability
 from app.domain import Route, RouteOption
 import asyncio
 import time
@@ -299,3 +299,41 @@ async def test_cancelled_tutu_tasks_are_cancelled(monkeypatch):
     await planner._attach_journey_availability([option_with(*segments)], req(strict_availability=False))
 
     assert planner.tutu_playwright.cancelled == 2
+
+def test_unknown_availability_does_not_emit_not_enough_seats_warning():
+    segment = seg("unknown", "A", "C", dt(8), dt(12), seats=None)
+    segment = segment.__class__(**{**segment.__dict__, "metadata": {"availability_unknown": True}})
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+
+    routes, partial, rejected, _ = planner.search(req(max_transfers=0, strict_availability=False))
+
+    assert routes == partial
+    text = " ".join((*routes[0].warnings, routes[0].explanation, *routes[0].availability.warnings, *routes[0].availability.reasons))
+    assert "Недостаточно мест" not in text
+
+
+def test_unavailable_zero_seats_keeps_not_enough_seats_semantics_in_decision_engine():
+    from app.decision.engine import DecisionEngine
+    from app.services.route_search import RouteSearchService
+
+    planner = MultimodalJourneyPlanner(Provider([seg("zero", "A", "C", dt(8), dt(12), seats=0)]))
+    service = RouteSearchService(Provider([]))
+    service.planner = planner
+    response = service.search_response(req(max_transfers=0), include_unavailable=True)
+
+    summary = DecisionEngine().analyze(response.rejected_routes, passengers=2)[0]
+    assert any(item.message == "Недостаточно мест." for item in summary.warnings)
+
+
+def test_duplicate_provider_errors_are_deduplicated_by_segment_and_error_key():
+    segment = seg("dup", "A", "C", dt(8), dt(12), seats=None)
+    segment = segment.__class__(**{**segment.__dict__, "metadata": {"availability_unknown": True}})
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    error = {"code": "availability_enrichment_failed", "message": "ReadTimeout", "error_type": "ReadTimeout", "details": {"segment_id": "dup"}}
+    result = SegmentAvailabilityResult(segment_id="dup", provider="tutu_playwright", status=AvailabilityStatus.UNCONFIRMED, metadata={"provider_error": error})
+    option = option_with(segment)
+    availability = aggregate_journey_availability((result, result))
+    errors = planner._collect_enrichment_errors([option.__class__(**{**option.__dict__, "availability": availability})])
+
+    assert len(errors["tutu_playwright"]["errors"]) == 1
+    assert errors["tutu_playwright"]["message"] == "Сервис проверки мест не ответил вовремя. Расписание доступно, наличие мест не подтверждено."

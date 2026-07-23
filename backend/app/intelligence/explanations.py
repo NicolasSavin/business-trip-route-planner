@@ -14,9 +14,10 @@ class ExplanationService:
             warnings.extend(transfer.warnings)
         if route.transfers_count == 0:
             advantages.append("Без пересадок")
-        if route.min_available_seats >= 10:
+        known_seats = [segment.available_seats for segment in route.segments if segment.available_seats is not None]
+        if known_seats and min(known_seats) >= 10:
             advantages.append("Максимум свободных мест")
-        elif route.min_available_seats < 2:
+        elif known_seats and min(known_seats) < 2:
             warnings.append("Недостаточно мест")
         if rank == 1:
             advantages.append("Лучший маршрут по score")
