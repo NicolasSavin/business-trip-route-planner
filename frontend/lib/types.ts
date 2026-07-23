@@ -38,7 +38,22 @@ export type RouteOption = {
   total_price?: number | null;
   total_duration_minutes: number;
   transfers_count: number;
-  is_available_for_group: boolean;
+  is_available_for_group: boolean | null;
+  availability?: RouteAvailability | null;
+};
+export type SegmentAvailability = {
+  segment_id: string;
+  is_available: boolean | null;
+  available_seats: number | null;
+  availability_status?: string | null;
+  availability_message?: string | null;
+};
+export type RouteAvailability = {
+  is_available: boolean | null;
+  requested_passengers: number;
+  minimum_available_seats: number | null;
+  segment_results: SegmentAvailability[];
+  segments?: SegmentAvailability[];
 };
 export type DecisionReasonKind = "advantage" | "disadvantage" | "warning" | "recommendation";
 export type DecisionReason = { code: string; message: string; kind: DecisionReasonKind; weight: number };

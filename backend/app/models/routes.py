@@ -90,7 +90,7 @@ class SegmentAvailability(BaseModel):
 
 
 class RouteAvailability(BaseModel):
-    is_available: bool
+    is_available: bool | None
     requested_passengers: int
     minimum_available_seats: int | None
     checked_at: datetime
@@ -123,7 +123,7 @@ class RouteOption(BaseModel):
     total_price: float | None = None
     total_duration_minutes: int
     transfers_count: int
-    is_available_for_group: bool
+    is_available_for_group: bool | None
     score: float | None = None
     rank: int | None = None
     explanation: str | None = None
