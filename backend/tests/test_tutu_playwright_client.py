@@ -19,6 +19,7 @@ def test_provider_unavailable_fallback(monkeypatch):
     monkeypatch.setattr(httpx.Client, "post", boom)
     res=c.check_segment(segment(), request())
     assert res.status == AvailabilityStatus.UNCONFIRMED
+    assert res.metadata["provider_error"]["code"] == "availability_enrichment_failed"
 
 def test_confirmed_mapping(monkeypatch):
     c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True)
@@ -28,3 +29,15 @@ def test_confirmed_mapping(monkeypatch):
     res=c.check_segment(segment(), request())
     assert res.status == AvailabilityStatus.CONFIRMED
     assert res.selected_carriages == ("5",) and res.selected_compartments == ("1",)
+
+
+def test_provider_error_response_is_returned_as_safe_unconfirmed_result(monkeypatch):
+    c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True)
+    def fake_post(*args, **kwargs):
+        return httpx.Response(200, json={"status":"provider_error", "message":"Location suggestion not found: Рязань", "error_type":"TutuDiagnosticError", "diagnostics":{"selected_inputs":[], "popup_candidates":[], "screenshots":["a"]}})
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    res=c.check_segment(segment(), request())
+    assert res.status == AvailabilityStatus.UNCONFIRMED
+    assert res.metadata["provider_error"]["message"] == "Location suggestion not found: Рязань"
+    assert res.metadata["provider_error"]["error_type"] == "TutuDiagnosticError"
+    assert "X-Service-Token" not in str(res.metadata)

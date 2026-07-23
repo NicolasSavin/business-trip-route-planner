@@ -67,7 +67,7 @@ class RouteSegment(BaseModel):
 
 class SegmentAvailability(BaseModel):
     segment_id: str
-    is_available: bool
+    is_available: bool | None
     available_seats: int | None
     origin_station: str | None = None
     destination_station: str | None = None

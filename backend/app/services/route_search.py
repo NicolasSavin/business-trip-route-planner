@@ -69,7 +69,7 @@ class RouteSearchService:
                     segment_results.append(
                         SegmentAvailability(
                             segment_id=result.segment_id,
-                            is_available=result.status == AvailabilityStatus.CONFIRMED,
+                            is_available=(True if result.status == AvailabilityStatus.CONFIRMED else (False if result.status == AvailabilityStatus.UNAVAILABLE else None)),
                             available_seats=result.available_places_count,
                             requested_passengers=passengers,
                             transport_class=None,
@@ -83,7 +83,7 @@ class RouteSearchService:
                 known_counts = [r.available_places_count for r in option.availability.segment_results if r.available_places_count is not None]
                 minimum = min(known_counts) if known_counts else None
                 availability = RouteAvailability(
-                    is_available=option.availability.status == AvailabilityStatus.CONFIRMED,
+                    is_available=(True if option.availability.status == AvailabilityStatus.CONFIRMED else (False if option.availability.status == AvailabilityStatus.UNAVAILABLE else None)),
                     requested_passengers=passengers,
                     minimum_available_seats=minimum,
                     checked_at=option.availability.checked_at,
@@ -134,7 +134,7 @@ class RouteSearchService:
                 item.availability_message = {
                     AvailabilityStatus.CONFIRMED: "Все места подтверждены",
                     AvailabilityStatus.PARTIALLY_CONFIRMED: "Часть наличия не проверена",
-                    AvailabilityStatus.UNCONFIRMED: "Расписание найдено, наличие мест не подтверждено",
+                    AvailabilityStatus.UNCONFIRMED: "Расписание найдено, проверка мест через Туту не выполнена" if result.provider == "tutu_playwright" and result.metadata.get("provider_error") else "Наличие мест не подтверждено",
                     AvailabilityStatus.UNAVAILABLE: "Нет подходящих мест",
                     AvailabilityStatus.UNKNOWN: "Наличие мест неизвестно",
                     AvailabilityStatus.STALE: "Проверка устарела",
@@ -154,11 +154,11 @@ class RouteSearchService:
             total_price=sum((segment.price or 0) for segment in route.segments) or None,
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
-            is_available_for_group=option.availability.is_available if option.availability else all((segment.available_seats or 0) >= passengers for segment in route.segments),
+            is_available_for_group=option.availability.is_available if option.availability else all(segment.available_seats is not None and segment.available_seats >= passengers for segment in route.segments),
             score=option.score,
             rank=option.rank,
             explanation=option.explanation,
-            warnings=list(option.warnings),
+            warnings=list(dict.fromkeys(option.warnings)),
             advantages=list(option.advantages),
             availability=availability,
         )
