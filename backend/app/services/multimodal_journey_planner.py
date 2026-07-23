@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
+from time import monotonic
 
 from app.availability import AvailabilityEngine, AvailabilityPolicy
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache, SegmentAvailabilityResult, aggregate_journey_availability
@@ -23,6 +24,8 @@ MAX_SEGMENTS_PER_QUERY = 500
 MAX_AVAILABILITY_CHECKS_PER_QUERY = int(os.getenv("MAX_AVAILABILITY_CHECKS_PER_QUERY", "10"))
 MAX_PROVIDER_CONCURRENCY = int(os.getenv("MAX_PROVIDER_CONCURRENCY", "2"))
 TUTU_MAX_JOURNEYS_TO_ENRICH = int(os.getenv("TUTU_MAX_JOURNEYS_TO_ENRICH", "3"))
+TUTU_ENRICHMENT_CONCURRENCY = int(os.getenv("TUTU_ENRICHMENT_CONCURRENCY", "2"))
+TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS = float(os.getenv("TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", "25"))
 
 
 class MultimodalJourneyPlanner:
@@ -39,7 +42,8 @@ class MultimodalJourneyPlanner:
         self.concurrency = max(1, concurrency)
         self.last_summary = SearchSummary()
 
-    def search(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
+    async def search_async(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
+        started_at = monotonic()
         options = self.route_engine.search(
             departure_date=request.departure_date,
             origin=request.origin,
@@ -68,7 +72,8 @@ class MultimodalJourneyPlanner:
             len(options),
             MAX_CANDIDATE_JOURNEYS,
         )
-        checked = asyncio.run(self._attach_journey_availability(options, request)) if options else []
+        logger.info("route search enrichment started", extra={"candidate_journeys": len(options), "max_journeys_to_enrich": TUTU_MAX_JOURNEYS_TO_ENRICH})
+        checked = await self._attach_journey_availability(options, request) if options else []
         confirmed = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.CONFIRMED]
         partial = [o for o in checked if o.availability and o.availability.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
         rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
@@ -108,22 +113,78 @@ class MultimodalJourneyPlanner:
         )
         if enrichment_errors:
             logger.info("route_search.provider error added to SearchSummary", extra={"providers": list(enrichment_errors)})
+        logger.info("route search response returned", extra={"duration_ms": int((monotonic() - started_at) * 1000), "routes": len(routes), "partial": len(partial), "rejected": len(rejected)})
         self.last_summary = summary
         return routes, partial, rejected, summary
 
+    def search(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.search_async(request))
+        raise RuntimeError("Use search_async() inside a running event loop")
+
     async def _attach_journey_availability(self, options: list[DomainRouteOption], request: RouteSearchRequest) -> list[DomainRouteOption]:
-        sem = asyncio.Semaphore(self.concurrency)
-        async def one(option: DomainRouteOption) -> DomainRouteOption:
-            async with sem:
-                enrich_with_tutu = option in options[:TUTU_MAX_JOURNEYS_TO_ENRICH]
-                results = []
-                for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]:
-                    results.append(await asyncio.to_thread(self._check_segment, segment, request, enrich_with_tutu))
-                journey = aggregate_journey_availability(tuple(results))
-                warnings = (*option.warnings, *journey.warnings)
-                explanation = self._explain(option, journey)
-                return replace(option, availability=journey, warnings=warnings, explanation=explanation)
-        return await asyncio.gather(*(one(option) for option in options))
+        enrich_options = options[:TUTU_MAX_JOURNEYS_TO_ENRICH]
+        local_cache: dict[str, SegmentAvailabilityResult] = {}
+        unique_segments: dict[str, TransportSegment] = {}
+        for option in enrich_options:
+            for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]:
+                if segment.transport_type == TransportType.TRAIN:
+                    key = self._cache_key(segment, request)
+                    unique_segments.setdefault(key, segment)
+        logger.info("unique segments count", extra={"unique_segments_count": len(unique_segments)})
+
+        # Compute cheap/local availability for every segment first. Tutu results below may override it.
+        for option in options:
+            for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]:
+                key = self._cache_key(segment, request)
+                if key not in local_cache:
+                    local_cache[key] = self._check_segment_base(segment, request)
+
+        tutu_available = self.tutu_playwright.available() if hasattr(self.tutu_playwright, "available") else True
+        if unique_segments and tutu_available:
+            sem = asyncio.Semaphore(max(1, TUTU_ENRICHMENT_CONCURRENCY))
+
+            async def enrich_one(key: str, segment: TransportSegment) -> tuple[str, SegmentAvailabilityResult | None]:
+                async with sem:
+                    logger.info("enrichment task started", extra={"segment_id": segment.id})
+                    try:
+                        result = await self.tutu_playwright.check_segment(segment, request)
+                        logger.info("enrichment task completed", extra={"segment_id": segment.id, "status": getattr(getattr(result, "status", None), "value", None)})
+                        return key, result
+                    except asyncio.CancelledError:
+                        logger.info("enrichment timeout", extra={"segment_id": segment.id})
+                        raise
+
+            tasks = [asyncio.create_task(enrich_one(key, segment)) for key, segment in unique_segments.items()]
+            done, pending = await asyncio.wait(tasks, timeout=TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS)
+            for task in done:
+                try:
+                    key, result = task.result()
+                except Exception as exc:
+                    logger.warning("tutu_playwright.enrichment exception captured", extra={"error_type": type(exc).__name__})
+                    continue
+                if result is not None:
+                    local_cache[key] = result
+            if pending:
+                logger.warning("enrichment budget exhausted", extra={"timeout_seconds": TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS, "pending_tasks": len(pending)})
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                logger.info("tasks cancelled", extra={"cancelled_tasks": len(pending)})
+                for key in unique_segments:
+                    if key not in {task.result()[0] for task in done if not task.cancelled() and task.exception() is None}:
+                        local_cache[key] = self._tutu_timeout_result(unique_segments[key])
+
+        enriched: list[DomainRouteOption] = []
+        for option in options:
+            results = [local_cache[self._cache_key(segment, request)] for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]]
+            journey = aggregate_journey_availability(tuple(results))
+            warnings = tuple(dict.fromkeys((*option.warnings, *journey.warnings)))
+            explanation = self._explain(option, journey)
+            enriched.append(replace(option, availability=journey, warnings=warnings, explanation=explanation))
+        return enriched
 
     def _collect_enrichment_errors(self, options: list[DomainRouteOption]) -> dict[str, dict]:
         errors: list[dict] = []
@@ -140,7 +201,7 @@ class MultimodalJourneyPlanner:
         first = errors[0]
         return {"tutu_playwright": {"code": "availability_enrichment_failed", "message": first.get("message", "Tutu availability enrichment failed"), "error_type": first.get("error_type", "ProviderError"), "errors": errors[:10]}}
 
-    def _check_segment(self, segment: TransportSegment, request: RouteSearchRequest, enrich_with_tutu: bool = False) -> SegmentAvailabilityResult:
+    def _check_segment_base(self, segment: TransportSegment, request: RouteSearchRequest) -> SegmentAvailabilityResult:
         key = self._cache_key(segment, request)
         cached = self.cache.get(key)
         if cached:
@@ -154,15 +215,7 @@ class MultimodalJourneyPlanner:
                 result = replace(result, warnings=tuple(dict.fromkeys(w for w in result.warnings if w)))
             if segment.available_seats == 999:
                 result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, warnings=(*result.warnings, "Yandex returned 999 seats placeholder; real availability is unconfirmed"))
-            if enrich_with_tutu and segment.transport_type == TransportType.TRAIN:
-                tutu_result = self.tutu_playwright.check_segment(segment, request)
-                if tutu_result is not None:
-                    result = tutu_result
-                    if result.status == AvailabilityStatus.UNCONFIRMED and result.metadata.get("provider_error"):
-                        logger.info("route_search.route kept as unconfirmed", extra={"segment_id": segment.id, "provider": "tutu_playwright"})
-                elif request.seat_preferences:
-                    result = self._apply_railway_preferences(segment, request, result)
-            elif segment.transport_type == TransportType.TRAIN and request.seat_preferences:
+            if segment.transport_type == TransportType.TRAIN and request.seat_preferences:
                 result = self._apply_railway_preferences(segment, request, result)
             if segment.transport_type != TransportType.TRAIN:
                 result = replace(result, seat_preferences_status=AvailabilityStatus.CONFIRMED if result.passengers_supported else result.status)
@@ -170,6 +223,9 @@ class MultimodalJourneyPlanner:
             result = SegmentAvailabilityResult(segment_id=segment.id, provider=segment.provider, status=AvailabilityStatus.PROVIDER_ERROR, reasons=(str(exc) or "Ошибка provider availability",))
         self.cache.set(key, result)
         return result
+
+    def _tutu_timeout_result(self, segment: TransportSegment) -> SegmentAvailabilityResult:
+        return SegmentAvailabilityResult(segment_id=segment.id, provider="tutu_playwright", status=AvailabilityStatus.UNCONFIRMED, schedule_confirmed=True, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=("Расписание найдено, проверка мест через Туту не выполнена",), warnings=("Расписание найдено, проверка мест через Туту не выполнена",), metadata={"provider_error": {"code": "availability_enrichment_failed", "message": "Tutu enrichment total timeout exceeded", "error_type": "TimeoutError", "details": {"segment_id": segment.id}}})
 
     def _apply_railway_preferences(self, segment: TransportSegment, request: RouteSearchRequest, base: SegmentAvailabilityResult) -> SegmentAvailabilityResult:
         pref = request.seat_preferences

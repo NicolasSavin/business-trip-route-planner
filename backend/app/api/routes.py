@@ -8,5 +8,5 @@ service = RouteSearchService(unified_provider)
 
 
 @router.post("/search", response_model=RouteSearchResponse)
-def search_routes(request: RouteSearchRequest) -> RouteSearchResponse:
-    return service.search_response(request)
+async def search_routes(request: RouteSearchRequest) -> RouteSearchResponse:
+    return await service.search_response_async(request)

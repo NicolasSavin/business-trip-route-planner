@@ -20,8 +20,8 @@ class RouteSearchService:
         response = self.search_response(request, include_unavailable=include_unavailable)
         return response.routes + (response.partially_confirmed_routes if include_unavailable else []) + (response.rejected_routes if include_unavailable else [])
 
-    def search_response(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
-        routes, partial, rejected, summary = self.planner.search(request)
+    async def search_response_async(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
+        routes, partial, rejected, summary = await self.planner.search_async(request)
         api_routes = [self._to_api_route(option, request.passengers) for option in routes]
         api_partial = [self._to_api_route(option, request.passengers) for option in partial]
         api_rejected = [self._to_api_route(option, request.passengers) for option in rejected]
@@ -36,6 +36,16 @@ class RouteSearchService:
             len(api_routes),
         )
         return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=diagnostic_rejected, search_summary=summary)
+
+    def search_response(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
+        routes, partial, rejected, summary = self.planner.search(request)
+        api_routes = [self._to_api_route(option, request.passengers) for option in routes]
+        api_partial = [self._to_api_route(option, request.passengers) for option in partial]
+        api_rejected = [self._to_api_route(option, request.passengers) for option in rejected]
+        if not include_unavailable and not request.strict_availability:
+            api_rejected = []
+        logger.info("route_search.serialization api_routes=%s api_partial=%s api_rejected=%s final_routes=%s", len(api_routes), len(api_partial), len(api_rejected), len(api_routes))
+        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=api_rejected, search_summary=summary)
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route

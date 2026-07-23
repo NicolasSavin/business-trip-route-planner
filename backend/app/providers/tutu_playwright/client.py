@@ -41,14 +41,14 @@ def _safe_details(data: dict[str, Any], segment: TransportSegment, status: str) 
     return _safe_value(details)
 
 class TutuPlaywrightAvailabilityClient:
-    def __init__(self, base_url: str | None = None, token: str | None = None, enabled: bool | None = None, timeout: float = 50.0):
+    def __init__(self, base_url: str | None = None, token: str | None = None, enabled: bool | None = None, timeout: float | None = None):
         self.base_url=(base_url or os.getenv("TUTU_PLAYWRIGHT_SERVICE_URL", "")).rstrip("/")
         self.token=token if token is not None else os.getenv("TUTU_PLAYWRIGHT_SERVICE_TOKEN", "")
         self.enabled=(os.getenv("TUTU_PLAYWRIGHT_ENABLED", "false").lower()=="true") if enabled is None else enabled
-        self.timeout=timeout
+        self.timeout=timeout if timeout is not None else float(os.getenv("TUTU_PLAYWRIGHT_REQUEST_TIMEOUT_SECONDS", "15"))
     def available(self) -> bool:
         return bool(self.enabled and self.base_url)
-    def check_segment(self, segment: TransportSegment, request: RouteSearchRequest) -> SegmentAvailabilityResult | None:
+    async def check_segment(self, segment: TransportSegment, request: RouteSearchRequest) -> SegmentAvailabilityResult | None:
         if not self.available() or segment.transport_type != TransportType.TRAIN:
             return None
         pref=request.seat_preferences
@@ -69,8 +69,8 @@ class TutuPlaywrightAvailabilityClient:
         safe_payload = {k: v for k, v in payload.items() if k != "service_api_token"}
         logger.info("tutu_playwright.enrichment request started", extra={"segment_id": segment.id, "payload": safe_payload})
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp=client.post(f"{self.base_url}/api/v1/availability/check", json=payload, headers=headers)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp=await client.post(f"{self.base_url}/api/v1/availability/check", json=payload, headers=headers)
                 logger.info("tutu_playwright.enrichment response received", extra={"segment_id": segment.id, "status_code": resp.status_code})
                 if resp.status_code >= 400:
                     raise httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=getattr(resp, "request", None), response=resp)
