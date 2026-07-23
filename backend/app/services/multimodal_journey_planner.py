@@ -188,7 +188,7 @@ class MultimodalJourneyPlanner:
         for option in options:
             results = [local_cache[self._cache_key(segment, request)] for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]]
             journey = aggregate_journey_availability(tuple(results))
-            warnings = tuple(dict.fromkeys((*option.warnings, *journey.warnings)))
+            warnings = tuple(dict.fromkeys(w for w in (*option.warnings, *journey.warnings) if w))
             explanation = self._explain(option, journey)
             enriched.append(replace(option, availability=journey, warnings=warnings, explanation=explanation))
         return enriched
@@ -204,9 +204,26 @@ class MultimodalJourneyPlanner:
                     errors.append(error)
         if not errors:
             return {}
-        logger.info("tutu_playwright.enrichment provider_error", extra={"errors_count": len(errors)})
-        first = errors[0]
-        return {"tutu_playwright": {"code": "availability_enrichment_failed", "message": first.get("message", "Tutu availability enrichment failed"), "error_type": first.get("error_type", "ProviderError"), "errors": errors[:10]}}
+        deduped = []
+        seen = set()
+        for error in errors:
+            details = error.get("details") if isinstance(error.get("details"), dict) else {}
+            key = (details.get("segment_id"), error.get("code"), error.get("error_type"), error.get("message"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(error)
+        logger.info("tutu_playwright.enrichment provider_error", extra={"errors_count": len(errors), "deduped_errors_count": len(deduped)})
+        first = deduped[0]
+        public_message = self._public_provider_error_message(first)
+        return {"tutu_playwright": {"code": "availability_enrichment_failed", "message": public_message, "error_type": first.get("error_type", "ProviderError"), "errors": deduped[:10]}}
+
+    def _public_provider_error_message(self, error: dict) -> str:
+        message = str(error.get("message") or "")
+        error_type = str(error.get("error_type") or "")
+        if "ReadTimeout" in message or "ReadTimeout" in error_type or "timeout" in message.lower() or "timeout" in error_type.lower():
+            return "Сервис проверки мест не ответил вовремя. Расписание доступно, наличие мест не подтверждено."
+        return message or "Сервис проверки мест временно недоступен. Расписание доступно, наличие мест не подтверждено."
 
     def _check_segment_base(self, segment: TransportSegment, request: RouteSearchRequest) -> SegmentAvailabilityResult:
         key = self._cache_key(segment, request)
@@ -247,7 +264,7 @@ class MultimodalJourneyPlanner:
         selected = allocation.selected_places
         status = base.status if allocation.matches_preferences else (AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED)
         reasons = (*base.reasons, *allocation.reasons)
-        return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=reasons)
+        return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=tuple(dict.fromkeys(reason for reason in reasons if reason)))
 
     def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass | None) -> RailwayPlace:
         return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number")), carriage_number=str(item.get("carriage_number") or item.get("carriage") or "1"), transport_class=TransportClass(item.get("transport_class") or fallback_class or TransportClass.SEATED), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)))

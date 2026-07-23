@@ -42,7 +42,8 @@ import {
   ApiError,
   apiBaseUrl,
 } from "@/lib/api";
-import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, SavedSearch, TransportType } from "@/lib/types";
+import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, RouteSearchResponse, SavedSearch, TransportType } from "@/lib/types";
+import { hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "@/lib/routePresentation";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -133,7 +134,7 @@ function availabilityBadge(route: RouteOption) {
     return { className: "bg-rose-50 text-rose-700", text: "Проверка временно недоступна" };
   }
   if (statuses.includes("unconfirmed") || statuses.includes("unknown") || statuses.includes("partially_confirmed")) {
-    return { className: "bg-amber-50 text-amber-700", text: "Наличие мест не проверено" };
+    return { className: "bg-amber-50 text-amber-700", text: "Наличие мест не подтверждено" };
   }
   if (statuses.includes("confirmed")) {
     return { className: "bg-emerald-50 text-emerald-700", text: "Наличие мест подтверждено" };
@@ -193,6 +194,7 @@ function TransportIllustration() {
 export default function Home() {
   const [formState, setFormState] = useState<FormState>(initialForm);
   const [routes, setRoutes] = useState<RouteOption[]>(demoResponse.routes);
+  const [lastRouteResponse, setLastRouteResponse] = useState<RouteSearchResponse | null>(null);
   const [apiDiagnostics, setApiDiagnostics] = useState<ApiDiagnostics | null>(null);
   const [tutuEnrichmentWarning, setTutuEnrichmentWarning] = useState(false);
   const [notice, setNotice] = useState<{ kind: NoticeKind; text: string }>({
@@ -255,20 +257,14 @@ export default function Home() {
     try {
       const data = await searchRoutes(payload);
       setLastPayload(payload);
-      setRoutes(data.routes);
+      setLastRouteResponse(data);
+      setRoutes(routesVisibleForStrictState(data, payload.strict_availability ?? true));
       setDecisionByRoute({});
       setCompareIds([]);
       setComparison(null);
       setApiDiagnostics(null);
       setTutuEnrichmentWarning(Boolean(data.provider_errors?.tutu_playwright || data.search_summary?.provider_errors?.tutu_playwright));
-      setNotice(
-        data.routes.length
-          ? { kind: "api", text: "Результаты получены из backend API." }
-          : {
-              kind: "empty",
-              text: "Нет маршрутов: попробуйте другую дату, транспорт или пересадки.",
-            },
-      );
+      setNotice(routeSearchNotice(data, payload.strict_availability ?? true));
     } catch (error) {
       console.error("Route search failed", error);
       setApiDiagnostics(buildApiDiagnostics(error, "/api/v1/routes/search"));
@@ -279,6 +275,23 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+
+  function disableStrictAvailabilityWithLoadedRoutes() {
+    if (lastRouteResponse?.partially_confirmed_routes?.length && routes.length === 0) {
+      setRoutes(lastRouteResponse.partially_confirmed_routes);
+      setDecisionByRoute({});
+      setCompareIds([]);
+      setComparison(null);
+      setNotice({ kind: "api", text: "Показаны маршруты с неподтверждённым наличием мест без повторного запроса." });
+    }
+  }
+
+  function showUnconfirmedRoutes() {
+    if (!lastRouteResponse?.partially_confirmed_routes?.length) return;
+    setFormState((current) => ({ ...current, strict_availability: false }));
+    disableStrictAvailabilityWithLoadedRoutes();
   }
 
   async function explainRoute(route: RouteOption) {
@@ -687,7 +700,14 @@ export default function Home() {
                 <input className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10" type="number" min="0" value={formState.maximum_transfer_minutes} onChange={(e) => updateField("maximum_transfer_minutes", Number(e.target.value))} required />
               </label>
               <label className="flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-3 text-sm font-semibold text-ink">
-                <input type="checkbox" checked={formState.strict_availability} onChange={(e) => updateField("strict_availability", e.target.checked)} /> Только подтверждённые варианты
+                <input
+                  type="checkbox"
+                  checked={formState.strict_availability}
+                  onChange={(e) => {
+                    updateField("strict_availability", e.target.checked);
+                    if (!e.target.checked) disableStrictAvailabilityWithLoadedRoutes();
+                  }}
+                /> Только подтверждённые варианты
               </label>
               <label className="flex items-center gap-2 rounded-2xl border border-line bg-cloud px-4 py-3 text-sm font-semibold text-ink">
                 <input type="checkbox" checked={formState.lower_only} onChange={(e) => updateField("lower_only", e.target.checked)} /> Только нижние места
@@ -746,7 +766,19 @@ export default function Home() {
                   className="h-72 animate-pulse rounded-[2rem] border border-line bg-white shadow-soft"
                 />
               ))}
-            {!loading && sortedRoutes.length === 0 && (
+            {!loading && sortedRoutes.length === 0 && hasHiddenUnconfirmedRoutes(lastRouteResponse ?? { routes: [] }, formState.strict_availability) && (
+              <div className="rounded-[2rem] border border-amber-100 bg-amber-50 p-10 text-center shadow-soft">
+                <Milestone className="mx-auto mb-4 text-amber-600" />
+                <h3 className="text-xl font-semibold text-ink">Расписания найдены</h3>
+                <p className="mx-auto mt-2 max-w-2xl text-muted">
+                  Расписания найдены, но наличие мест не подтверждено. Отключите “Только подтверждённые варианты”, чтобы посмотреть маршруты.
+                </p>
+                <button type="button" onClick={showUnconfirmedRoutes} className="mt-5 rounded-2xl bg-brand px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-ink">
+                  Показать неподтверждённые маршруты
+                </button>
+              </div>
+            )}
+            {!loading && sortedRoutes.length === 0 && !hasHiddenUnconfirmedRoutes(lastRouteResponse ?? { routes: [] }, formState.strict_availability) && (
               <div className="rounded-[2rem] border border-line bg-white p-10 text-center shadow-soft">
                 <Milestone className="mx-auto mb-4 text-muted" />
                 <h3 className="text-xl font-semibold">Нет маршрутов</h3>
@@ -880,7 +912,7 @@ export default function Home() {
                                 {segment.destination_station || "Станция не указана"} · {dateTime(segment.arrival_time)} · {minutesLabel(Math.round((new Date(segment.arrival_time).getTime() - new Date(segment.departure_time).getTime()) / 60000))}
                               </p>
                               <p className="mt-1 text-xs font-medium text-aqua">
-                                {segment.availability_message || (segment.available_seats === null ? "Наличие мест не проверено" : `${segment.available_seats} мест`)}
+                                {segment.availability_message || (segment.available_seats === null ? "Наличие мест не подтверждено" : `${segment.available_seats} мест`)}
                                 {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-1 text-[11px] font-semibold">

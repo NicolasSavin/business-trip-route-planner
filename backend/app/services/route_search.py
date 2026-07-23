@@ -94,7 +94,7 @@ class RouteSearchService:
                             checked_at=result.checked_at,
                             source=result.provider,
                             reason=", ".join(result.reasons) or None,
-                            warnings=list(result.warnings),
+                            warnings=list(dict.fromkeys(result.warnings)),
                             is_stale=result.is_stale,
                         )
                     )
@@ -106,8 +106,8 @@ class RouteSearchService:
                     minimum_available_seats=minimum,
                     checked_at=option.availability.checked_at,
                     segment_results=segment_results,
-                    reasons=list(option.availability.reasons),
-                    warnings=list(option.availability.warnings),
+                    reasons=list(dict.fromkeys(option.availability.reasons)),
+                    warnings=list(dict.fromkeys(option.availability.warnings)),
                     is_stale=option.availability.status == AvailabilityStatus.STALE,
                 )
                 availability.segments = availability.segment_results
@@ -127,14 +127,14 @@ class RouteSearchService:
                             checked_at=result.checked_at,
                             source=result.source,
                             reason=result.reason,
-                            warnings=list(result.warnings),
+                            warnings=list(dict.fromkeys(result.warnings)),
                             stale_after_seconds=result.stale_after_seconds,
                             is_stale=result.is_stale,
                         )
                         for result in option.availability.segment_results
                     ],
-                    reasons=list(option.availability.reasons),
-                    warnings=list(option.availability.warnings),
+                    reasons=list(dict.fromkeys(option.availability.reasons)),
+                    warnings=list(dict.fromkeys(option.availability.warnings)),
                     stale_after_seconds=option.availability.stale_after_seconds,
                     is_stale=option.availability.is_stale,
                 )
