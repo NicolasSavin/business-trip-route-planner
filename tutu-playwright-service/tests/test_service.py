@@ -181,3 +181,66 @@ async def test_select_location_no_suggestion_saves_artifacts(tmp_path, monkeypat
 
     assert page.screenshots
     assert (tmp_path / "artifacts" / "location_not_found.html").exists()
+
+@pytest.mark.asyncio
+async def test_debug_connectivity_endpoint_with_mocked_failures(monkeypatch):
+    from app import connectivity
+
+    async def fake_dns(host):
+        return {"ok": True, "host": host, "ips": ["1.2.3.4"]}
+
+    async def fake_tcp(host, port=443):
+        return {"ok": True, "host": host, "port": port}
+
+    async def fake_httpx(targets, **kwargs):
+        return {target.key: {"ok": False, "url": target.url, "error_type": "ConnectError", "message": "Connection refused"} for target in targets}
+
+    async def fake_playwright(targets, **kwargs):
+        return {target.key: {"ok": False, "url": target.url, "error_type": "Error", "message": "net::ERR_CONNECTION_REFUSED"} for target in targets}
+
+    monkeypatch.setattr(connectivity, "resolve_dns", fake_dns)
+    monkeypatch.setattr(connectivity, "check_tcp", fake_tcp)
+    monkeypatch.setattr(connectivity, "check_httpx", fake_httpx)
+    monkeypatch.setattr(connectivity, "check_playwright", fake_playwright)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/api/v1/debug/connectivity")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["dns"]["ips"] == ["1.2.3.4"]
+    assert data["httpx"]["root"]["error_type"] == "ConnectError"
+    assert data["playwright"]["poezda"]["message"] == "net::ERR_CONNECTION_REFUSED"
+    assert data["provider_error"]["message"] == "tutu.ru is unreachable from the current hosting network"
+
+
+@pytest.mark.asyncio
+async def test_debug_connectivity_runs_playwright_variants_when_httpx_works(monkeypatch):
+    from app import connectivity
+
+    calls = []
+
+    async def fake_dns(host):
+        return {"ok": True, "host": host, "ips": ["1.2.3.4"]}
+
+    async def fake_tcp(host, port=443):
+        return {"ok": True, "host": host, "port": port}
+
+    async def fake_httpx(targets, **kwargs):
+        return {target.key: {"ok": True, "url": target.url, "status_code": 200, "headers": {}, "redirect_chain": [], "final_url": target.url} for target in targets}
+
+    async def fake_playwright(targets, **kwargs):
+        calls.append(kwargs)
+        return {target.key: {"ok": False, "url": target.url, "error_type": "Error", "message": "net::ERR_CONNECTION_REFUSED"} for target in targets}
+
+    monkeypatch.setattr(connectivity, "resolve_dns", fake_dns)
+    monkeypatch.setattr(connectivity, "check_tcp", fake_tcp)
+    monkeypatch.setattr(connectivity, "check_httpx", fake_httpx)
+    monkeypatch.setattr(connectivity, "check_playwright", fake_playwright)
+
+    result = await connectivity.run_connectivity_diagnostics()
+
+    assert "playwright_variants" in result
+    assert set(result["playwright_variants"]) == {"chromium_launch_args", "ipv4_preference", "disable_http2", "desktop_user_agent"}
+    assert len(calls) == 5
+    assert any(call.get("user_agent") == connectivity.DESKTOP_USER_AGENT for call in calls)

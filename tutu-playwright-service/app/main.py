@@ -2,6 +2,7 @@ import logging
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from .models import AvailabilityCheckRequest, JourneyAvailabilityRequest
+from .connectivity import run_connectivity_diagnostics
 from .service import service
 from .settings import settings
 
@@ -40,3 +41,7 @@ async def check_journey(req: JourneyAvailabilityRequest):
 @app.post("/api/v1/debug/test-search", dependencies=[Depends(require_token)])
 async def debug_test_search(req: AvailabilityCheckRequest):
     return await service.check(req)
+
+@app.get("/api/v1/debug/connectivity", dependencies=[Depends(require_token)])
+async def debug_connectivity():
+    return await run_connectivity_diagnostics()
