@@ -46,3 +46,46 @@ def test_suggest_endpoint_reproduced_queries_do_not_500():
         payload = response.json()
         assert "items" in payload
         assert payload["items"]
+
+
+def test_ryazan_partial_suggest_endpoint_returns_city():
+    client = TestClient(app)
+
+    response = client.get("/api/v1/locations/suggest", params={"q": "Ряза", "limit": 8})
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert any(item["name"] == "Рязань" and item["type"] == "city" for item in items)
+
+
+def test_lowercase_cyrillic_partial_queries_return_known_cities():
+    client = TestClient(app)
+
+    expected = {"ряза": "Рязань", "твер": "Тверь", "санкт": "Санкт-Петербург", "бий": "Бийск"}
+    for query, city in expected.items():
+        response = client.get("/api/v1/locations/suggest", params={"q": query, "limit": 8})
+        assert response.status_code == 200
+        assert city in [item["name"] for item in response.json()["items"]]
+
+
+def test_fallback_returns_known_city_when_external_resolver_fails(tmp_path):
+    resolver = YandexLocationResolver(directory_loader=failing_loader, cache_path=tmp_path / "stations.json")
+
+    assert "Рязань" in names(resolver.resolve_all("ряза"))
+
+
+def test_sqlite_search_uses_normalized_python_cyrillic_matching(tmp_path):
+    resolver = YandexLocationResolver(directory_loader=failing_loader, cache_path=tmp_path / "stations.json")
+    resolver._maybe_seed_repository()
+
+    matches = resolver.resolve_all("РЯЗА")
+
+    assert "Рязань" in names(matches)
+    assert resolver.normalize("РЯЗА") == "ряза"
+
+
+def test_exact_city_ranked_above_station_for_same_name():
+    result = LocationRepository().suggest("тверь", 8)
+
+    assert result[0].name == "Тверь"
+    assert result[0].type == "city"

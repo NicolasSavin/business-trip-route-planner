@@ -29,9 +29,10 @@ ALIASES = {"спб": "санкт петербург", "питер": "санкт 
 
 
 def normalize(value: str) -> str:
-    text = unicodedata.normalize("NFKC", value or "").strip().lower().replace("ё", "е")
+    text = unicodedata.normalize("NFC", value or "").strip().casefold().replace("ё", "е")
     text = re.sub(r"\s*\((?:train|bus|train/bus|поезд|автобус|поезд/автобус)\)\s*$", "", text)
-    text = re.sub(r"[\-–—.,/]+", " ", text); text = re.sub(r"\bж\s*д\b", "жд", text)
+    text = re.sub(r"[‐‑‒–—―−]", "-", text)
+    text = re.sub(r"[-.,/]+", " ", text); text = re.sub(r"\bж\s*д\b", "жд", text)
     words = [w for w in text.split() if w not in STOP_WORDS]
     text = " ".join(words)
     return ALIASES.get(text, text)
@@ -71,6 +72,8 @@ LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c213", "Москва", "city", ("train", "bus"), (YandexStation("s2000003", "Москва Казанская", "railway_station", ("train",), settlement="Москва"), YandexStation("s2006004", "Москва Ленинградская", "railway_station", ("train",), settlement="Москва")), aliases_used=("мск", "moscow"), region="Москва", settlement="Москва"),
     YandexLocationMatch("c2", "Санкт-Петербург", "city", ("train", "bus"), (YandexStation("s9602494", "Санкт-Петербург-Главн.", "railway_station", ("train",), settlement="Санкт-Петербург"),), aliases_used=("спб", "питер", "санкт петербург", "санкт-петербург"), region="Санкт-Петербург", settlement="Санкт-Петербург"),
     YandexLocationMatch("c42", "Сарапул", "city", ("train", "bus"), (YandexStation("s9612363", "Сарапул", "railway_station", ("train",), settlement="Сарапул"), YandexStation("s9635668", "Автовокзал Сарапул", "bus_station", ("bus",), settlement="Сарапул")), region="Удмуртия", settlement="Сарапул"),
+    YandexLocationMatch("c11", "Рязань", "city", ("train", "bus"), (YandexStation("s9601101", "Рязань-1", "railway_station", ("train",), settlement="Рязань"),), region="Рязанская область", settlement="Рязань"),
+    YandexLocationMatch("c14", "Тверь", "city", ("train", "bus"), (YandexStation("s9602496", "Тверь", "railway_station", ("train",), settlement="Тверь"),), region="Тверская область", settlement="Тверь"),
     YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"),), region="Алтайский край", settlement="Бийск"),
     YandexLocationMatch("c54", "Екатеринбург", "city", ("train", "bus"), region="Свердловская область", settlement="Екатеринбург"),
     YandexLocationMatch("c65", "Новосибирск", "city", ("train", "bus"), (YandexStation("s9610189", "Новосибирск-главный", "railway_station", ("train",), settlement="Новосибирск"),), region="Новосибирская область", settlement="Новосибирск"),
@@ -131,7 +134,17 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
                 ORDER BY rank, CASE point_type WHEN 'city' THEN 0 ELSE 1 END, title
                 LIMIT 50
             """, (key, query, key, alias_pattern, prefix, prefix, prefix, prefix, contains, contains, contains, contains, key, query, key, alias_pattern, prefix, prefix, contains, contains)))
-        return self._dedupe([self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)])[:20]
+        return self._dedupe_matches([self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)])[:20]
+
+    @staticmethod
+    def _dedupe_matches(matches):
+        result=[]; seen=set()
+        for m in matches:
+            key=(m.code, normalize(m.title), m.type)
+            if key in seen:
+                continue
+            result.append(m); seen.add(key)
+        return result
     def get_by_code(self, code):
         self._ensure_schema()
         with self._connect() as con: row = con.execute("SELECT * FROM locations WHERE code=?", (code,)).fetchone()
@@ -223,8 +236,10 @@ class YandexLocationResolver:
         self._maybe_seed_repository()
         self._initialized=True; key=normalize(query)
         if key in self._cache: return [self._with_cache_hit(m) for m in self._cache[key]]
-        matches=self._stations_repository.resolve(query) or self._local(query) or self._fallback_repository(query)
-        self._cache[key]=matches; self._last_diag={"source":self._directory_cache.last_source if self._directory_cache.last_source != "fallback" else ("cache" if self._stations_repository.cache_info().get("locations", 0) else "sqlite"),"cache_info":self._stations_repository.cache_info(),"selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1}
+        sqlite_matches = self._stations_repository.resolve(query)
+        fallback_matches = self._fallback_repository(query) + self._local(query)
+        matches = self._rank_and_dedupe(query, [*sqlite_matches, *fallback_matches])
+        self._cache[key]=matches; self._last_diag={"source":"sqlite+fallback","cache_info":self._stations_repository.cache_info(),"local_results":len(sqlite_matches),"fallback_results":len(fallback_matches),"external_results":0,"selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1}
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
     def _maybe_seed_repository(self):
@@ -269,15 +284,26 @@ class YandexLocationResolver:
                 pt: YandexPointType = "city" if item.type in {"city", "settlement"} else "station"
                 matches.append(YandexLocationMatch(item.provider_code, item.name, pt, source="location_repository", region=item.region, country=item.country, settlement=item.name if pt == "city" else None))
         return self._dedupe(matches)
+    def _rank_and_dedupe(self, query, matches):
+        key = normalize(query)
+        def match_rank(m):
+            texts = {normalize(m.title), normalize(m.settlement or ""), *(normalize(a) for a in m.aliases_used), *(normalize(s.title) for s in m.stations), *(normalize(s.settlement or "") for s in m.stations)}
+            if key in texts: return 0
+            if any(t.startswith(key) for t in texts): return 1
+            if any(any(w.startswith(key) for w in t.split()) for t in texts): return 2
+            if any(key in t for t in texts): return 3
+            return 4
+        ranked = sorted(matches, key=lambda m: (0 if m.type == "city" else 1, match_rank(m), m.title))
+        return self._dedupe(ranked)
     def _dedupe(self, matches):
-        result=[]; seen_codes=set(); seen_city_titles=set()
+        result=[]; seen=set(); seen_city_titles=set()
         for m in matches:
-            city_key=normalize(m.settlement or m.title)
-            if m.code in seen_codes:
+            name_key=normalize(m.title); city_key=normalize(m.settlement or m.title); dedupe_key=(m.code,name_key,m.type)
+            if dedupe_key in seen:
                 continue
-            if m.type == "station" and city_key in seen_city_titles and normalize(m.title) == city_key:
+            if m.type == "station" and city_key in seen_city_titles and name_key == city_key:
                 continue
-            result.append(m); seen_codes.add(m.code)
+            result.append(m); seen.add(dedupe_key)
             if m.type == "city":
                 seen_city_titles.add(city_key)
         return result
