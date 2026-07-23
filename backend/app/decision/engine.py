@@ -35,7 +35,7 @@ class DecisionEngine:
     def _analyze_one(self, route, fastest, max_seats, policy):
         adv=[]; dis=[]; warn=[]; rec=[]; score=50.0
         min_seats=self._min_seats(route); wait=self._wait(route)
-        availability_status = getattr(getattr(route, "availability", None), "status", None) or ("confirmed" if route.is_available_for_group else "unavailable")
+        availability_status = getattr(getattr(route, "availability", None), "status", None) or ("confirmed" if route.is_available_for_group is True else "unavailable" if route.is_available_for_group is False else "unknown")
         if route.is_available_for_group and min_seats >= policy.group_size and str(availability_status) in {"confirmed", "AvailabilityStatus.CONFIRMED"}:
             score += policy.availability_bonus; adv.append(self._r("available", "Подходит для группы из %d человек." % policy.group_size, "advantage", policy.availability_bonus))
         else:
@@ -64,7 +64,7 @@ class DecisionEngine:
             warn.append(self._r("route_warning", w, "warning"))
         rating=max(0,min(100,round(score)))
         explanation = self._explanation(adv, warn, dis)
-        return DecisionSummary(route_id=route.id,total_duration_minutes=route.total_duration_minutes,transfer_wait_minutes=wait,transfers_count=route.transfers_count,has_available_seats=route.is_available_for_group,minimum_available_seats=min_seats,score=round(score,2),rating=rating,explanation=explanation,advantages=adv,disadvantages=dis,warnings=warn,recommendations=rec)
+        return DecisionSummary(route_id=route.id,total_duration_minutes=route.total_duration_minutes,transfer_wait_minutes=wait,transfers_count=route.transfers_count,has_available_seats=route.is_available_for_group is True,minimum_available_seats=min_seats,score=round(score,2),rating=rating,explanation=explanation,advantages=adv,disadvantages=dis,warnings=warn,recommendations=rec)
 
     def _wait(self, route): return route.transfer_duration_minutes or 0
     def _min_seats(self, route): return min([s.available_seats for s in route.segments], default=0)

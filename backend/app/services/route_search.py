@@ -159,6 +159,19 @@ class RouteSearchService:
                     AvailabilityStatus.PROVIDER_ERROR: "Ошибка проверки наличия",
                 }.get(result.status, item.availability_message)
             api_segments.append(item)
+        if option.availability:
+            availability_status = getattr(option.availability, "status", None)
+            if availability_status == AvailabilityStatus.CONFIRMED:
+                is_available_for_group = True
+            elif availability_status == AvailabilityStatus.UNAVAILABLE:
+                is_available_for_group = False
+            elif availability_status is not None:
+                is_available_for_group = None
+            else:
+                is_available_for_group = option.availability.is_available
+        else:
+            is_available_for_group = all(segment.available_seats is not None and segment.available_seats >= passengers for segment in route.segments)
+
         return RouteOption(
             id="route-" + "-".join(segment.id for segment in route.segments),
             provider=",".join(sorted({segment.provider for segment in route.segments})),
@@ -172,7 +185,7 @@ class RouteSearchService:
             total_price=sum((segment.price or 0) for segment in route.segments) or None,
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
-            is_available_for_group=option.availability.is_available if option.availability else all(segment.available_seats is not None and segment.available_seats >= passengers for segment in route.segments),
+            is_available_for_group=is_available_for_group,
             score=option.score,
             rank=option.rank,
             explanation=option.explanation,

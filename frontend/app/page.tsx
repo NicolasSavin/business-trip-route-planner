@@ -138,9 +138,13 @@ function availabilityBadge(route: RouteOption) {
   if (statuses.includes("confirmed")) {
     return { className: "bg-emerald-50 text-emerald-700", text: "Наличие мест подтверждено" };
   }
-  return route.is_available_for_group
-    ? { className: "bg-emerald-50 text-emerald-700", text: "Доступно для группы" }
-    : { className: "bg-rose-50 text-rose-700", text: "Недостаточно мест" };
+  if (route.is_available_for_group === true) {
+    return { className: "bg-emerald-50 text-emerald-700", text: "Доступно для группы" };
+  }
+  if (route.is_available_for_group === false) {
+    return { className: "bg-rose-50 text-rose-700", text: "Недостаточно мест" };
+  }
+  return { className: "bg-amber-50 text-amber-700", text: "Наличие мест не подтверждено" };
 }
 
 function TransportIllustration() {
@@ -1387,7 +1391,7 @@ function localDecision(route: RouteOption, passengers: number): DecisionSummary 
     ...(route.transfers_count === 0 ? [{ code: "direct", message: "Маршрут без пересадок.", kind: "advantage" as const, weight: 14 }] : []),
   ];
   const warnings = route.transfer_duration_minutes && route.transfer_duration_minutes < 45 ? [{ code: "short_transfer", message: "Очень короткая пересадка.", kind: "warning" as const, weight: -18 }] : [];
-  return { route_id: route.id, total_duration_minutes: route.total_duration_minutes, transfer_wait_minutes: route.transfer_duration_minutes ?? 0, transfers_count: route.transfers_count, has_available_seats: route.is_available_for_group, minimum_available_seats, score: 70, rating: route.is_available_for_group ? 72 : 30, explanation: advantages[0]?.message ?? warnings[0]?.message ?? "Маршрут оценён по прозрачным правилам.", advantages, disadvantages: [], warnings, recommendations: warnings.length ? [{ code: "miss_risk", message: "Большой риск пропустить следующий поезд.", kind: "recommendation", weight: 0 }] : [] };
+  return { route_id: route.id, total_duration_minutes: route.total_duration_minutes, transfer_wait_minutes: route.transfer_duration_minutes ?? 0, transfers_count: route.transfers_count, has_available_seats: route.is_available_for_group === true, minimum_available_seats, score: 70, rating: route.is_available_for_group ? 72 : 30, explanation: advantages[0]?.message ?? warnings[0]?.message ?? "Маршрут оценён по прозрачным правилам.", advantages, disadvantages: [], warnings, recommendations: warnings.length ? [{ code: "miss_risk", message: "Большой риск пропустить следующий поезд.", kind: "recommendation", weight: 0 }] : [] };
 }
 
 function localCompare(left: RouteOption, right: RouteOption, passengers: number): DecisionCompareResponse {
