@@ -43,6 +43,13 @@ class MultimodalJourneyPlanner:
         self.last_summary = SearchSummary()
 
     async def search_async(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
+        try:
+            return await self._search_async_impl(request)
+        except Exception:
+            logger.exception("Unhandled exception inside search_async")
+            raise
+
+    async def _search_async_impl(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
         started_at = monotonic()
         options = self.route_engine.search(
             departure_date=request.departure_date,

@@ -35,7 +35,11 @@ class RouteSearchService:
             len(api_rejected),
             len(api_routes),
         )
-        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=diagnostic_rejected, search_summary=summary)
+        try:
+            return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=diagnostic_rejected, search_summary=summary)
+        except Exception:
+            logger.exception("JourneyResponse serialization failed")
+            raise
 
     def search_response(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
         routes, partial, rejected, summary = self.planner.search(request)
@@ -45,7 +49,11 @@ class RouteSearchService:
         if not include_unavailable and not request.strict_availability:
             api_rejected = []
         logger.info("route_search.serialization api_routes=%s api_partial=%s api_rejected=%s final_routes=%s", len(api_routes), len(api_partial), len(api_rejected), len(api_routes))
-        return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=api_rejected, search_summary=summary)
+        try:
+            return RouteSearchResponse(routes=api_routes, warnings=summary.warnings, provider_errors=summary.provider_errors, partially_confirmed_routes=api_partial, rejected_routes=api_rejected, search_summary=summary)
+        except Exception:
+            logger.exception("JourneyResponse serialization failed")
+            raise
 
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
