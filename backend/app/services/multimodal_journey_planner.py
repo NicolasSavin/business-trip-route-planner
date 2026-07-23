@@ -83,7 +83,10 @@ class MultimodalJourneyPlanner:
             len(routes),
         )
         provider_diagnostics = getattr(self.provider, "last_diagnostics", {}) or {}
-        warnings = list(provider_diagnostics.get("warnings", []))
+        enrichment_errors = self._collect_enrichment_errors(checked)
+        warnings = list(dict.fromkeys(provider_diagnostics.get("warnings", [])))
+        if "tutu_playwright" in enrichment_errors:
+            warnings.append("Расписание найдено, но проверить наличие мест через Туту не удалось.")
         if self.route_engine.last_segments_count == 0 and provider_diagnostics.get("provider_errors"):
             warnings.append("Источники расписаний не вернули сегменты; подробности в provider_errors")
         summary = SearchSummary(
@@ -98,11 +101,13 @@ class MultimodalJourneyPlanner:
             providers_called=provider_diagnostics.get("providers_called", []),
             providers_succeeded=provider_diagnostics.get("providers_succeeded", []),
             providers_failed=provider_diagnostics.get("providers_failed", []),
-            provider_errors=provider_diagnostics.get("provider_errors", {}),
+            provider_errors={**provider_diagnostics.get("provider_errors", {}), **enrichment_errors},
             segments_by_provider=provider_diagnostics.get("segments_by_provider", {}),
             provider_diagnostics=provider_diagnostics.get("provider_diagnostics", {}),
-            warnings=warnings,
+            warnings=list(dict.fromkeys(warnings)),
         )
+        if enrichment_errors:
+            logger.info("route_search.provider error added to SearchSummary", extra={"providers": list(enrichment_errors)})
         self.last_summary = summary
         return routes, partial, rejected, summary
 
@@ -120,6 +125,21 @@ class MultimodalJourneyPlanner:
                 return replace(option, availability=journey, warnings=warnings, explanation=explanation)
         return await asyncio.gather(*(one(option) for option in options))
 
+    def _collect_enrichment_errors(self, options: list[DomainRouteOption]) -> dict[str, dict]:
+        errors: list[dict] = []
+        for option in options:
+            if not option.availability:
+                continue
+            for result in option.availability.segment_results:
+                error = result.metadata.get("provider_error") if result.metadata else None
+                if isinstance(error, dict):
+                    errors.append(error)
+        if not errors:
+            return {}
+        logger.info("tutu_playwright.enrichment provider_error", extra={"errors_count": len(errors)})
+        first = errors[0]
+        return {"tutu_playwright": {"code": "availability_enrichment_failed", "message": first.get("message", "Tutu availability enrichment failed"), "error_type": first.get("error_type", "ProviderError"), "errors": errors[:10]}}
+
     def _check_segment(self, segment: TransportSegment, request: RouteSearchRequest, enrich_with_tutu: bool = False) -> SegmentAvailabilityResult:
         key = self._cache_key(segment, request)
         cached = self.cache.get(key)
@@ -131,13 +151,17 @@ class MultimodalJourneyPlanner:
             result = SegmentAvailabilityResult.from_legacy(legacy, provider=segment.provider)
             if segment.metadata.get("availability_unknown") or "Источник расписаний не подтверждает наличие и расположение мест" in result.warnings:
                 result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=(), warnings=(*result.warnings, "Нижние места и одно купе требуют дополнительной проверки" if request.seat_preferences else ""))
-                result = replace(result, warnings=tuple(w for w in result.warnings if w))
+                result = replace(result, warnings=tuple(dict.fromkeys(w for w in result.warnings if w)))
             if segment.available_seats == 999:
                 result = replace(result, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, warnings=(*result.warnings, "Yandex returned 999 seats placeholder; real availability is unconfirmed"))
             if enrich_with_tutu and segment.transport_type == TransportType.TRAIN:
                 tutu_result = self.tutu_playwright.check_segment(segment, request)
                 if tutu_result is not None:
                     result = tutu_result
+                    if result.status == AvailabilityStatus.UNCONFIRMED and result.metadata.get("provider_error"):
+                        logger.info("route_search.route kept as unconfirmed", extra={"segment_id": segment.id, "provider": "tutu_playwright"})
+                elif request.seat_preferences:
+                    result = self._apply_railway_preferences(segment, request, result)
             elif segment.transport_type == TransportType.TRAIN and request.seat_preferences:
                 result = self._apply_railway_preferences(segment, request, result)
             if segment.transport_type != TransportType.TRAIN:

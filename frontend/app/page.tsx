@@ -190,6 +190,7 @@ export default function Home() {
   const [formState, setFormState] = useState<FormState>(initialForm);
   const [routes, setRoutes] = useState<RouteOption[]>(demoResponse.routes);
   const [apiDiagnostics, setApiDiagnostics] = useState<ApiDiagnostics | null>(null);
+  const [tutuEnrichmentWarning, setTutuEnrichmentWarning] = useState(false);
   const [notice, setNotice] = useState<{ kind: NoticeKind; text: string }>({
     kind: "demo",
     text: "Используются демонстрационные данные. Backend будет опрошен при поиске.",
@@ -255,6 +256,7 @@ export default function Home() {
       setCompareIds([]);
       setComparison(null);
       setApiDiagnostics(null);
+      setTutuEnrichmentWarning(Boolean(data.provider_errors?.tutu_playwright || data.search_summary?.provider_errors?.tutu_playwright));
       setNotice(
         data.routes.length
           ? { kind: "api", text: "Результаты получены из backend API." }
@@ -713,6 +715,11 @@ export default function Home() {
             </div>
             {apiDiagnostics && isDiagnosticsEnabled() && (
               <ApiDiagnosticsBlock diagnostics={apiDiagnostics} />
+            )}
+            {tutuEnrichmentWarning && (
+              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                Расписание найдено, но проверить наличие мест через Туту не удалось.
+              </div>
             )}
             {!loading && routes.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-2">

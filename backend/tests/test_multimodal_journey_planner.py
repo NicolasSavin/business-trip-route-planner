@@ -115,3 +115,54 @@ def test_yandex_schedule_only_strict_is_not_confirmed_and_explains_unavailable_d
     assert summary.confirmed_routes == 0
     assert summary.partially_confirmed_routes == 1
     assert summary.rejected_routes == 0
+
+class TutuProviderErrorClient:
+    def __init__(self, messages):
+        self.messages = messages
+    def check_segment(self, segment, request):
+        from app.availability.journey import SegmentAvailabilityResult
+        message = self.messages.get(segment.id, "Location suggestion not found: Рязань")
+        return SegmentAvailabilityResult(
+            segment_id=segment.id,
+            provider="tutu_playwright",
+            status=AvailabilityStatus.UNCONFIRMED,
+            schedule_confirmed=True,
+            reasons=("Расписание найдено, проверка мест через Туту не выполнена",),
+            warnings=("Расписание найдено, проверка мест через Туту не выполнена",),
+            metadata={"provider_error": {"code":"availability_enrichment_failed", "message": message, "error_type":"TutuDiagnosticError", "details":{"segment_id": segment.id}}},
+        )
+
+
+def test_tutu_provider_error_preserves_yandex_route_and_summary_error():
+    segment = seg("yx", "A", "C", dt(8), dt(12), seats=None, klass=None, number="6994")
+    segment = segment.__class__(**{**segment.__dict__, "provider": "yandex_rasp", "metadata": {"availability_unknown": True, "source": "Яндекс Расписания"}})
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    planner.tutu_playwright = TutuProviderErrorClient({"yx": "Location suggestion not found: Рязань"})
+
+    routes, partial, rejected, summary = planner.search(req(max_transfers=0, strict_availability=False))
+
+    assert routes == partial
+    assert len(routes) == 1
+    assert rejected == []
+    assert routes[0].availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED or routes[0].availability.status == AvailabilityStatus.UNCONFIRMED
+    assert "tutu_playwright" in summary.provider_errors
+    assert summary.provider_errors["tutu_playwright"]["errors"][0]["message"] == "Location suggestion not found: Рязань"
+    assert "yandex_rasp" not in summary.provider_errors
+    assert "Недостаточно мест" not in routes[0].explanation
+
+
+def test_multiple_tutu_segment_errors_are_not_overwritten_and_warnings_deduped():
+    first = seg("ab", "A", "B", dt(8), dt(9), seats=None)
+    second = seg("bc", "B", "C", dt(10), dt(12), seats=None)
+    segments = [
+        first.__class__(**{**first.__dict__, "metadata": {"availability_unknown": True}}),
+        second.__class__(**{**second.__dict__, "metadata": {"availability_unknown": True}}),
+    ]
+    planner = MultimodalJourneyPlanner(Provider(segments))
+    planner.tutu_playwright = TutuProviderErrorClient({"ab": "first", "bc": "second"})
+
+    routes, partial, rejected, summary = planner.search(req(strict_availability=False))
+
+    errors = summary.provider_errors["tutu_playwright"]["errors"]
+    assert [e["message"] for e in errors] == ["first", "second"]
+    assert len(routes[0].warnings) == len(set(routes[0].warnings))

@@ -81,7 +81,7 @@ class JourneyAvailabilityResult:
 
 def aggregate_journey_availability(results: tuple[SegmentAvailabilityResult, ...]) -> JourneyAvailabilityResult:
     reasons = tuple(reason for result in results for reason in result.reasons)
-    warnings = tuple(warning for result in results for warning in result.warnings)
+    warnings = tuple(dict.fromkeys(warning for result in results for warning in result.warnings if warning))
     statuses = {result.status for result in results}
     if AvailabilityStatus.PROVIDER_ERROR in statuses:
         status = AvailabilityStatus.PROVIDER_ERROR
@@ -89,6 +89,8 @@ def aggregate_journey_availability(results: tuple[SegmentAvailabilityResult, ...
         status = AvailabilityStatus.UNAVAILABLE
     elif results and all(result.status == AvailabilityStatus.CONFIRMED for result in results):
         status = AvailabilityStatus.CONFIRMED
+    elif results and all(result.status == AvailabilityStatus.UNCONFIRMED for result in results):
+        status = AvailabilityStatus.UNCONFIRMED
     elif AvailabilityStatus.STALE in statuses:
         status = AvailabilityStatus.STALE
     else:
