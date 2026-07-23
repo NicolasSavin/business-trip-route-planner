@@ -552,3 +552,187 @@ async def test_provider_error_response_contains_station_steps_and_popup_candidat
     assert data["status"] == "provider_error"
     assert data["diagnostics"]["station_steps"][0]["requested_city"] == "Рязань"
     assert data["diagnostics"]["popup_candidates"]["origin"][0]["text"] == "Тула"
+
+class SemanticLocator:
+    def __init__(self, page, elements, index=None, scoped_field=None):
+        self.page = page
+        self.elements = elements
+        self.index = index
+        self.scoped_field = scoped_field
+
+    def nth(self, index):
+        return SemanticLocator(self.page, self.elements, index, self.scoped_field)
+
+    def locator(self, selector):
+        if "ancestor" in selector:
+            field = self.elements[self.index]["field"] if self.index is not None else None
+            return SemanticLocator(self.page, self.elements, self.index, field)
+        return PopupLocator(self.page, self.scoped_field)
+
+    def filter(self, **kwargs):
+        return self
+
+    async def count(self):
+        return len(self.elements) if self.index is None else 1
+
+    async def evaluate(self, script, *args):
+        element = self.elements[self.index]
+        if "tutuPwIdentity" in script:
+            return element["identity"]
+        if "aria-controls" in script:
+            return [f"popup-{element['field']}"]
+        if "left === right" in script:
+            other = args[0]
+            return element["identity"] == other["identity"]
+        return element.get("value", "")
+
+    async def element_handle(self):
+        return self.elements[self.index]
+
+    async def input_value(self):
+        return self.elements[self.index].get("value", "")
+
+
+class PopupLocator:
+    def __init__(self, page, field):
+        self.page = page
+        self.field = field
+        self.options = page.popups.get(field, []) if field else []
+
+    def locator(self, selector):
+        return self
+
+    def filter(self, **kwargs):
+        return self
+
+    async def count(self):
+        return len(self.options)
+
+    def nth(self, index):
+        return PopupOption(self.page, self.field, self.options[index])
+
+    async def evaluate_all(self, script):
+        return []
+
+
+class PopupOption:
+    def __init__(self, page, field, text):
+        self.page = page
+        self.field = field
+        self.text = text
+
+    async def is_visible(self, timeout=None):
+        return True
+
+    async def inner_text(self, timeout=None):
+        return self.text
+
+
+class SemanticPage:
+    def __init__(self, elements, popups=None):
+        self.elements = elements
+        self.popups = popups or {}
+
+    def locator(self, selector):
+        if "popup" in selector or "suggest" in selector or "listbox" in selector and "textbox" not in selector:
+            field = "origin" if "from" in selector else "destination" if "to" in selector else None
+            return PopupLocator(self, field)
+        return SemanticLocator(self, self.elements)
+
+
+def semantic_item(index, field, name, placeholder, cls, value=""):
+    return {"index": index, "field": field, "identity": f"id-{field}-{index}", "name": name, "id": None, "class": cls, "placeholder": placeholder, "aria_label": None, "autocomplete": None, "aria_controls": f"popup-{field}", "current_value": value, "value": value, "nearby_label_text": [placeholder], "ancestor_form_text": placeholder, "visible": True, "enabled": True, "editable": True, "dom_path": f"input[{index}]"}
+
+
+@pytest.mark.asyncio
+async def test_detect_station_input_uses_semantic_attributes(monkeypatch):
+    from app import service as service_module
+    page = SemanticPage([
+        semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from"),
+        semantic_item(1, "destination", "schedule_station_to", "Куда", "j-station_to"),
+    ])
+    async def fake_inspect(_p):
+        return page.elements
+    monkeypatch.setattr(service_module, "inspect_textboxes", fake_inspect)
+    origin, origin_meta, _ = await service_module.detect_station_input(page, "origin")
+    destination, destination_meta, _ = await service_module.detect_station_input(page, "destination")
+    assert origin_meta["name"] == "schedule_station_from"
+    assert destination_meta["name"] == "schedule_station_to"
+    assert not await service_module._same_element(origin, destination)
+
+
+@pytest.mark.asyncio
+async def test_detect_station_input_ignores_dom_order(monkeypatch):
+    from app import service as service_module
+    page = SemanticPage([
+        semantic_item(0, "destination", "schedule_station_to", "Куда", "j-station_to"),
+        semantic_item(1, "origin", "schedule_station_from", "Откуда", "j-station_from"),
+    ])
+    async def fake_inspect(_p):
+        return page.elements
+    monkeypatch.setattr(service_module, "inspect_textboxes", fake_inspect)
+    origin, origin_meta, _ = await service_module.detect_station_input(page, "origin")
+    destination, destination_meta, _ = await service_module.detect_station_input(page, "destination")
+    assert origin_meta["index"] == 1
+    assert destination_meta["index"] == 0
+    assert not await service_module._same_element(origin, destination)
+
+
+@pytest.mark.asyncio
+async def test_destination_reacquired_after_origin_rerender(monkeypatch):
+    from app import service as service_module
+    snapshots = [
+        [semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from")],
+        [semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from"), semantic_item(1, "destination", "schedule_station_to", "Куда", "j-station_to")],
+    ]
+    page = SemanticPage(snapshots[0])
+    async def fake_inspect(_page):
+        page.elements = snapshots.pop(0) if snapshots else page.elements
+        return page.elements
+    monkeypatch.setattr(service_module, "inspect_textboxes", fake_inspect)
+    await service_module.detect_station_input(page, "origin")
+    _, destination_meta, _ = await service_module.detect_station_input(page, "destination")
+    assert destination_meta["name"] == "schedule_station_to"
+
+
+@pytest.mark.asyncio
+async def test_field_resolution_collision_detectable(monkeypatch):
+    from app import service as service_module
+    origin_item = semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from")
+    page = SemanticPage([origin_item])
+    async def fake_inspect(_p):
+        return page.elements
+    monkeypatch.setattr(service_module, "inspect_textboxes", fake_inspect)
+    origin, _, _ = await service_module.detect_station_input(page, "origin")
+    destination = page.locator("input").nth(0)
+    assert await service_module._same_element(origin, destination)
+
+
+@pytest.mark.asyncio
+async def test_candidate_options_are_scoped_to_current_input():
+    from app import service as service_module
+    page = SemanticPage([
+        semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from"),
+        semantic_item(1, "destination", "schedule_station_to", "Куда", "j-station_to"),
+    ], popups={"origin": ["Москва"], "destination": ["Рязань"]})
+    destination = page.locator("input").nth(1)
+    options = await service_module._candidate_options_for_input(page, destination, "destination")
+    assert await options.count() == 1
+    assert await options.nth(0).inner_text() == "Рязань"
+
+
+@pytest.mark.asyncio
+async def test_final_route_values_are_distinct_and_correct(monkeypatch):
+    from app import service as service_module
+    page = SemanticPage([
+        semantic_item(0, "origin", "schedule_station_from", "Откуда", "j-station_from", "Москва"),
+        semantic_item(1, "destination", "schedule_station_to", "Куда", "j-station_to", "Рязань"),
+    ])
+    async def fake_inspect(_p):
+        return page.elements
+    monkeypatch.setattr(service_module, "inspect_textboxes", fake_inspect)
+    origin, _, _ = await service_module.detect_station_input(page, "origin")
+    destination, _, _ = await service_module.detect_station_input(page, "destination")
+    assert await origin.input_value() == "Москва"
+    assert await destination.input_value() == "Рязань"
+    assert not await service_module._same_element(origin, destination)
