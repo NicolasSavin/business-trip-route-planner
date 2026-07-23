@@ -1,10 +1,10 @@
 from __future__ import annotations
 from datetime import date, datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
-class AvailabilityStatus(StrEnum):
+class AvailabilityStatus(str, Enum):
     CONFIRMED="confirmed"; PARTIALLY_CONFIRMED="partially_confirmed"; UNAVAILABLE="unavailable"; UNKNOWN="unknown"; PROVIDER_ERROR="provider_error"
 
 class AvailabilityCheckRequest(BaseModel):
