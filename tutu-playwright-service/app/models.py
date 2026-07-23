@@ -19,6 +19,8 @@ class JourneyAvailabilityRequest(BaseModel):
 
 class Diagnostics(BaseModel):
     matched_by: str | None = None; page_url: str | None = None; screenshots: list[str] = Field(default_factory=list); html_artifacts: list[str] = Field(default_factory=list)
+    selected_inputs: dict[str, Any] = Field(default_factory=dict)
+    popup_candidates: dict[str, list[str]] = Field(default_factory=dict)
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
