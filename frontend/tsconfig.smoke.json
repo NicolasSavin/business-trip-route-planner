@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "next-env.d.ts",
+    "lib/api.ts",
+    "lib/types.ts",
+    "lib/demoData.ts",
+    "components/LocationAutocomplete.tsx",
+    "app/page.tsx"
+  ],
+  "compilerOptions": {
+    "incremental": false
+  }
+}

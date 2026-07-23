@@ -155,3 +155,14 @@ YANDEX_DIAGNOSTICS_MAX_DETAILS_BYTES=32768
 ```
 
 При `YANDEX_DIAGNOSTICS_VERBOSE=true` API возвращает только ограниченные preview-поля (`raw_body_preview` до `YANDEX_DIAGNOSTICS_PREVIEW_CHARS`, `parsed_json_preview` до 10000 символов, traceback до 4000 символов), safe allowlist response headers и общий details до `YANDEX_DIAGNOSTICS_MAX_DETAILS_BYTES`. Для бинарных, gzip/br или нечитаемых тел preview не сериализуется в JSON: вместо него возвращаются `raw_body_preview: null`, `raw_body_binary: true`, `content_encoding` и `raw_body_size_bytes`.
+
+## Обязательный CI перед merge и deploy
+
+Для каждого pull request в `main` и каждого `push` в `main` запускается GitHub Actions workflow `CI` из `.github/workflows/ci.yml`. PR нельзя merge в `main`, пока обязательные проверки CI красные или ещё не завершились: это защищает production deploy на Render от ошибок, которые можно поймать до merge.
+
+Обязательные checks:
+
+- `Frontend`: устанавливает зависимости через `npm ci`, запускает `npm run lint`, `npm run test:api`, smoke-компиляцию `npm run test:smoke` для `frontend/lib/api.ts` и `frontend/app/page.tsx`, затем выполняет production `npm run build` с `NEXT_PUBLIC_API_HOSTNAME=business-trip-route-planner-backend.onrender.com`.
+- `Backend`: устанавливает Python-зависимости из `backend/requirements.txt`, компилирует backend через `python -m compileall app` и запускает обязательные unit tests командой `pytest -q -m "not live and not integration"`.
+
+Live/integration tests отделены от обязательных unit tests и запускаются только при явном включении `RUN_LIVE_TESTS=true`. Если такие тесты включены и падают из-за внешних сервисов или окружения, ошибку нельзя скрывать — запуск должен остаться красным до исправления причины или корректного отделения теста от обязательного набора.
