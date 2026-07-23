@@ -127,26 +127,104 @@ class TutuPlaywrightClient:
 
     async def _fill_station(self, key: str, value: str) -> bool:
         assert self.page is not None
+        event_selected = "origin_selected" if key == "origin_input" else "destination_selected"
+        event_open = "origin_suggestions_opened" if key == "origin_input" else "destination_suggestions_opened"
+        diag_key = f"{key}_station_selection"
+        self.diagnostics[diag_key] = {"requested": value, "steps": []}
+        self._record("station_selection_started", field=key, requested=value)
+
         form = await self._railway_form()
         loc = await self._locator_first(self.selectors[key], field=key, root=form)
-        if loc is None: return False
+        if loc is None:
+            reason = "station textbox was not found by any configured selector"
+            await self._record_station_failure(diag_key, key, value, reason, None)
+            return False
+
+        before_value = await self._station_control_value(loc)
+        self._append_station_step(diag_key, "before_typing", value=before_value)
         await loc.click(); await loc.press("Control+A"); await loc.type(value, delay=40)
-        if not await self._wait_suggestions(value, loc):
-            await self._save_suggestion_diagnostics(f"{key}_suggestions_not_found", loc, value)
-            await self._save_artifact(f"{key}_suggestions_not_found", html=True, screenshot=True); return False
-        event_open = "origin_suggestions_opened" if key == "origin_input" else "destination_suggestions_opened"
-        event_selected = "origin_selected" if key == "origin_input" else "destination_selected"
+        typed_value = await self._station_control_value(loc)
+        self._append_station_step(diag_key, "after_typing", value=typed_value)
+        await self._save_artifact(f"{key}_after_typing_{value}", html=True, screenshot=True)
+        await self._save_suggestion_diagnostics(f"{key}_after_typing", loc, value)
+
+        suggestions_visible = await self._wait_suggestions(value, loc)
+        waited_value = await self._station_control_value(loc)
+        await self._save_suggestion_diagnostics(f"{key}_after_wait", loc, value)
+        self._append_station_step(diag_key, "after_waiting", value=waited_value, suggestions_visible=suggestions_visible)
+        if not suggestions_visible:
+            await self._record_station_failure(diag_key, key, value, "no visible matching autocomplete suggestion appeared before timeout", loc)
+            return False
+
         self._record(event_open, value=value)
         option = await self._suggestion_locator(value, loc)
         if option is None:
-            await self._save_suggestion_diagnostics(f"{key}_matching_suggestion_not_found", loc, value)
+            await self._record_station_failure(diag_key, key, value, "autocomplete popup was visible but no option matched requested station", loc)
             return False
+
+        option_diag = await self._element_public_diagnostics(option)
+        self.diagnostics[diag_key]["clicked_candidate"] = option_diag
+        self._record("station_suggestion_clicking", field=key, requested=value, candidate=option_diag)
         await option.click()
         await self.page.wait_for_timeout(500)
+        clicked_value = await self._station_control_value(loc)
+        self._append_station_step(diag_key, "after_clicking_suggestion", value=clicked_value)
+        await loc.blur(timeout=1000)
+        await self.page.wait_for_timeout(300)
+        blurred_value = await self._station_control_value(loc)
         ok = await self._input_contains(loc, value)
+        self._append_station_step(diag_key, "after_blur", value=blurred_value, station_selected=ok)
+        self.diagnostics[diag_key]["station_selected"] = ok
+        self._record("station_selection_finished", field=key, requested=value, station_selected=ok)
         if ok:
             self.diagnostics[event_selected] = True; self._record(event_selected, value=value)
-        return ok
+            return True
+        await self._record_station_failure(diag_key, key, value, "textbox value did not contain requested station after suggestion click and blur", loc)
+        return False
+
+
+    def _append_station_step(self, diag_key: str, step: str, **data: Any) -> None:
+        self.diagnostics.setdefault(diag_key, {}).setdefault("steps", []).append({"step": step, **data})
+        self._record("station_selection_step", field=diag_key.removesuffix("_station_selection"), step=step, **data)
+
+    async def _station_control_value(self, loc: Any | None) -> str:
+        if loc is None:
+            return ""
+        for getter in ("input_value", "inner_text", "text_content"):
+            try:
+                value = await getattr(loc, getter)(timeout=1000)
+                return (value or "")[:500]
+            except Exception:
+                continue
+        return ""
+
+    async def _element_public_diagnostics(self, loc: Any) -> dict[str, Any]:
+        try:
+            return await loc.evaluate(r"""
+            (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                const attrs = {};
+                for (const attr of Array.from(el.attributes || [])) attrs[attr.name] = String(attr.value).slice(0, 240);
+                return {
+                    tag: el.tagName.toLowerCase(),
+                    text: ((el.innerText || el.textContent || '') + '').trim().replace(/\s+/g, ' ').slice(0, 500),
+                    attributes: attrs,
+                    visible: !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none'),
+                    bounding_box: {x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height)},
+                };
+            }
+            """)
+        except Exception as exc:
+            return {"error": str(exc)[:300]}
+
+    async def _record_station_failure(self, diag_key: str, key: str, value: str, reason: str, input_loc: Any | None) -> None:
+        self.diagnostics.setdefault(diag_key, {})["station_selected"] = False
+        self.diagnostics[diag_key]["failure_reason"] = reason
+        self.diagnostics[diag_key]["final_textbox_value"] = await self._station_control_value(input_loc)
+        await self._save_suggestion_diagnostics(f"{key}_selection_failed", input_loc, value)
+        await self._save_artifact(f"{key}_selection_failed_{value}", html=True, screenshot=True)
+        self._record("station_selection_failed", field=key, requested=value, reason=reason, final_textbox_value=self.diagnostics[diag_key]["final_textbox_value"])
 
     async def _select_date(self, value: date) -> bool:
         assert self.page is not None
@@ -500,9 +578,52 @@ class TutuPlaywrightClient:
         assert self.page is not None
         containers = await self._visible_autocomplete_containers()
         option_texts = await self._visible_option_texts(input_loc)
+        discovery = await self._discover_station_autocomplete_dom(input_loc)
         self.diagnostics[f"{name}_autocomplete_containers"] = containers
         self.diagnostics[f"{name}_option_texts"] = option_texts
-        self._record("station_suggestion_diagnostics", name=name, requested=value, visible_autocomplete_containers=containers, option_texts=option_texts)
+        self.diagnostics[f"{name}_autocomplete_discovery"] = discovery
+        self.diagnostics["last_station_autocomplete_discovery"] = discovery
+        self._record("station_suggestion_diagnostics", name=name, requested=value, visible_autocomplete_containers=containers, option_texts=option_texts, popup_count=len(discovery.get("popups", [])), option_count=len(discovery.get("options", [])), iframe_count=len(discovery.get("iframes", [])), shadow_host_count=len(discovery.get("shadow_hosts", [])))
+
+    async def _discover_station_autocomplete_dom(self, input_loc: Any | None = None) -> dict[str, Any]:
+        assert self.page is not None
+        input_state = {}
+        if input_loc is not None:
+            input_state = await self._element_public_diagnostics(input_loc)
+            try:
+                input_state["value"] = await self._station_control_value(input_loc)
+            except Exception:
+                pass
+        page_scan = await self.page.evaluate(r"""
+        () => {
+            const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none');
+            };
+            const attrs = (el) => {
+                const out = {};
+                for (const attr of Array.from(el.attributes || [])) out[attr.name] = String(attr.value).slice(0, 240);
+                return out;
+            };
+            const pub = (el, i) => {
+                const rect = el.getBoundingClientRect();
+                return {index: i, tag: el.tagName.toLowerCase(), text: ((el.innerText || el.textContent || '') + '').trim().replace(/\s+/g, ' ').slice(0, 700), attributes: attrs(el), visible: visible(el), bounding_box: {x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height)}};
+            };
+            const popupSelector = "[role='listbox'], [role='menu'], [role='dialog'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i], [class*='dropdown' i], [data-testid*='suggest' i], [data-testid*='autocomplete' i], [data-ti*='suggest' i], [data-ti*='autocomplete' i]";
+            const optionSelector = "[role='option'], [aria-selected], li, [data-testid*='suggest' i], [data-testid*='autocomplete' i], [data-ti*='suggest' i], [data-ti*='autocomplete' i], button, a";
+            const popups = Array.from(document.querySelectorAll(popupSelector)).filter(visible).slice(0, 120).map(pub);
+            const options = Array.from(document.querySelectorAll(optionSelector)).filter((el) => visible(el) && ((el.innerText || el.textContent || '').trim())).slice(0, 200).map(pub);
+            const iframes = Array.from(document.querySelectorAll('iframe')).slice(0, 50).map((el, i) => ({...pub(el, i), src: el.src || '', same_origin_accessible: (() => { try { return !!el.contentDocument; } catch(e) { return false; } })()}));
+            const shadow_hosts = Array.from(document.querySelectorAll('*')).filter((el) => el.shadowRoot).slice(0, 80).map((el, i) => ({...pub(el, i), shadow_text: ((el.shadowRoot.innerText || el.shadowRoot.textContent || '') + '').trim().replace(/\s+/g, ' ').slice(0, 700)}));
+            return {popups, options, iframes, shadow_hosts, body_text_sample: ((document.body && document.body.innerText) || '').trim().replace(/\s+/g, ' ').slice(0, 1000)};
+        }
+        """)
+        page_scan["input"] = input_state
+        page_scan["portal_detected"] = any((p.get("bounding_box", {}).get("y", 0) >= 0 and "body" not in (p.get("attributes", {}).get("class", "").lower())) for p in page_scan.get("popups", []))
+        page_scan["iframe_detected"] = bool(page_scan.get("iframes"))
+        page_scan["shadow_dom_detected"] = bool(page_scan.get("shadow_hosts"))
+        return page_scan
 
     async def _visible_autocomplete_containers(self) -> list[dict[str, Any]]:
         assert self.page is not None
