@@ -45,6 +45,11 @@ def _ensure_station_diagnostics(diagnostics: dict | None):
     diagnostics.setdefault("popup_candidates", {})
     diagnostics.setdefault("autocomplete_discovery", {})
     diagnostics.setdefault("selected_inputs", {})
+    diagnostics.setdefault("field_resolution_collision", None)
+    diagnostics.setdefault("origin_destination_same_element", None)
+    diagnostics.setdefault("form_reacquired_after_origin", False)
+    diagnostics.setdefault("final_origin_value", None)
+    diagnostics.setdefault("final_destination_value", None)
     return diagnostics
 
 
@@ -119,9 +124,80 @@ async def _candidate_options(page):
     return locators[-1]
 
 
+async def _candidate_options_for_input(page, textbox, field_name: str):
+    class_hint = "from" if field_name == "origin" else "to"
+    try:
+        scoped = textbox.locator(
+            "xpath=ancestor::*[contains(@class,'station') or contains(@class,'search') or contains(@class,'route') or self::form][1]"
+        ).locator(
+            f"[role='listbox'] [role='option'], [role='option'], [class*='j-city_{class_hint}_suggest_container'] *, [class*='suggest' i] [role='option'], [class*='autocomplete' i] [role='option']"
+        )
+        if await _visible_locator_count(scoped):
+            return scoped
+    except Exception:
+        pass
+    try:
+        controls = await textbox.evaluate("el => (el.getAttribute('aria-controls') || '').split(/\\s+/).filter(Boolean)")
+        if controls:
+            selector = ", ".join(f"#{control.replace(chr(34), '').replace(chr(39), '')} [role='option'], #{control.replace(chr(34), '').replace(chr(39), '')}" for control in controls)
+            linked_locator = page.locator(selector)
+            if await _visible_locator_count(linked_locator):
+                return linked_locator
+    except Exception:
+        pass
+    try:
+        field_popup = page.locator(f"[class*='j-city_{class_hint}_suggest_container'], [class*='city_{class_hint}' i][class*='suggest' i]")
+        field_options = field_popup.locator("[role='option'], li, button, div, span")
+        if hasattr(field_options, "filter"):
+            field_options = field_options.filter(has_text=re.compile(r"\S"))
+        if await _visible_locator_count(field_options):
+            return field_options
+    except Exception:
+        pass
+    return await _candidate_options(page)
+
+
 async def _autocomplete_is_closed(page) -> bool:
     options = await _candidate_options(page)
     return await _visible_locator_count(options) == 0
+
+
+async def _element_identity(locator) -> str:
+    return await locator.evaluate(
+        """
+        el => {
+            if (!el.dataset.tutuPwIdentity) el.dataset.tutuPwIdentity = `tutu-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            return el.dataset.tutuPwIdentity;
+        }
+        """
+    )
+
+
+async def _same_element(left, right) -> bool:
+    try:
+        return await left.evaluate("(left, right) => left === right", await right.element_handle())
+    except Exception:
+        return await _element_identity(left) == await _element_identity(right)
+
+
+def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = None, shots: list[str] | None = None, htmls: list[str] | None = None, matched_by: str | None = None):
+    return dict(
+        matched_by=matched_by,
+        page_url=page_url,
+        screenshots=shots or [],
+        html_artifacts=htmls or [],
+        selected_inputs=diagnostic_payload["selected_inputs"],
+        station_steps=diagnostic_payload["station_steps"],
+        origin_station_selection=diagnostic_payload["origin_station_selection"],
+        destination_station_selection=diagnostic_payload["destination_station_selection"],
+        popup_candidates=diagnostic_payload["popup_candidates"],
+        autocomplete_discovery=diagnostic_payload["autocomplete_discovery"],
+        field_resolution_collision=diagnostic_payload.get("field_resolution_collision"),
+        origin_destination_same_element=diagnostic_payload.get("origin_destination_same_element"),
+        form_reacquired_after_origin=diagnostic_payload.get("form_reacquired_after_origin"),
+        final_origin_value=diagnostic_payload.get("final_origin_value"),
+        final_destination_value=diagnostic_payload.get("final_destination_value"),
+    )
 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
@@ -237,6 +313,7 @@ async def inspect_textboxes(page) -> list[dict]:
                     type: element.getAttribute('type'),
                     name: element.getAttribute('name'),
                     id: element.id || null,
+                    class: element.getAttribute('class'),
                     placeholder: element.getAttribute('placeholder'),
                     aria_label: element.getAttribute('aria-label'),
                     autocomplete: element.getAttribute('autocomplete'),
@@ -263,29 +340,55 @@ async def inspect_textboxes(page) -> list[dict]:
     return inventory
 
 
-async def detect_route_input(page, field_name: str):
+async def detect_station_input(page, field_name: str):
     inventory = await inspect_textboxes(page)
+    if field_name not in {"origin", "destination"}:
+        raise ValueError(f"Unsupported station field: {field_name}")
     labels = ROUTE_FIELD_LABELS[field_name]
+    attr_tokens = ("from", "station_from", "j-station_from", "schedule_station_from") if field_name == "origin" else ("to", "station_to", "j-station_to", "schedule_station_to")
+    opposite_tokens = ("to", "station_to", "j-station_to", "schedule_station_to", "куда") if field_name == "origin" else ("from", "station_from", "j-station_from", "schedule_station_from", "откуда")
     scored = []
     for item in inventory:
-        haystack = " ".join(str(item.get(k) or "") for k in ("name", "id", "placeholder", "aria_label", "ancestor_form_text") ) + " " + " ".join(item.get("nearby_label_text") or [])
-        haystack = haystack.lower()
-        score = sum(10 for label in labels if label in haystack)
+        attrs = " ".join(str(item.get(k) or "") for k in ("name", "id", "class", "placeholder", "aria_label", "autocomplete", "aria_controls")).lower()
+        nearby = " ".join(item.get("nearby_label_text") or []).lower()
+        haystack = f"{attrs} {nearby} {str(item.get('ancestor_form_text') or '').lower()}"
+        signals = []
+        score = 0
+        placeholder = str(item.get("placeholder") or "").lower()
+        name = str(item.get("name") or "").lower()
+        classes = str(item.get("class") or "").lower()
+        if any(label in placeholder for label in labels):
+            score += 40; signals.append("placeholder")
+        if any(token in name for token in attr_tokens):
+            score += 35; signals.append("name")
+        if any(token in classes or token in attrs for token in attr_tokens if token != "to"):
+            score += 25; signals.append("station_attribute")
+        if any(label in nearby for label in labels):
+            score += 20; signals.append("nearby_label_or_ancestor")
+        if any(label in haystack for label in labels) and "semantic_text" not in signals:
+            score += 10; signals.append("semantic_text")
         if "поезд" in haystack or "ж/д" in haystack or "poezd" in haystack or "train" in haystack:
             score += 3
         if item.get("visible"):
-            score += 2
+            score += 2; signals.append("visible")
         if item.get("enabled") and item.get("editable"):
-            score += 2
+            score += 2; signals.append("editable")
+        if any(token in placeholder or token in name or token in classes for token in opposite_tokens):
+            score -= 45; signals.append("opposite_field_penalty")
         if score:
-            scored.append((score, item))
+            enriched = {**item, "selector_strategy": "semantic_station_input", "confidence_score": score, "matched_semantic_signals": signals}
+            scored.append((score, enriched))
     scored.sort(key=lambda pair: (-pair[0], pair[1]["index"]))
     if not scored:
         logger.info("tutu route input semantic detection failed", extra={"field_name": field_name, "inventory": inventory})
         raise ValueError(f"Tutu route {field_name} input not found")
     selected = scored[0][1]
-    logger.info("tutu route input selected", extra={"field_name": field_name, "score": scored[0][0], "selected_input": selected})
+    logger.info("station_input_detected", extra={"field_name": field_name, "score": scored[0][0], "selected_input": selected})
     return page.locator("input, textarea, [role='textbox'], [contenteditable='true']").nth(selected["index"]), selected, inventory
+
+
+# Backward-compatible alias for older tests/imports. New flow must use detect_station_input.
+detect_route_input = detect_station_input
 
 
 async def inspect_popup_candidates(page, textbox, field_name: str, city_name: str) -> list[str]:
@@ -466,7 +569,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     options = None
     count = 0
     while time.monotonic() < deadline:
-        options = await _candidate_options(page)
+        options = await _candidate_options_for_input(page, textbox, field_name)
         count = await _visible_locator_count(options)
         if count:
             break
@@ -533,11 +636,16 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     city_persisted = city_norm in final_norm or final_norm in city_norm
     if not clicked_persisted or not city_persisted:
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "selected_value_not_persisted")
+    closed = await _autocomplete_is_closed(page)
+    stable = final_value == await _textbox_value(textbox)
+    if not closed and not stable:
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "selection_not_confirmed")
+    step["selection_confirmation"] = "autocomplete_closed" if closed else "stable_value_after_blur"
     step["station_selected"] = True
     step.pop("textbox_ref", None)
     step.pop("artifacts_ref", None)
     await _finish_station_step(diagnostics, field_name, step)
-    _station_log("station_selection_finished", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
+    _station_log("station_selection_verified", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
     return final_value
 
 class TTLCache:
@@ -615,17 +723,40 @@ class TutuAvailabilityService:
             await _save_step_artifact(page, "before_filling_origin", {"screenshots": shots, "html_artifacts": htmls})
 
             # Public UI only. Inputs are selected from live DOM metadata rather than positional textboxes.
-            origin_input, origin_meta, _ = await detect_route_input(page, "origin")
+            origin_input, origin_meta, _ = await detect_station_input(page, "origin")
+            origin_meta["dom_identity"] = await _element_identity(origin_input)
             diagnostic_payload["selected_inputs"]["origin"] = origin_meta
             await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
+            await page.wait_for_timeout(500)
 
-            destination_input, destination_meta, _ = await detect_route_input(page, "destination")
+            destination_input, destination_meta, _ = await detect_station_input(page, "destination")
+            diagnostic_payload["form_reacquired_after_origin"] = True
+            logger.info("station_input_reacquired", extra={"field_name": "destination", "after_field": "origin"})
+            destination_meta["dom_identity"] = await _element_identity(destination_input)
             diagnostic_payload["selected_inputs"]["destination"] = destination_meta
+            if await _same_element(origin_input, destination_input):
+                diagnostic_payload["origin_destination_same_element"] = True
+                diagnostic_payload["field_resolution_collision"] = {"reason": "destination_resolved_to_origin", "origin": origin_meta, "destination": destination_meta}
+                logger.info("station_input_collision", extra={"field_name": "destination", "failure_reason": "field_resolution_collision", "origin_input": origin_meta, "destination_input": destination_meta})
+                raise ValueError("field_resolution_collision")
             try:
                 await select_location(page, destination_input, req.destination, "destination", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
             except Exception:
                 await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
                 raise
+            origin_verify, origin_verify_meta, _ = await detect_station_input(page, "origin")
+            destination_verify, destination_verify_meta, _ = await detect_station_input(page, "destination")
+            diagnostic_payload["selected_inputs"]["origin"] = {**origin_verify_meta, "dom_identity": await _element_identity(origin_verify)}
+            diagnostic_payload["selected_inputs"]["destination"] = {**destination_verify_meta, "dom_identity": await _element_identity(destination_verify)}
+            same_final = await _same_element(origin_verify, destination_verify)
+            diagnostic_payload["origin_destination_same_element"] = same_final
+            diagnostic_payload["final_origin_value"] = await _textbox_value(origin_verify)
+            diagnostic_payload["final_destination_value"] = await _textbox_value(destination_verify)
+            logger.info("route_fields_verified", extra={"origin": diagnostic_payload["final_origin_value"], "destination": diagnostic_payload["final_destination_value"], "origin_destination_same_element": same_final})
+            if same_final:
+                raise ValueError("origin_destination_same_element")
+            if normalize_location_text(req.origin) not in normalize_location_text(diagnostic_payload["final_origin_value"]) or normalize_location_text(req.destination) not in normalize_location_text(diagnostic_payload["final_destination_value"]):
+                raise ValueError("route_fields_verified_failed")
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
             await page.get_by_role("button", name="Найти", exact=False).click()
             logger.info("search submitted")
@@ -636,7 +767,7 @@ class TutuAvailabilityService:
             logger.info("journey matched", extra={"matched_train": matched, "train_number": req.train_number})
             logger.info("seat availability extraction started")
             logger.info("seat availability extracted", extra={"available_seats": None})
-            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(matched_by="train_number" if matched else None, page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], station_steps=diagnostic_payload["station_steps"], origin_station_selection=diagnostic_payload["origin_station_selection"], destination_station_selection=diagnostic_payload["destination_station_selection"], popup_candidates=diagnostic_payload["popup_candidates"], autocomplete_discovery=diagnostic_payload["autocomplete_discovery"]))
+            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls, "train_number" if matched else None)))
         except Exception as exc:
             stamp=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             sp=os.path.join(settings.artifact_dir,f"error-{stamp}.png"); hp=os.path.join(settings.artifact_dir,f"error-{stamp}.html")
@@ -644,7 +775,7 @@ class TutuAvailabilityService:
             except Exception:
                 logger.exception("artifact capture caught exception")
             logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls, "selected_inputs": diagnostic_payload["selected_inputs"], "popup_candidates": diagnostic_payload["popup_candidates"]})
-            raise TutuDiagnosticError(str(exc), Diagnostics(page_url=page.url, screenshots=shots, html_artifacts=htmls, selected_inputs=diagnostic_payload["selected_inputs"], station_steps=diagnostic_payload["station_steps"], origin_station_selection=diagnostic_payload["origin_station_selection"], destination_station_selection=diagnostic_payload["destination_station_selection"], popup_candidates=diagnostic_payload["popup_candidates"], autocomplete_discovery=diagnostic_payload["autocomplete_discovery"])) from exc
+            raise TutuDiagnosticError(str(exc), Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls))) from exc
         finally:
             await context.close()
 service=TutuAvailabilityService()

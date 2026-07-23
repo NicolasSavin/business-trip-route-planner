@@ -25,6 +25,11 @@ class Diagnostics(BaseModel):
     destination_station_selection: dict[str, Any] = Field(default_factory=dict)
     popup_candidates: dict[str, list[Any]] = Field(default_factory=dict)
     autocomplete_discovery: dict[str, Any] = Field(default_factory=dict)
+    field_resolution_collision: dict[str, Any] | None = None
+    origin_destination_same_element: bool | None = None
+    form_reacquired_after_origin: bool | None = None
+    final_origin_value: str | None = None
+    final_destination_value: str | None = None
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
