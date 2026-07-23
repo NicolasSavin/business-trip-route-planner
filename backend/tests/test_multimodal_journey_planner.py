@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import pytest
 
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
@@ -119,7 +120,7 @@ def test_yandex_schedule_only_strict_is_not_confirmed_and_explains_unavailable_d
 class TutuProviderErrorClient:
     def __init__(self, messages):
         self.messages = messages
-    def check_segment(self, segment, request):
+    async def check_segment(self, segment, request):
         from app.availability.journey import SegmentAvailabilityResult
         message = self.messages.get(segment.id, "Location suggestion not found: Рязань")
         return SegmentAvailabilityResult(
@@ -166,3 +167,135 @@ def test_multiple_tutu_segment_errors_are_not_overwritten_and_warnings_deduped()
     errors = summary.provider_errors["tutu_playwright"]["errors"]
     assert [e["message"] for e in errors] == ["first", "second"]
     assert len(routes[0].warnings) == len(set(routes[0].warnings))
+
+from app.availability.journey import SegmentAvailabilityResult
+from app.domain import Route, RouteOption
+import asyncio
+import time
+
+
+def option_with(*segments):
+    return RouteOption(route=Route(tuple(segments)), score=0)
+
+
+class AsyncTutuClient:
+    def __init__(self, delay=0.01, statuses=None):
+        self.delay = delay
+        self.statuses = statuses or {}
+        self.calls = []
+        self.active = 0
+        self.max_active = 0
+        self.cancelled = 0
+    def available(self):
+        return True
+    async def check_segment(self, segment, request):
+        self.calls.append(segment.id)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(self.delay)
+            status = self.statuses.get(segment.id, AvailabilityStatus.UNCONFIRMED)
+            return SegmentAvailabilityResult(
+                segment_id=segment.id,
+                provider="tutu_playwright",
+                status=status,
+                schedule_confirmed=True,
+                seats_confirmed=status == AvailabilityStatus.CONFIRMED,
+                passengers_supported=status == AvailabilityStatus.CONFIRMED,
+                available_places_count=2 if status == AvailabilityStatus.CONFIRMED else None,
+                warnings=() if status == AvailabilityStatus.CONFIRMED else ("Расписание найдено, проверка мест через Туту не выполнена",),
+                metadata={} if status == AvailabilityStatus.CONFIRMED else {"provider_error": {"code": "availability_enrichment_failed", "message": "timeout", "error_type": "TimeoutError"}},
+            )
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        finally:
+            self.active -= 1
+
+
+@pytest.mark.asyncio
+async def test_tutu_enrichment_budget_returns_unconfirmed_for_slow_segments(monkeypatch):
+    import app.services.multimodal_journey_planner as module
+    monkeypatch.setattr(module, "TUTU_MAX_JOURNEYS_TO_ENRICH", 3)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_CONCURRENCY", 2)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", 0.05)
+    segments = [seg(f"s{i}", "A", "C", dt(8), dt(12), seats=None).__class__(**{**seg(f"s{i}", "A", "C", dt(8), dt(12), seats=None).__dict__, "metadata": {"availability_unknown": True}}) for i in range(6)]
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.tutu_playwright = AsyncTutuClient(delay=0.2)
+
+    started = time.monotonic()
+    checked = await planner._attach_journey_availability([option_with(*segments[:2]), option_with(*segments[2:4]), option_with(*segments[4:6])], req(strict_availability=False))
+
+    assert time.monotonic() - started < 0.2
+    assert all(o.availability.status == AvailabilityStatus.UNCONFIRMED for o in checked)
+    assert planner.tutu_playwright.cancelled > 0
+
+
+@pytest.mark.asyncio
+async def test_tutu_enrichment_deduplicates_same_segment(monkeypatch):
+    import app.services.multimodal_journey_planner as module
+    monkeypatch.setattr(module, "TUTU_MAX_JOURNEYS_TO_ENRICH", 3)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", 1)
+    shared = seg("shared", "A", "C", dt(8), dt(12), seats=None)
+    shared = shared.__class__(**{**shared.__dict__, "metadata": {"availability_unknown": True}})
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.tutu_playwright = AsyncTutuClient(delay=0)
+
+    await planner._attach_journey_availability([option_with(shared), option_with(shared), option_with(shared)], req(strict_availability=False))
+
+    assert planner.tutu_playwright.calls == ["shared"]
+
+
+@pytest.mark.asyncio
+async def test_one_tutu_success_and_other_timeouts_are_reported(monkeypatch):
+    import app.services.multimodal_journey_planner as module
+    monkeypatch.setattr(module, "TUTU_MAX_JOURNEYS_TO_ENRICH", 3)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", 0.05)
+    first = seg("ok", "A", "C", dt(8), dt(12), seats=None).__class__(**{**seg("ok", "A", "C", dt(8), dt(12), seats=None).__dict__, "metadata": {"availability_unknown": True}})
+    slow = seg("slow", "A", "C", dt(9), dt(13), seats=None).__class__(**{**seg("slow", "A", "C", dt(9), dt(13), seats=None).__dict__, "metadata": {"availability_unknown": True}})
+
+    class MixedClient(AsyncTutuClient):
+        async def check_segment(self, segment, request):
+            self.calls.append(segment.id)
+            if segment.id == "ok":
+                return SegmentAvailabilityResult(segment_id=segment.id, provider="tutu_playwright", status=AvailabilityStatus.CONFIRMED, seats_confirmed=True, passengers_supported=True, available_places_count=2)
+            await asyncio.sleep(0.2)
+            return None
+
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.tutu_playwright = MixedClient()
+    checked = await planner._attach_journey_availability([option_with(first, slow)], req(strict_availability=False))
+
+    results = {r.segment_id: r for r in checked[0].availability.segment_results}
+    assert results["ok"].status == AvailabilityStatus.CONFIRMED
+    assert results["slow"].metadata["provider_error"]["error_type"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_tutu_enrichment_concurrency_is_limited(monkeypatch):
+    import app.services.multimodal_journey_planner as module
+    monkeypatch.setattr(module, "TUTU_MAX_JOURNEYS_TO_ENRICH", 3)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_CONCURRENCY", 2)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", 1)
+    segments = [seg(f"c{i}", "A", "C", dt(8), dt(12), seats=None).__class__(**{**seg(f"c{i}", "A", "C", dt(8), dt(12), seats=None).__dict__, "metadata": {"availability_unknown": True}}) for i in range(5)]
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.tutu_playwright = AsyncTutuClient(delay=0.02)
+
+    await planner._attach_journey_availability([option_with(*segments)], req(strict_availability=False))
+
+    assert planner.tutu_playwright.max_active <= 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tutu_tasks_are_cancelled(monkeypatch):
+    import app.services.multimodal_journey_planner as module
+    monkeypatch.setattr(module, "TUTU_MAX_JOURNEYS_TO_ENRICH", 1)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_CONCURRENCY", 2)
+    monkeypatch.setattr(module, "TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS", 0.01)
+    segments = [seg(f"x{i}", "A", "C", dt(8), dt(12), seats=None).__class__(**{**seg(f"x{i}", "A", "C", dt(8), dt(12), seats=None).__dict__, "metadata": {"availability_unknown": True}}) for i in range(2)]
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.tutu_playwright = AsyncTutuClient(delay=0.2)
+
+    await planner._attach_journey_availability([option_with(*segments)], req(strict_availability=False))
+
+    assert planner.tutu_playwright.cancelled == 2
