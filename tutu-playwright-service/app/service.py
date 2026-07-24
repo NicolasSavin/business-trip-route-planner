@@ -645,6 +645,16 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         timeout_stage=diagnostic_payload.get("timeout_stage"),
         route_field_invariants=diagnostic_payload.get("route_field_invariants", {}),
         sale_period_route_collision_detected=diagnostic_payload.get("sale_period_route_collision_detected", False),
+        elapsed_ms=diagnostic_payload.get("elapsed_ms"),
+        destination_attempt_count=diagnostic_payload.get("destination_attempt_count"),
+        origin_recovery_count=diagnostic_payload.get("origin_recovery_count"),
+        origin_guard=diagnostic_payload.get("origin_guard", {}),
+        route_form_diagnostics=diagnostic_payload.get("route_form_diagnostics", {}),
+        submit_strategy=diagnostic_payload.get("submit_strategy"),
+        artifacts_capture_skipped=diagnostic_payload.get("artifacts_capture_skipped"),
+        artifacts_capture_skip_reason=diagnostic_payload.get("artifacts_capture_skip_reason"),
+        artifacts_capture_elapsed_ms=diagnostic_payload.get("artifacts_capture_elapsed_ms"),
+        terminal_failure_reason=diagnostic_payload.get("terminal_failure_reason"),
     )
 
 
@@ -698,6 +708,56 @@ async def _check_origin_guard(page, guard: dict | None, stage: str, diagnostics:
         logger.info("tutu_origin_guard_violated", extra=violation)
         raise TutuOriginGuardViolation("destination_selection_overwrote_origin")
     return {"ok": True, **check}
+
+
+async def _restore_origin_from_confirmed_snapshot(page, origin_guard: dict, diagnostics: dict, deadline: float | None = None) -> dict:
+    diagnostics["origin_recovery_strategy"] = "restore_confirmed_snapshot"
+    diagnostics["origin_recovery_count"] = diagnostics.get("origin_recovery_count", 0) + 1
+    if _remaining_ms(deadline) < 500:
+        diagnostics["terminal_failure_reason"] = "service_deadline_exceeded"
+        raise ValueError("service_deadline_exceeded")
+    result = await asyncio.wait_for(page.evaluate(
+        """
+        guard => {
+            const setNative = (el, value) => {
+                const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && desc.set) desc.set.call(el, value || ''); else el.value = value || '';
+            };
+            const origin = document.querySelector('input[name="schedule_station_from"]');
+            const hidden = document.querySelector('input[name="nnst1"]');
+            if (!origin || !hidden) return {ok:false, failure_reason:'origin_snapshot_restore_failed', origin_found:!!origin, hidden_found:!!hidden};
+            setNative(origin, guard.visible_value || '');
+            setNative(hidden, guard.hidden_value || '');
+            origin.dispatchEvent(new Event('input', {bubbles:true}));
+            origin.dispatchEvent(new Event('change', {bubbles:true}));
+            hidden.dispatchEvent(new Event('change', {bubbles:true}));
+            return {ok: origin.value === (guard.visible_value || '') && hidden.value === (guard.hidden_value || ''), visible_value: origin.value, hidden_value: hidden.value};
+        }
+        """, origin_guard), timeout=_bounded_timeout_ms(deadline, 3000)/1000)
+    diagnostics["origin_snapshot_restore"] = result
+    if not result.get("ok"):
+        diagnostics["terminal_failure_reason"] = "origin_snapshot_restore_failed"
+        logger.info("tutu_origin_snapshot_restore_failed", extra=result)
+        raise ValueError("origin_snapshot_restore_failed")
+    logger.info("tutu_origin_snapshot_restored", extra=result)
+    return result
+
+
+async def _capture_error_artifacts_if_budget_allows(page, artifacts: dict[str, list[str]], diagnostic_payload: dict, deadline: float | None, reason: str = "error") -> None:
+    start = time.monotonic()
+    if _remaining_ms(deadline) < 2000:
+        diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": "error_artifact_capture_skipped_due_to_deadline", "artifacts_capture_elapsed_ms": 0})
+        logger.info("tutu_error_artifacts_skipped", extra={"reason": diagnostic_payload["artifacts_capture_skip_reason"]})
+        return
+    try:
+        await asyncio.wait_for(_save_step_artifact(page, reason, artifacts), timeout=min(2.0, _remaining_ms(deadline)/1000))
+        diagnostic_payload["artifacts_capture_skipped"] = False
+    except Exception as exc:
+        diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": type(exc).__name__})
+        logger.info("tutu_error_artifacts_skipped", extra={"reason": type(exc).__name__})
+    finally:
+        diagnostic_payload["artifacts_capture_elapsed_ms"] = int((time.monotonic() - start) * 1000)
 
 
 async def _close_origin_autocomplete(page, origin_input, diagnostics: dict | None = None) -> None:
@@ -895,7 +955,7 @@ async def _detect_route_submit_button(page, diagnostic_payload: dict):
             info = await _submit_button_info(route_form)
             diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, info, "form_request_submit", None)
             diagnostic_payload["route_submit_button"].update({"route_form_selector": route_form_selector, "route_form_count": route_form_count})
-            logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
+            logger.info("tutu_route_form_detected", extra=diagnostic_payload["route_submit_button"])
             return route_form, route_form_selector
         diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, None, None, "route_submit_button_not_found")
         diagnostic_payload["route_submit_button"].update({"route_form_selector": route_form_selector, "route_form_count": route_form_count})
@@ -907,7 +967,7 @@ async def _detect_route_submit_button(page, diagnostic_payload: dict):
         raise ValueError("route_submit_button_ambiguous")
     info = await _submit_button_info(fallback)
     diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, info, "fallback_form", None)
-    logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
+    logger.info("tutu_route_form_detected", extra=diagnostic_payload["route_submit_button"])
     return fallback, fallback_selector
 
 
@@ -942,57 +1002,46 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
     await _safe_capture_step_artifact(page, "before_submit", artifacts, deadline, diagnostic_payload)
     before_url = page.url
     _record_step(diagnostic_payload, "before_submit", deadline, "completed", {"url": before_url, "selector": selector, **(diagnostic_payload.get("before_submit_form") or {})})
-    if not await submit.is_enabled(timeout=_bounded_timeout_ms(deadline, 1000)):
-        diagnostic_payload.setdefault("route_submit_button", {})["failure_reason"] = "route_submit_button_disabled"
-        raise ValueError("route_submit_button_disabled")
-    st=_new_step("submit_click_started", deadline, {"selector": selector}); diagnostic_payload.setdefault("post_submit_steps", []).append(st)
-    _log_post_submit("tutu_route_submit_started", req, "submit_click", before_url, None, deadline)
+    st=_new_step("submit_form_started", deadline, {"selector": selector}); diagnostic_payload.setdefault("post_submit_steps", []).append(st)
+    _log_post_submit("tutu_route_submit_started", req, "submit_form", before_url, None, deadline)
     try:
-        strategy = "playwright_click"
-        try:
-            if selector.startswith("form:") and "input[type='submit']" not in selector:
-                raise RuntimeError("use_form_request_submit")
-            await asyncio.wait_for(submit.click(), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
-        except Exception as click_error:
-            strategy = "evaluate_click_or_request_submit"
-            logger.info("tutu_route_submit_click_strategy", extra={"selector": selector, "strategy": strategy, "click_error": str(click_error)[:200]})
-            await asyncio.wait_for(
-                submit.evaluate(
-                    """
-                    el => {
-                        const form = el.matches && el.matches('form') ? el : (el.form || el.closest('form'));
-                        if (el.matches && el.matches('form') && typeof el.requestSubmit === 'function') {
-                            el.requestSubmit();
-                            return 'request_submit';
-                        }
-                        if (typeof el.click === 'function') {
-                            el.click();
-                            return 'element_click';
-                        }
-                        if (form && typeof form.requestSubmit === 'function') {
-                            form.requestSubmit(el);
-                            return 'request_submit';
-                        }
-                        if (form) {
-                            form.submit();
-                            return 'form_submit';
-                        }
-                        throw new Error('route submit fallback unavailable');
-                    }
-                    """
-                ),
-                timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000,
-            )
-        logger.info("tutu_route_submit_click_strategy", extra={"selector": selector, "strategy": strategy})
-        _finish_step(st, "completed", {"url_after_click": page.url, "click_strategy": strategy})
-        _record_step(diagnostic_payload, "submit_click_completed", deadline, "completed", {"url": page.url, "click_strategy": strategy})
-        _log_post_submit("tutu_route_submit_completed", req, "submit_click", page.url, st.get("elapsed_ms"), deadline)
-    except Exception:
-        _finish_step(st, "failed", {"url_after_click": page.url})
-        diagnostic_payload["timeout_stage"] = "submit_click_timeout"
-        diagnostic_payload.setdefault("route_submit_button", {})["failure_reason"] = "route_submit_failed"
-        _log_post_submit("tutu_post_submit_stage_timeout", req, "submit_click_timeout", page.url, st.get("elapsed_ms"), deadline)
-        raise ValueError("route_submit_failed")
+        result = await asyncio.wait_for(submit.evaluate(
+            """
+            el => {
+                const routeSelector = 'input[name="schedule_station_from"],input[name="nnst1"],input[name="schedule_station_to"],input[name="nnst2"],input[name="date"],input[name="departure_date"],input[name="when"],input[name="date_forward"]';
+                const hasRouteFields = form => !!form && ['schedule_station_from','nnst1','schedule_station_to','nnst2'].every(name => form.querySelector(`input[name="${name}"]`));
+                const inputForm = node => node && node.form ? node.form : null;
+                let form = (el.matches && el.matches('form')) ? el : (inputForm(el) || (el.closest ? el.closest('form') : null));
+                if (!hasRouteFields(form)) {
+                    const linkedInput = document.querySelector(routeSelector);
+                    form = inputForm(linkedInput) || (linkedInput && linkedInput.closest('form')) || form;
+                }
+                if (!hasRouteFields(form)) {
+                    form = Array.from(document.forms).find(hasRouteFields) || Array.from(document.forms).find(f => /poezda\/search/i.test(f.action || ''));
+                }
+                if (!form) throw new Error('route_form_not_found');
+                const primary = form.querySelector('#idstationsearch_submit_button_input, input[type="submit"][value="Найти"], button[type="submit"]');
+                if (typeof form.requestSubmit === 'function' && primary) { form.requestSubmit(primary); return {strategy:'primary_button_request_submit', action: form.action || null}; }
+                if (typeof form.requestSubmit === 'function') { form.requestSubmit(); return {strategy:'form_request_submit', action: form.action || null}; }
+                const ev = new SubmitEvent('submit', {bubbles:true, cancelable:true});
+                const notCanceled = form.dispatchEvent(ev);
+                if (notCanceled && typeof form.submit === 'function') form.submit();
+                return {strategy:'submit_event_dispatch', action: form.action || null, not_canceled:notCanceled};
+            }
+            """), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
+        strategy = result.get("strategy") if isinstance(result, dict) else str(result)
+        diagnostic_payload["submit_strategy"] = strategy
+        diagnostic_payload.setdefault("route_form_diagnostics", {}).update(result if isinstance(result, dict) else {"result": result})
+        diagnostic_payload.setdefault("route_submit_button", {})["selected_strategy"] = strategy
+        logger.info("tutu_route_form_request_submit", extra={"selector": selector, "submit_strategy": strategy})
+        _finish_step(st, "completed", {"url_after_submit": page.url, "submit_strategy": strategy})
+        _record_step(diagnostic_payload, "submit_form_completed", deadline, "completed", {"url": page.url, "submit_strategy": strategy})
+    except Exception as exc:
+        _finish_step(st, "failed", {"url_after_submit": page.url, "error": str(exc)[:200]})
+        diagnostic_payload["timeout_stage"] = "route_form_submit_failed"
+        diagnostic_payload["terminal_failure_reason"] = "route_form_submit_failed"
+        diagnostic_payload.setdefault("route_submit_button", {})["failure_reason"] = "route_form_submit_failed"
+        raise ValueError("route_form_submit_failed") from exc
     _record_step(diagnostic_payload, "navigation_wait_started", deadline, "completed", {"url": page.url})
     return "submitted"
 
@@ -1703,7 +1752,9 @@ class TutuAvailabilityService:
             logger.info("early exit condition observed", extra={"reason": "disabled enrichment" if settings.mock_mode else "configuration", "mock_mode": settings.mock_mode, "enabled": settings.enabled})
         async with self.sem:
             try:
-                res= await asyncio.wait_for(self._mock(req) if settings.mock_mode or not settings.enabled else self._playwright(req), timeout=settings.timeout_seconds)
+                coro = self._mock(req) if settings.mock_mode or not settings.enabled else self._playwright(req)
+                timeout = settings.timeout_seconds if settings.mock_mode or not settings.enabled else max(settings.timeout_seconds, settings.operation_timeout_seconds + 5)
+                res= await asyncio.wait_for(coro, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.exception("availability check caught exception", extra={"reason": "timeout", "timeout_seconds": settings.timeout_seconds})
                 logger.info("early exit condition observed", extra={"reason": "timeout"})
@@ -1714,7 +1765,7 @@ class TutuAvailabilityService:
                 res=AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="Tutu provider error", warnings=[str(exc), "Tutu route field diagnostics are included when available; seats were not confirmed"], diagnostics=diagnostics)
             self.cache.set(k,res); return res
     async def check_journey(self, segments):
-        results=[await self.check(s) for s in segments]
+        results=await asyncio.gather(*(self.check(s) for s in segments))
         statuses={r.status for r in results}
         status=AvailabilityStatus.CONFIRMED if results and all(r.status==AvailabilityStatus.CONFIRMED for r in results) else (AvailabilityStatus.UNAVAILABLE if AvailabilityStatus.UNAVAILABLE in statuses else (AvailabilityStatus.PROVIDER_ERROR if AvailabilityStatus.PROVIDER_ERROR in statuses else AvailabilityStatus.PARTIALLY_CONFIRMED))
         return JourneyAvailabilityResponse(status=status, segments=results)
@@ -1739,18 +1790,20 @@ class TutuAvailabilityService:
     async def restart(self):
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
-        request_deadline = time.monotonic() + settings.operation_timeout_seconds
+        start_monotonic = time.monotonic()
+        request_deadline = start_monotonic + settings.operation_timeout_seconds
         post_submit_deadline = None
-        browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.operation_timeout_seconds*1000)
-        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}}
+        logger.info("tutu_internal_deadline_started", extra={"service_total_deadline_seconds": settings.operation_timeout_seconds})
+        browser=await asyncio.wait_for(self._browser_instance(), timeout=_bounded_timeout_ms(request_deadline, 6000)/1000); context=await asyncio.wait_for(browser.new_context(locale="ru-RU"), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); page=await asyncio.wait_for(context.new_page(), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(min(settings.operation_timeout_seconds*1000, 6000))
+        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}, "destination_attempt_count": 0, "origin_recovery_count": 0, "diagnostic_response_received": True}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
-            await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded")
+            await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded", timeout=_bounded_timeout_ms(request_deadline, 6000))
             frame_infos = [{"url": frame.url, "name": frame.name} for frame in page.frames]
             logger.info("tutu frame inventory", extra={"frame_count": len(frame_infos), "frames": frame_infos})
             if len(page.frames) > 1:
                 logger.info("tutu search widget iframe candidates detected", extra={"frames": frame_infos})
-            await _save_step_artifact(page, "before_filling_origin", {"screenshots": shots, "html_artifacts": htmls})
+            await _safe_capture_step_artifact(page, "before_filling_origin", {"screenshots": shots, "html_artifacts": htmls}, request_deadline, diagnostic_payload)
 
             # Public UI only. Inputs are selected from live DOM metadata rather than positional textboxes.
             origin_input, origin_meta, _ = await detect_station_input(page, "origin")
@@ -1774,31 +1827,34 @@ class TutuAvailabilityService:
                 diagnostic_payload["field_resolution_collision"] = {"reason": "destination_resolved_to_origin", "origin": origin_meta, "destination": destination_meta}
                 logger.info("station_input_collision", extra={"field_name": "destination", "failure_reason": "field_resolution_collision", "origin_input": origin_meta, "destination_input": destination_meta})
                 raise ValueError("field_resolution_collision")
-            recovery_attempts = 0
-            while True:
+            destination_attempt_count = 0
+            while destination_attempt_count < 2:
+                destination_attempt_count += 1
+                diagnostic_payload["destination_attempt_count"] = destination_attempt_count
+                diagnostic_payload["route_snapshot_before_destination"] = {
+                    "origin_visible": await _route_field_value(page, "input[name='schedule_station_from']"),
+                    "origin_hidden": await _route_field_value(page, "input[name='nnst1']"),
+                    "destination_visible": await _route_field_value(page, "input[name='schedule_station_to']"),
+                    "destination_hidden": await _route_field_value(page, "input[name='nnst2']"),
+                }
                 try:
                     await select_location(page, destination_input, req.destination, "destination", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, origin_guard, req.origin)
                     await _check_origin_guard(page, origin_guard, "destination_after_sale_period", diagnostic_payload, req.origin, req.destination)
                     break
-                except TutuOriginGuardViolation:
-                    logger.info("tutu_destination_overwrote_origin", extra={"attempt": recovery_attempts + 1, "origin": req.origin, "destination": req.destination})
-                    if recovery_attempts >= 2:
-                        await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
-                        raise
-                    recovery_attempts += 1
-                    diagnostic_payload["origin_recovery_attempts"] = recovery_attempts
-                    logger.info("tutu_origin_recovery_started", extra={"attempt": recovery_attempts})
-                    await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
-                    origin_input, origin_meta, _ = await detect_station_input(page, "origin")
-                    await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
-                    origin_guard = await _strict_route_snapshot(page, origin_input)
-                    logger.info("tutu_origin_recovery_completed", extra={"attempt": recovery_attempts, **origin_guard})
+                except TutuOriginGuardViolation as exc:
+                    logger.info("tutu_destination_overwrote_origin", extra={"attempt": destination_attempt_count, "origin": req.origin, "destination": req.destination})
+                    if destination_attempt_count >= 2 or diagnostic_payload.get("origin_recovery_count", 0) >= 1:
+                        diagnostic_payload["terminal_failure_reason"] = "destination_selection_overwrote_origin_after_recovery"
+                        logger.info("tutu_destination_retry_exhausted", extra={"destination_attempt_count": destination_attempt_count})
+                        raise ValueError("destination_selection_overwrote_origin_after_recovery") from exc
+                    logger.info("tutu_destination_retry_started", extra={"next_attempt": destination_attempt_count + 1})
+                    await _restore_origin_from_confirmed_snapshot(page, origin_guard, diagnostic_payload, request_deadline)
                     await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
                     destination_input, destination_meta, _ = await detect_station_input(page, "destination")
                     destination_meta["dom_identity"] = await _element_identity(destination_input)
                     diagnostic_payload["selected_inputs"]["destination"] = destination_meta
                 except Exception:
-                    await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
+                    await _capture_error_artifacts_if_budget_allows(page, {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, request_deadline, "destination_selection_failed")
                     raise
             await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
@@ -1839,14 +1895,28 @@ class TutuAvailabilityService:
             _record_step(diagnostic_payload, "result_parsing_completed", post_submit_deadline, "completed", {"matched_train": matched})
             logger.info("tutu_results_parsing_completed", extra={"status": "completed", "matched_train": matched, "page_url": page.url})
             return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls, "train_number" if matched else None)))
+        except asyncio.CancelledError:
+            diagnostic_payload["terminal_failure_reason"] = diagnostic_payload.get("terminal_failure_reason") or "cancelled"
+            diagnostic_payload["timeout_stage"] = diagnostic_payload.get("timeout_stage") or "cancelled"
+            logger.info("tutu_structured_error_returned", extra={"reason": "cancelled"})
+            raise TutuDiagnosticError("cancelled", Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
         except Exception as exc:
-            stamp=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-            sp=os.path.join(settings.artifact_dir,f"error-{stamp}.png"); hp=os.path.join(settings.artifact_dir,f"error-{stamp}.html")
-            try: await page.screenshot(path=sp, full_page=True); Path(hp).write_text(await page.content(), encoding="utf-8"); shots.append(sp); htmls.append(hp)
-            except Exception:
-                logger.exception("artifact capture caught exception")
+            diagnostic_payload["elapsed_ms"] = int((time.monotonic() - start_monotonic) * 1000)
+            diagnostic_payload["remaining_budget_ms"] = _remaining_ms(request_deadline)
+            diagnostic_payload["deadline_exceeded"] = _remaining_ms(request_deadline) <= 0
+            diagnostic_payload["terminal_failure_reason"] = diagnostic_payload.get("terminal_failure_reason") or str(exc)
+            if diagnostic_payload["deadline_exceeded"]:
+                diagnostic_payload["timeout_stage"] = "service_deadline_exceeded"
+                diagnostic_payload["terminal_failure_reason"] = "service_deadline_exceeded"
+                logger.info("tutu_internal_deadline_low", extra={"remaining_ms": 0})
+            await _capture_error_artifacts_if_budget_allows(page, {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, request_deadline, "error")
+            logger.info("tutu_structured_error_returned", extra={"terminal_failure_reason": diagnostic_payload.get("terminal_failure_reason")})
             logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls, "selected_inputs": diagnostic_payload["selected_inputs"], "popup_candidates": diagnostic_payload["popup_candidates"]})
             raise TutuDiagnosticError(str(exc), Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls))) from exc
         finally:
-            await context.close()
+            for name, closer in (("context", context.close),):
+                try:
+                    await asyncio.wait_for(asyncio.shield(closer()), timeout=1.0)
+                except Exception:
+                    logger.info("tutu_cleanup_timed_out", extra={"resource": name})
 service=TutuAvailabilityService()
