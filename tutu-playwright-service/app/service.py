@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio, hashlib, json, logging, os, re, time
+from urllib.parse import parse_qsl, urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -203,8 +204,11 @@ class TutuAutocompleteNetworkCapture:
         if not self._request_relevant(request, post): return
         rid = self._rid(request); self._started[rid]=time.monotonic()
         raw_url = getattr(request,"url",None) or ""
-        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(raw_url), "endpoint": _endpoint(raw_url), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_body_sample(raw_url, post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(raw_url, post, city=self.requested_city), "diagnostics_redaction_applied": True}
-        self.requests.append(item); logger.info("tutu_autocomplete_request", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": item["endpoint"], "status": None, "elapsed_ms": None, "response_item_count": None, "contains_requested_city": item["contains_requested_city"], "probable_failure_reason": None})
+        query_value = _autocomplete_query_value(raw_url)
+        query_matches = _autocomplete_query_matches(self.requested_city, query_value)
+        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(raw_url), "endpoint": _endpoint(raw_url), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_body_sample(raw_url, post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(raw_url, post, city=self.requested_city), "autocomplete_query_value": query_value, "autocomplete_query_matches_requested": query_matches, "malformed_autocomplete_query": bool(query_value is not None and not query_matches), "diagnostics_redaction_applied": True}
+        self.requests.append(item); logger.info("tutu_autocomplete_request", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": item["endpoint"], "status": None, "elapsed_ms": None, "response_item_count": None, "contains_requested_city": item["contains_requested_city"], "autocomplete_query_value": query_value, "query_matches_requested": query_matches, "probable_failure_reason": None})
+        logger.info("tutu_autocomplete_query_observed", extra={"field_name": self.field_name, "requested_city": self.requested_city, "strategy": self.stage, "autocomplete_query_value": query_value, "query_matches_requested": query_matches, "response_item_count": None})
     async def _on_response(self, response):
         request = response.request; rid = self._rid(request)
         if rid not in self._started and not any(r.get("request_id")==rid for r in self.requests): return
@@ -231,6 +235,40 @@ class TutuAutocompleteNetworkCapture:
         logger.info("tutu_autocomplete_network_summary", extra={"field_name": self.field_name, "requested_city": self.requested_city, "probable_failure_reason": summary.get("probable_failure_reason"), "relevant_requests": summary.get("relevant_requests"), "relevant_responses": summary.get("relevant_responses"), "failed_requests": summary.get("failed_requests")})
         return {"network_events": self.requests + self.responses + self.failures, "autocomplete_requests": self.requests, "autocomplete_responses": self.responses, "autocomplete_request_failures": self.failures, "network_summary": summary}
 
+
+
+def _autocomplete_query_value(url: str | None) -> str | None:
+    try:
+        parts = urlsplit(url or "")
+        if "/suggest/railway_simple/" not in parts.path:
+            return None
+        for key, value in parse_qsl(parts.query, keep_blank_values=True):
+            if key == "name":
+                return value
+    except Exception:
+        return None
+    return None
+
+
+def _autocomplete_query_matches(requested_city: str, query_value: str | None) -> bool:
+    if query_value is None:
+        return False
+    requested = requested_city or ""
+    return query_value == requested or (bool(query_value) and requested.startswith(query_value))
+
+
+def _is_cyrillic_text(value: str) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", value or ""))
+
+
+def _popular_city_response_without_requested(responses: list[dict], requested_city: str) -> bool:
+    popular = {"москва", "санкт петербург", "казань"}
+    for response in responses or []:
+        probe = response.get("json_probe") or {}
+        samples = {normalize_location_text(v) for v in (probe.get("text_values_sample") or [])}
+        if popular.intersection(samples) and not probe.get("contains_requested_city"):
+            return True
+    return False
 
 def _safe_text(value, limit: int = MAX_DIAGNOSTIC_STRING):
     if value is None:
@@ -810,10 +848,7 @@ async def _keyboard_event_counters(textbox) -> dict:
         return {"keydown": 0, "keyup": 0, "input": 0, "change": 0}
 
 
-async def _type_station_like_user(page, textbox, city_name: str, step: dict, network_capture: TutuAutocompleteNetworkCapture):
-    await _install_keyboard_event_counters(textbox)
-    step["active_element_before_typing"] = await _active_element_snapshot(page)
-    logger.info("tutu_station_typing_started", extra={"field_name": step.get("field_name"), "requested_city": city_name})
+async def _clear_station_input(page, textbox):
     try:
         if hasattr(textbox, "click"):
             await textbox.click(timeout=3000)
@@ -825,40 +860,101 @@ async def _type_station_like_user(page, textbox, city_name: str, step: dict, net
     except Exception: pass
     try: await textbox.press("Backspace")
     except Exception: pass
-    network_capture.stage = "after_keyboard_typing"
-    step["typing_strategy"] = "press_sequentially"
     try:
+        value = await _textbox_value(textbox)
+        if value:
+            await textbox.evaluate("el => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(el, '') : (el.value = ''); el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); }")
+    except Exception:
+        if hasattr(textbox, "value"):
+            textbox.value = ""
+
+
+async def _dispatch_unicode_autocomplete_events(textbox, city_name: str, include_input: bool = True):
+    if include_input:
+        try:
+            await textbox.dispatch_event("input")
+        except Exception:
+            try:
+                await textbox.evaluate("el => el.dispatchEvent(new Event('input', {bubbles:true}))")
+            except Exception:
+                pass
+    try:
+        await textbox.dispatch_event("keyup", {"key": "Unidentified", "code": "", "keyCode": 0, "which": 0, "bubbles": True})
+    except Exception:
+        try:
+            await textbox.evaluate("el => el.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified', code:'', keyCode:0, which:0, bubbles:true}))")
+        except Exception:
+            pass
+
+
+async def _apply_unicode_input_strategy(page, textbox, city_name: str, strategy: str):
+    await _clear_station_input(page, textbox)
+    if strategy == "keyboard.insert_text":
+        await page.keyboard.insert_text(city_name)
+        await _dispatch_unicode_autocomplete_events(textbox, city_name, include_input=True)
+    elif strategy == "native_value_setter_input_event":
+        await textbox.evaluate(
+            """
+            (el, value) => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+                setter ? setter.call(el, value) : (el.value = value);
+                el.dispatchEvent(new InputEvent('input', {bubbles:true, data:value, inputType:'insertText'}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified', bubbles:true}));
+            }
+            """,
+            city_name,
+        )
+    elif strategy == "locator.fill_explicit_events":
+        await textbox.fill(city_name)
+        await _dispatch_unicode_autocomplete_events(textbox, city_name, include_input=True)
+    elif strategy == "press_sequentially_latin":
         if hasattr(textbox, "press_sequentially"):
             await textbox.press_sequentially(city_name, delay=80)
         elif hasattr(textbox, "type"):
             await textbox.type(city_name, delay=80)
         else:
-            raise AttributeError("no keyboard typing API")
-        step["characters_typed"] = len(city_name)
-    except Exception:
-        step["typing_strategy"] = "keyboard_insert_text_with_keyup_fallback"
+            await textbox.fill(city_name)
+    else:
+        raise ValueError(f"unknown input strategy: {strategy}")
+
+
+async def _type_station_like_user(page, textbox, city_name: str, step: dict, network_capture: TutuAutocompleteNetworkCapture):
+    await _install_keyboard_event_counters(textbox)
+    step["active_element_before_typing"] = await _active_element_snapshot(page)
+    strategies = ["keyboard.insert_text", "native_value_setter_input_event", "locator.fill_explicit_events"] if _is_cyrillic_text(city_name) else ["press_sequentially_latin", "keyboard.insert_text", "native_value_setter_input_event", "locator.fill_explicit_events"]
+    failures = []
+    for strategy in strategies:
+        logger.info("tutu_unicode_input_strategy_started", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": None, "query_matches_requested": None, "response_item_count": None})
+        before_requests = len(network_capture.requests)
+        network_capture.stage = strategy
+        step["typing_strategy"] = strategy
+        step["unicode_input_strategy"] = strategy
         try:
-            await page.keyboard.insert_text(city_name)
-        except Exception:
-            if hasattr(textbox, "press"):
-                if hasattr(textbox, "value"):
-                    textbox.value = ""
-                for ch in city_name:
-                    await textbox.press(ch)
-                    if hasattr(textbox, "value"):
-                        textbox.value += ch
-                    if hasattr(page, "autocomplete_open"):
-                        page.autocomplete_open = True
-            else:
-                await textbox.evaluate("el => { el.value = ''; }")
-                for ch in city_name:
-                    await textbox.evaluate("(el, ch) => { el.value += ch; el.dispatchEvent(new InputEvent('input', {bubbles:true, data: ch, inputType:'insertText'})); }", ch)
-        try: await textbox.dispatch_event("keyup")
-        except Exception: pass
-        step["characters_typed"] = len(city_name)
+            await _apply_unicode_input_strategy(page, textbox, city_name, strategy)
+            step["characters_typed"] = len(city_name)
+            await asyncio.sleep(0.35)
+            new_requests = network_capture.requests[before_requests:]
+            malformed = next((r for r in new_requests if r.get("malformed_autocomplete_query")), None)
+            matching = next((r for r in new_requests if r.get("autocomplete_query_matches_requested")), None)
+            if malformed:
+                logger.info("tutu_autocomplete_query_malformed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": malformed.get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
+                failures.append({"strategy": strategy, "failure_reason": "malformed_autocomplete_query", "autocomplete_query_value": malformed.get("autocomplete_query_value")})
+                logger.info("tutu_unicode_input_strategy_failed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": malformed.get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
+                await _clear_station_input(page, textbox)
+                await asyncio.sleep(0.1)
+                continue
+            if matching or not new_requests:
+                logger.info("tutu_unicode_input_strategy_succeeded", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": (matching or {}).get("autocomplete_query_value"), "query_matches_requested": bool(matching), "response_item_count": None})
+                step["unicode_input_strategy_failures"] = failures
+                break
+        except Exception as exc:
+            failures.append({"strategy": strategy, "failure_reason": type(exc).__name__})
+            logger.info("tutu_unicode_input_strategy_failed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": None, "query_matches_requested": None, "response_item_count": None})
     for ch in city_name:
         logger.info("tutu_station_character_typed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "character": ch})
-    counters = await _keyboard_event_counters(textbox)
+    counters = await _keyboard_event_counters(textbox) or {}
     step["keydown_count"] = counters.get("keydown", 0); step["keyup_count"] = counters.get("keyup", 0); step["input_event_count"] = counters.get("input", 0); step["change_event_count"] = counters.get("change", 0)
     step["active_element_after_typing"] = await _active_element_snapshot(page)
 
@@ -953,6 +1049,16 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     network_payload = network_capture.diagnostics(popup_rendered=bool(count or candidates or (discovery.get("options") or [])))
     step.update(network_payload)
     step["autocomplete_request_triggered"] = bool((network_payload.get("network_summary") or {}).get("relevant_requests"))
+    observed_queries = [r.get("autocomplete_query_value") for r in network_payload.get("autocomplete_requests", []) if r.get("autocomplete_query_value") is not None]
+    matching_queries = [r for r in network_payload.get("autocomplete_requests", []) if r.get("autocomplete_query_matches_requested")]
+    malformed_queries = [r for r in network_payload.get("autocomplete_requests", []) if r.get("malformed_autocomplete_query")]
+    step["requested_city"] = city_name
+    step["textbox_value"] = step.get("value_after_waiting_for_autocomplete") or step.get("textbox_value_after_typing")
+    step["autocomplete_query_value"] = (matching_queries[-1].get("autocomplete_query_value") if matching_queries else (observed_queries[-1] if observed_queries else None))
+    step["autocomplete_query_matches_requested"] = bool(matching_queries)
+    step["malformed_autocomplete_query"] = bool(malformed_queries)
+    if step["malformed_autocomplete_query"]:
+        logger.info("tutu_autocomplete_query_malformed", extra={"field_name": field_name, "requested_city": city_name, "strategy": step.get("unicode_input_strategy"), "autocomplete_query_value": (malformed_queries[-1] or {}).get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
     if step["autocomplete_request_triggered"]:
         logger.info("tutu_autocomplete_request_triggered", extra={"field_name": field_name, "requested_city": city_name})
     else:
@@ -963,6 +1069,9 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         diagnostics["autocomplete_responses"][field_name] = _limit_diagnostic(network_payload["autocomplete_responses"])
         diagnostics["autocomplete_request_failures"][field_name] = _limit_diagnostic(network_payload["autocomplete_request_failures"])
         diagnostics["network_summary"][field_name] = _limit_diagnostic(network_payload["network_summary"])
+
+    if step.get("malformed_autocomplete_query") or (_popular_city_response_without_requested(network_payload.get("autocomplete_responses", []), city_name) and not step.get("autocomplete_query_matches_requested")):
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "malformed_autocomplete_query")
 
     if not count and not candidates:
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_not_opened")
