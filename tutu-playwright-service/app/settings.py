@@ -3,7 +3,8 @@ from pydantic import BaseModel
 class Settings(BaseModel):
     enabled: bool = os.getenv("TUTU_PLAYWRIGHT_ENABLED", "false").lower() == "true"
     headless: bool = os.getenv("TUTU_PLAYWRIGHT_HEADLESS", "true").lower() == "true"
-    timeout_seconds: int = int(os.getenv("TUTU_PLAYWRIGHT_TIMEOUT_SECONDS", "45"))
+    timeout_seconds: int = int(os.getenv("TUTU_PLAYWRIGHT_TIMEOUT_SECONDS", "30"))
+    operation_timeout_seconds: int = int(os.getenv("TUTU_PLAYWRIGHT_OPERATION_TIMEOUT_SECONDS", "25"))
     concurrency: int = int(os.getenv("TUTU_PLAYWRIGHT_CONCURRENCY", "1"))
     cache_ttl_seconds: int = int(os.getenv("TUTU_PLAYWRIGHT_CACHE_TTL_SECONDS", "300"))
     artifact_dir: str = os.getenv("TUTU_PLAYWRIGHT_ARTIFACT_DIR", "/tmp/tutu-playwright-artifacts")

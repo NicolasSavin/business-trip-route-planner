@@ -670,7 +670,7 @@ class TutuAvailabilityService:
             return cached
         if not req.train_number:
             logger.info("early exit condition observed", extra={"reason": "missing train number", "will_exit_early": False})
-        logger.info("configuration", extra={"enabled": settings.enabled, "mock_mode": settings.mock_mode, "timeout_seconds": settings.timeout_seconds, "concurrency": settings.concurrency})
+        logger.info("configuration", extra={"enabled": settings.enabled, "mock_mode": settings.mock_mode, "timeout_seconds": settings.timeout_seconds, "operation_timeout_seconds": settings.operation_timeout_seconds, "concurrency": settings.concurrency})
         if settings.mock_mode or not settings.enabled:
             logger.info("early exit condition observed", extra={"reason": "disabled enrichment" if settings.mock_mode else "configuration", "mock_mode": settings.mock_mode, "enabled": settings.enabled})
         async with self.sem:
@@ -711,7 +711,7 @@ class TutuAvailabilityService:
     async def restart(self):
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
-        browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.timeout_seconds*1000)
+        browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.operation_timeout_seconds*1000)
         shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
