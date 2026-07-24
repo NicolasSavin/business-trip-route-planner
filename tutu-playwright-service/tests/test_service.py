@@ -879,13 +879,26 @@ class RouteLocator:
 
     async def evaluate(self, script):
         element = self.elements[self.index or 0]
-        if "closest('form')" in script:
+        if "typeof el.click" in script:
+            self.page.clicked.append(f"evaluate:{self.selector}")
+            if element.get("changes_url", True):
+                self.page.url = self.page.url + "search/"
+            return "element_click"
+        if "closest('form')" in script or "el.form" in script:
             return {
                 "type": element.get("type"),
                 "tag_name": element.get("tag_name", "input"),
                 "form_contains_route_fields": element.get("form_contains_route_fields", False),
                 "id": element.get("id"),
                 "value": element.get("value", ""),
+                "class": element.get("class", ""),
+                "attached": element.get("attached", True),
+                "visible": None,
+                "enabled": None,
+                "bounding_box": None,
+                "computed_style": element.get("computed_style", {"display": "block", "visibility": "visible", "opacity": "1", "pointer_events": "auto"}),
+                "form_action": element.get("form_action", "https://www.tutu.ru/poezda/search/"),
+                "form_method": element.get("form_method", "get"),
             }
         return element.get("value", "")
 
@@ -898,9 +911,15 @@ class RouteLocator:
     async def is_enabled(self, timeout=None):
         return self.elements[self.index or 0].get("enabled", True)
 
+    async def bounding_box(self):
+        return self.elements[self.index or 0].get("bounding_box", {"x": 1, "y": 1, "width": 10, "height": 10})
+
     async def click(self):
+        element = self.elements[self.index or 0]
+        if element.get("click_fails"):
+            raise Exception("not clickable")
         self.page.clicked.append(self.selector)
-        if self.elements[self.index or 0].get("changes_url"):
+        if element.get("changes_url"):
             self.page.url = self.page.url + "search/"
 
 
@@ -1065,3 +1084,130 @@ async def test_post_submit_no_navigation_structured_timeout(monkeypatch):
     result = await service_module.wait_for_tutu_search_result(page, time.monotonic() + 1, diagnostics)
     assert result["status"] == "navigation_timeout"
     assert any(step["status"] == "timeout" for step in diagnostics["post_submit_steps"])
+
+@pytest.mark.asyncio
+async def test_route_submit_primary_one_fallback_zero_not_ambiguous(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [{"id": "idstationsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": True, "changes_url": True}],
+        "fallback": [],
+    })
+    diagnostics = {}
+
+    await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert page.clicked == ["#idstationsearch_submit_button_input"]
+    assert diagnostics["route_submit_button"]["selected_strategy"] == "primary_id"
+    assert diagnostics["route_submit_button"]["fallback_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_route_submit_fallback_used_when_primary_missing(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [],
+        "fallback": [{"id": "fallback", "type": "submit", "value": "Найти", "form_contains_route_fields": True, "changes_url": True}],
+    })
+    diagnostics = {}
+
+    await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert page.clicked == [diagnostics["submit_selector"]]
+    assert diagnostics["route_submit_button"]["selected_strategy"] == "fallback_form"
+    assert diagnostics["route_submit_button"]["fallback_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_route_submit_not_found_when_primary_and_fallback_missing():
+    from app import service as service_module
+
+    page = RoutePage(submit_buttons={"#idstationsearch_submit_button_input": [], "fallback": []})
+    diagnostics = {}
+
+    with pytest.raises(ValueError, match="route_submit_button_not_found"):
+        await service_module._detect_route_submit_button(page, diagnostics)
+
+    assert diagnostics["route_submit_button"]["failure_reason"] == "route_submit_button_not_found"
+
+
+@pytest.mark.asyncio
+async def test_route_submit_ambiguous_when_primary_duplicate():
+    from app import service as service_module
+
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [
+            {"id": "idstationsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": True},
+            {"id": "idstationsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": True},
+        ],
+        "fallback": [],
+    })
+    diagnostics = {}
+
+    with pytest.raises(ValueError, match="route_submit_button_ambiguous"):
+        await service_module._detect_route_submit_button(page, diagnostics)
+
+    assert diagnostics["route_submit_button"]["primary_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_route_submit_hidden_input_primary_is_valid_and_submits(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [{
+            "id": "idstationsearch_submit_button_input",
+            "type": "submit",
+            "value": "Найти",
+            "class": "hidden_input",
+            "visible": False,
+            "bounding_box": {"x": 0, "y": 0, "width": 1, "height": 1},
+            "form_contains_route_fields": True,
+            "changes_url": True,
+        }],
+        "fallback": [],
+    })
+    diagnostics = {}
+
+    await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert diagnostics["route_submit_button"]["primary"]["class"] == "hidden_input"
+    assert page.clicked == ["#idstationsearch_submit_button_input"]
+
+
+@pytest.mark.asyncio
+async def test_route_submit_ignores_train_search_when_primary_missing():
+    from app import service as service_module
+
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [],
+        "#idtrainsearch_submit_button_input": [{"id": "idtrainsearch_submit_button_input", "type": "submit", "value": "Найти", "changes_url": True}],
+        "fallback": [],
+    })
+
+    with pytest.raises(ValueError, match="route_submit_button_not_found"):
+        await service_module._click_route_submit(page, {}, {"screenshots": [], "html_artifacts": []})
+
+    assert "#idtrainsearch_submit_button_input" not in page.clicked
+
+
+@pytest.mark.asyncio
+async def test_route_submit_evaluate_click_when_playwright_click_fails(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage(submit_buttons={
+        "#idstationsearch_submit_button_input": [{"id": "idstationsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": True, "changes_url": True, "click_fails": True}],
+        "fallback": [],
+    })
+    diagnostics = {}
+
+    result = await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert result == "submitted"
+    assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
+    assert diagnostics["post_submit_steps"][-2]["details"]["click_strategy"] == "evaluate_click_or_request_submit"

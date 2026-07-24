@@ -696,44 +696,101 @@ async def _verify_route_fields(page, origin_requested: str, destination_requeste
     return verification
 
 
-async def _submit_button_info(locator) -> dict:
+async def _submit_button_info(locator):
+    try:
+        visible = await locator.is_visible(timeout=1000)
+    except Exception:
+        visible = False
+    try:
+        enabled = await locator.is_enabled(timeout=1000)
+    except Exception:
+        enabled = False
+    try:
+        bounding_box = await locator.bounding_box()
+    except Exception:
+        bounding_box = None
     try:
         return await locator.evaluate(
             """
             el => {
-                const form = el.closest('form');
-                const has = name => !!(form && form.querySelector(`input[name="${name}"]`));
+                const form = el.form || el.closest('form');
+                const root = form || el.closest('[class*="station" i], [class*="route" i], [class*="search" i], [id*="station" i], [id*="route" i], [id*="search" i]') || document;
+                const has = name => !!(root && root.querySelector(`input[name="${name}"]`));
+                const style = window.getComputedStyle(el);
                 return {
-                    type: (el.getAttribute('type') || '').toLowerCase(),
-                    tag_name: el.tagName.toLowerCase(),
-                    form_contains_route_fields: !!form && has('schedule_station_from') && has('schedule_station_to') && has('nnst1') && has('nnst2'),
                     id: el.id || null,
+                    type: (el.getAttribute('type') || '').toLowerCase(),
                     value: el.value || el.textContent || '',
+                    class: el.getAttribute('class') || '',
+                    tag_name: el.tagName.toLowerCase(),
+                    attached: el.isConnected,
+                    visible: null,
+                    enabled: null,
+                    bounding_box: null,
+                    computed_style: {
+                        display: style.display,
+                        visibility: style.visibility,
+                        opacity: style.opacity,
+                        pointer_events: style.pointerEvents,
+                    },
+                    form_contains_route_fields: !!root && has('schedule_station_from') && has('schedule_station_to') && has('nnst1') && has('nnst2'),
+                    form_action: form ? form.action : null,
+                    form_method: form ? (form.method || 'get').toLowerCase() : null,
                 };
             }
             """
-        )
+        ) | {"visible": visible, "enabled": enabled, "bounding_box": bounding_box}
     except Exception:
-        return {"type": None, "tag_name": None, "form_contains_route_fields": False}
+        return {"type": None, "tag_name": None, "form_contains_route_fields": False, "visible": visible, "enabled": enabled, "bounding_box": bounding_box, "attached": False}
+
+
+def _route_submit_diagnostics(primary_selector: str, primary_count: int, fallback_selector: str, fallback_count: int | None = None, primary_info: dict | None = None, selected_strategy: str | None = None, failure_reason: str | None = None) -> dict:
+    return {
+        "primary_selector": primary_selector,
+        "primary_count": primary_count,
+        "primary": primary_info,
+        "fallback_selector": fallback_selector,
+        "fallback_count": fallback_count,
+        "selected_strategy": selected_strategy,
+        "failure_reason": failure_reason,
+    }
 
 
 async def _detect_route_submit_button(page, diagnostic_payload: dict):
     primary_selector = "#idstationsearch_submit_button_input"
+    fallback_selector = "form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to']):has(input[name='nnst1']):has(input[name='nnst2']) input[type='submit'][value='Найти']"
     primary = page.locator(primary_selector)
     primary_count = await _locator_count(primary)
     if primary_count == 1:
         info = await _submit_button_info(primary)
-        if info.get("type") == "submit" and info.get("form_contains_route_fields"):
-            diagnostic_payload["route_submit_button"] = {"selector": primary_selector, "count": primary_count, **info}
-            logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
-            return primary, primary_selector
-    fallback_selector = "form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to']):has(input[name='nnst1']):has(input[name='nnst2']) input[type='submit'][value='Найти']"
+        diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, None, info, "primary_id", None)
+        logger.info("tutu_route_submit_primary_found", extra=diagnostic_payload["route_submit_button"])
+        if not info.get("enabled", False):
+            diagnostic_payload["route_submit_button"]["failure_reason"] = "route_submit_button_disabled"
+            raise ValueError("route_submit_button_disabled")
+        if info.get("id") not in (None, "idstationsearch_submit_button_input") or info.get("type") != "submit" or info.get("value") != "Найти" or info.get("attached") is False or not info.get("form_contains_route_fields"):
+            diagnostic_payload["route_submit_button"]["failure_reason"] = "route_submit_button_invalid"
+            raise ValueError("route_submit_button_not_found")
+        logger.info("tutu_route_submit_primary_selected", extra=diagnostic_payload["route_submit_button"])
+        return primary, primary_selector
+    if primary_count > 1:
+        diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, None, None, None, "route_submit_button_ambiguous")
+        logger.info("tutu_route_submit_ambiguous", extra=diagnostic_payload["route_submit_button"])
+        raise ValueError("route_submit_button_ambiguous")
+
+    logger.info("tutu_route_submit_fallback_started", extra={"primary_selector": primary_selector, "primary_count": primary_count, "fallback_selector": fallback_selector})
     fallback = page.locator(fallback_selector)
     fallback_count = await _locator_count(fallback)
-    if fallback_count != 1:
-        diagnostic_payload["route_submit_button"] = {"selector": fallback_selector, "count": fallback_count, "primary_count": primary_count}
+    if fallback_count == 0:
+        diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, None, None, "route_submit_button_not_found")
+        logger.info("tutu_route_submit_not_found", extra=diagnostic_payload["route_submit_button"])
+        raise ValueError("route_submit_button_not_found")
+    if fallback_count > 1:
+        diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, None, None, "route_submit_button_ambiguous")
+        logger.info("tutu_route_submit_ambiguous", extra=diagnostic_payload["route_submit_button"])
         raise ValueError("route_submit_button_ambiguous")
-    diagnostic_payload["route_submit_button"] = {"selector": fallback_selector, "count": fallback_count, "primary_count": primary_count, **await _submit_button_info(fallback)}
+    info = await _submit_button_info(fallback)
+    diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, info, "fallback_form", None)
     logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
     return fallback, fallback_selector
 
@@ -769,26 +826,51 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
     await _safe_capture_step_artifact(page, "before_submit", artifacts, deadline, diagnostic_payload)
     before_url = page.url
     _record_step(diagnostic_payload, "before_submit", deadline, "completed", {"url": before_url, "selector": selector, **(diagnostic_payload.get("before_submit_form") or {})})
-    try:
-        await submit.wait_for(state="visible", timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms))
-    except Exception:
-        if not await submit.is_visible(timeout=_bounded_timeout_ms(deadline, 1000)):
-            diagnostic_payload["timeout_stage"] = "submit_click_timeout"
-            raise
     if not await submit.is_enabled(timeout=_bounded_timeout_ms(deadline, 1000)):
+        diagnostic_payload.setdefault("route_submit_button", {})["failure_reason"] = "route_submit_button_disabled"
         raise ValueError("route_submit_button_disabled")
     st=_new_step("submit_click_started", deadline, {"selector": selector}); diagnostic_payload.setdefault("post_submit_steps", []).append(st)
     _log_post_submit("tutu_route_submit_started", req, "submit_click", before_url, None, deadline)
     try:
-        await asyncio.wait_for(submit.click(), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
-        _finish_step(st, "completed", {"url_after_click": page.url})
-        _record_step(diagnostic_payload, "submit_click_completed", deadline, "completed", {"url": page.url})
+        strategy = "playwright_click"
+        try:
+            await asyncio.wait_for(submit.click(), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
+        except Exception as click_error:
+            strategy = "evaluate_click_or_request_submit"
+            logger.info("tutu_route_submit_click_strategy", extra={"selector": selector, "strategy": strategy, "click_error": str(click_error)[:200]})
+            await asyncio.wait_for(
+                submit.evaluate(
+                    """
+                    el => {
+                        const form = el.form || el.closest('form');
+                        if (typeof el.click === 'function') {
+                            el.click();
+                            return 'element_click';
+                        }
+                        if (form && typeof form.requestSubmit === 'function') {
+                            form.requestSubmit(el);
+                            return 'request_submit';
+                        }
+                        if (form) {
+                            form.submit();
+                            return 'form_submit';
+                        }
+                        throw new Error('route submit fallback unavailable');
+                    }
+                    """
+                ),
+                timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000,
+            )
+        logger.info("tutu_route_submit_click_strategy", extra={"selector": selector, "strategy": strategy})
+        _finish_step(st, "completed", {"url_after_click": page.url, "click_strategy": strategy})
+        _record_step(diagnostic_payload, "submit_click_completed", deadline, "completed", {"url": page.url, "click_strategy": strategy})
         _log_post_submit("tutu_route_submit_completed", req, "submit_click", page.url, st.get("elapsed_ms"), deadline)
     except Exception:
-        _finish_step(st, "timeout", {"url_after_click": page.url})
+        _finish_step(st, "failed", {"url_after_click": page.url})
         diagnostic_payload["timeout_stage"] = "submit_click_timeout"
+        diagnostic_payload.setdefault("route_submit_button", {})["failure_reason"] = "route_submit_failed"
         _log_post_submit("tutu_post_submit_stage_timeout", req, "submit_click_timeout", page.url, st.get("elapsed_ms"), deadline)
-        raise ValueError("submit_click_timeout")
+        raise ValueError("route_submit_failed")
     _record_step(diagnostic_payload, "navigation_wait_started", deadline, "completed", {"url": page.url})
     return "submitted"
 
