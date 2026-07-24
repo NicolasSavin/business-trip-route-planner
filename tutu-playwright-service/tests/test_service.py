@@ -25,6 +25,17 @@ async def test_train_not_found_unknown():
         r=await c.post("/api/v1/availability/check", json=payload)
     assert r.json()["status"]=="unknown"
 
+class MockKeyboard:
+    def __init__(self, page):
+        self.page = page
+        self.inserted = []
+
+    async def insert_text(self, value):
+        self.inserted.append(value)
+        self.page.textbox.value = value
+        self.page.autocomplete_open = True
+
+
 class MockKeyboardTextbox:
     def __init__(self, page):
         self.page = page
@@ -35,8 +46,36 @@ class MockKeyboardTextbox:
         self.value = value
         self.page.autocomplete_open = True
 
+    async def click(self, timeout=None):
+        pass
+
+    async def focus(self):
+        pass
+
+    async def blur(self):
+        pass
+
+    async def dispatch_event(self, event, event_init=None):
+        if event in {"input", "keyup"} and self.value:
+            self.page.autocomplete_open = True
+
+    async def evaluate(self, script, *args):
+        if args and "InputEvent('input'" in script:
+            self.value = args[0]
+            self.page.autocomplete_open = True
+        elif "value = ''" in script:
+            self.value = ""
+        if "__tutuPwKeyboardCounters" in script:
+            return {"keydown": 0, "keyup": 1, "input": 1, "change": 0}
+        if "querySelectorAll" in script:
+            return []
+        return None
+
     async def press(self, key):
         self.pressed.append(key)
+        if key == "Backspace":
+            self.value = ""
+            self.page.autocomplete_open = False
         if key == "Enter" and "ArrowDown" in self.pressed:
             self.page.autocomplete_open = False
 
@@ -107,6 +146,7 @@ class MockPage:
         self.options = options
         self.autocomplete_open = False
         self.textbox = MockKeyboardTextbox(self)
+        self.keyboard = MockKeyboard(self)
         self.screenshots = []
 
     def get_by_role(self, role):
@@ -748,7 +788,8 @@ async def test_keyboard_typing_diagnostics_records_strategy(tmp_path, monkeypatc
     await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
 
     step = diagnostics["station_steps"][0]
-    assert step["typing_strategy"] in {"press_sequentially", "keyboard_insert_text_with_keyup_fallback"}
+    assert step["typing_strategy"] == "keyboard.insert_text"
+    assert step["unicode_input_strategy"] == "keyboard.insert_text"
     assert step["characters_typed"] == len("Рязань")
     assert step["station_selected"] is True
 
@@ -771,3 +812,41 @@ def test_redacts_cookie_session_and_analytics_payload():
     assert "[redacted]" in redacted
     assert _safe_body_sample("https://api-x.tutu.ru/v2/data", body) == "[redacted analytics payload]"
     assert "secret" not in _safe_url("https://example.test/path?sessionId=secret&uid=42")
+
+
+def test_autocomplete_query_decodes_percent_encoded_cyrillic():
+    from app.service import _autocomplete_query_matches, _autocomplete_query_value
+
+    url = "https://www.tutu.ru/suggest/railway_simple/?name=%D0%A0%D1%8F%D0%B7%D0%B0%D0%BD%D1%8C"
+
+    assert _autocomplete_query_value(url) == "Рязань"
+    assert _autocomplete_query_matches("Рязань", _autocomplete_query_value(url)) is True
+
+
+def test_malformed_autocomplete_query_rejected():
+    from app.service import _autocomplete_query_matches, _autocomplete_query_value
+
+    query = _autocomplete_query_value("https://www.tutu.ru/suggest/railway_simple/?name=.%2F%3F")
+
+    assert query == "./?"
+    assert _autocomplete_query_matches("Рязань", query) is False
+
+
+@pytest.mark.asyncio
+async def test_keyboard_insert_text_strategy_sets_cyrillic_value():
+    from app.service import _apply_unicode_input_strategy
+
+    page = MockPage(["Рязань"])
+
+    await _apply_unicode_input_strategy(page, page.textbox, "Рязань", "keyboard.insert_text")
+
+    assert page.textbox.value == "Рязань"
+    assert page.keyboard.inserted == ["Рязань"]
+
+
+def test_popular_city_response_not_matching_candidate_not_found():
+    from app.service import _popular_city_response_without_requested
+
+    responses = [{"json_probe": {"contains_requested_city": False, "text_values_sample": ["Москва", "Санкт-Петербург", "Казань"]}}]
+
+    assert _popular_city_response_without_requested(responses, "Рязань") is True
