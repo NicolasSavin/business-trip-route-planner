@@ -67,6 +67,32 @@ class YandexLocationMatch:
     def to_dict(self) -> dict[str, Any]:
         return {"title": self.title, "code": self.code, "type": self.type, "country": self.country, "region": self.region, "settlement": self.settlement, "station_type": self.station_type, "transport_types": list(self.transport_types), "latitude": self.latitude, "longitude": self.longitude, "confidence": self.confidence, "stations": [s.__dict__ | {"transport_types": list(s.transport_types), "aliases": list(s.aliases)} for s in self.stations], "aliases_used": list(self.aliases_used), "source": self.source, "cache_hit": self.cache_hit}
 
+
+
+def _dedupe_location_matches(matches: list[YandexLocationMatch]) -> list[YandexLocationMatch]:
+    result: list[YandexLocationMatch] = []
+    seen: set[tuple[str, ...]] = set()
+    for match in matches:
+        key = _location_match_dedupe_key(match)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(match)
+    return result
+
+
+def _location_match_dedupe_key(match: YandexLocationMatch) -> tuple[str, ...]:
+    code = (match.code or "").strip()
+    if code:
+        return ("code", code)
+    return (
+        "location",
+        normalize(match.title),
+        match.type or "",
+        normalize(match.settlement or ""),
+        normalize(match.region or ""),
+    )
+
 LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c213", "Москва", "city", ("train", "bus"), (YandexStation("s2000003", "Москва Казанская", "railway_station", ("train",), settlement="Москва"), YandexStation("s2006004", "Москва Ленинградская", "railway_station", ("train",), settlement="Москва")), aliases_used=("мск", "moscow"), region="Москва", settlement="Москва"),
     YandexLocationMatch("c2", "Санкт-Петербург", "city", ("train", "bus"), (YandexStation("s9602494", "Санкт-Петербург-Главн.", "railway_station", ("train",), settlement="Санкт-Петербург"),), aliases_used=("спб", "питер", "санкт петербург", "санкт-петербург"), region="Санкт-Петербург", settlement="Санкт-Петербург"),
@@ -132,6 +158,9 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
                 LIMIT 50
             """, (key, query, key, alias_pattern, prefix, prefix, prefix, prefix, contains, contains, contains, contains, key, query, key, alias_pattern, prefix, prefix, contains, contains)))
         return self._dedupe([self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)])[:20]
+    def _dedupe(self, matches):
+        return _dedupe_location_matches(matches)
+
     def get_by_code(self, code):
         self._ensure_schema()
         with self._connect() as con: row = con.execute("SELECT * FROM locations WHERE code=?", (code,)).fetchone()
