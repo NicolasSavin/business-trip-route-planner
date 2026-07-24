@@ -9,6 +9,9 @@ from .settings import settings
 
 logger = logging.getLogger(__name__)
 LOCATION_AUTOCOMPLETE_TIMEOUT_MS = 20_000
+ARTIFACT_MIN_REMAINING_MS = 1500
+ARTIFACT_TIMEOUT_SECONDS = 0.5
+MAX_STEP_ARTIFACT_STEPS = 2
 ROUTE_FIELD_LABELS = {
     "origin": ("откуда", "город отправления", "пункт отправления", "станция отправления"),
     "destination": ("куда", "город прибытия", "пункт прибытия", "станция прибытия"),
@@ -37,7 +40,7 @@ def _now_iso() -> str:
 
 def _remaining_ms(deadline: float | None) -> int:
     if deadline is None:
-        return settings.operation_timeout_seconds * 1000
+        return min(settings.operation_timeout_seconds, 26) * 1000
     return max(0, int((deadline - time.monotonic()) * 1000))
 
 
@@ -190,13 +193,48 @@ def _direct_navigation_from_contract(contract: dict) -> dict:
     return {"supported": True, "method": method, "url": urlunsplit((parts.scheme, parts.netloc, parts.path, query, "")), "reason": None}
 
 
+async def _bounded_artifact_call(coro, timeout_seconds: float = ARTIFACT_TIMEOUT_SECONDS):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except (asyncio.TimeoutError, asyncio.CancelledError, PlaywrightTimeoutError):
+        return None
+    except Exception:
+        logger.info("tutu_artifact_capture_failed", exc_info=True)
+        return None
+
+
+def _record_artifact_skip(diagnostic_payload: dict | None, step: str, reason: str) -> None:
+    if diagnostic_payload is None:
+        return
+    diagnostic_payload["diagnostic_artifacts_skipped"] = True
+    diagnostic_payload["diagnostic_artifacts_skip_reason"] = reason
+    diagnostic_payload.setdefault("skipped_artifacts", []).append({"step": step, "reason": reason})
+
+
 async def _safe_capture_step_artifact(page, step: str, artifacts: dict[str, list[str]], deadline: float | None, diagnostic_payload: dict) -> None:
-    if _remaining_ms(deadline) < 1500:
-        diagnostic_payload.setdefault("skipped_artifacts", []).append({"step": step, "reason": "deadline_budget_low"})
+    if not settings.capture_step_artifacts:
+        _record_artifact_skip(diagnostic_payload, step, "step_artifacts_disabled")
+        return
+    if diagnostic_payload.get("deadline_exceeded") or _remaining_ms(deadline) <= 0:
+        _record_artifact_skip(diagnostic_payload, step, "service_deadline_exceeded")
+        return
+    if diagnostic_payload.get("diagnostic_artifact_step_count", 0) >= MAX_STEP_ARTIFACT_STEPS:
+        _record_artifact_skip(diagnostic_payload, step, "step_artifact_limit_reached")
+        return
+    if step in diagnostic_payload.setdefault("diagnostic_artifact_steps", []):
+        _record_artifact_skip(diagnostic_payload, step, "duplicate_artifact_step")
+        return
+    if _remaining_ms(deadline) < ARTIFACT_MIN_REMAINING_MS:
+        _record_artifact_skip(diagnostic_payload, step, "deadline_budget_low")
         return
     start=time.monotonic()
-    await _save_step_artifact(page, step, artifacts)
+    before_count = len(artifacts.get("screenshots", [])) + len(artifacts.get("html_artifacts", []))
+    await _save_step_artifact(page, step, artifacts, deadline=deadline, diagnostic_payload=diagnostic_payload, full_page=False, terminal=False)
     diagnostic_payload.setdefault("artifact_timings", []).append({"step": step, "elapsed_ms": int((time.monotonic()-start)*1000)})
+    after_count = len(artifacts.get("screenshots", [])) + len(artifacts.get("html_artifacts", []))
+    if after_count > before_count:
+        diagnostic_payload["diagnostic_artifact_step_count"] = diagnostic_payload.get("diagnostic_artifact_step_count", 0) + 1
+        diagnostic_payload["diagnostic_artifact_steps"].append(step)
 
 
 async def _selector_count(page, selector: str, timeout_ms: int = 1000) -> int:
@@ -733,6 +771,16 @@ async def _same_element(left, right) -> bool:
         return await _element_identity(left) == await _element_identity(right)
 
 
+def _mark_response_serialization(diagnostic_payload: dict, start_monotonic: float | None = None) -> None:
+    base = start_monotonic or time.monotonic()
+    diagnostic_payload["response_serialization_started_ms"] = int((time.monotonic() - base) * 1000)
+
+
+def _mark_response_returned(diagnostic_payload: dict, start_monotonic: float | None = None) -> None:
+    base = start_monotonic or time.monotonic()
+    diagnostic_payload["response_returned_ms"] = int((time.monotonic() - base) * 1000)
+
+
 def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = None, shots: list[str] | None = None, htmls: list[str] | None = None, matched_by: str | None = None):
     return dict(
         matched_by=matched_by,
@@ -785,6 +833,12 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         artifacts_capture_skipped=diagnostic_payload.get("artifacts_capture_skipped"),
         artifacts_capture_skip_reason=diagnostic_payload.get("artifacts_capture_skip_reason"),
         artifacts_capture_elapsed_ms=diagnostic_payload.get("artifacts_capture_elapsed_ms"),
+        diagnostic_artifact_elapsed_ms=diagnostic_payload.get("diagnostic_artifact_elapsed_ms"),
+        diagnostic_artifact_count=diagnostic_payload.get("diagnostic_artifact_count", 0),
+        diagnostic_artifacts_skipped=diagnostic_payload.get("diagnostic_artifacts_skipped"),
+        diagnostic_artifacts_skip_reason=diagnostic_payload.get("diagnostic_artifacts_skip_reason"),
+        response_serialization_started_ms=diagnostic_payload.get("response_serialization_started_ms"),
+        response_returned_ms=diagnostic_payload.get("response_returned_ms"),
         terminal_failure_reason=diagnostic_payload.get("terminal_failure_reason"),
         diagnostic_response_received=diagnostic_payload.get("diagnostic_response_received", True),
     )
@@ -878,18 +932,19 @@ async def _restore_origin_from_confirmed_snapshot(page, origin_guard: dict, diag
 
 async def _capture_error_artifacts_if_budget_allows(page, artifacts: dict[str, list[str]], diagnostic_payload: dict, deadline: float | None, reason: str = "error") -> None:
     start = time.monotonic()
-    if _remaining_ms(deadline) < 2000:
+    if diagnostic_payload.get("terminal_failure_reason") in {"service_cancelled", "service_deadline_exceeded"} or diagnostic_payload.get("deadline_exceeded"):
+        diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": diagnostic_payload.get("terminal_failure_reason") or "service_deadline_exceeded"})
+        return
+    if _remaining_ms(deadline) < ARTIFACT_MIN_REMAINING_MS:
         diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": "error_artifact_capture_skipped_due_to_deadline", "artifacts_capture_elapsed_ms": 0})
+        _record_artifact_skip(diagnostic_payload, reason, "deadline_budget_low")
         logger.info("tutu_error_artifacts_skipped", extra={"reason": diagnostic_payload["artifacts_capture_skip_reason"]})
         return
-    try:
-        await asyncio.wait_for(_save_step_artifact(page, reason, artifacts), timeout=min(2.0, _remaining_ms(deadline)/1000))
-        diagnostic_payload["artifacts_capture_skipped"] = False
-    except Exception as exc:
-        diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": type(exc).__name__})
-        logger.info("tutu_error_artifacts_skipped", extra={"reason": type(exc).__name__})
-    finally:
-        diagnostic_payload["artifacts_capture_elapsed_ms"] = int((time.monotonic() - start) * 1000)
+    await _save_step_artifact(page, reason, artifacts, deadline=deadline, diagnostic_payload=diagnostic_payload, full_page=False, terminal=True)
+    diagnostic_payload["artifacts_capture_skipped"] = diagnostic_payload.get("diagnostic_artifact_count", 0) == 0
+    if diagnostic_payload["artifacts_capture_skipped"]:
+        diagnostic_payload.setdefault("artifacts_capture_skip_reason", diagnostic_payload.get("diagnostic_artifacts_skip_reason"))
+    diagnostic_payload["artifacts_capture_elapsed_ms"] = int((time.monotonic() - start) * 1000)
 
 
 async def _close_origin_autocomplete(page, origin_input, diagnostics: dict | None = None) -> None:
@@ -1149,7 +1204,7 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
                     form = inputForm(linkedInput) || (linkedInput && linkedInput.closest('form')) || form;
                 }
                 if (!hasRouteFields(form)) {
-                    form = Array.from(document.forms).find(hasRouteFields) || Array.from(document.forms).find(f => /poezda\/search/i.test(f.action || ''));
+                    form = Array.from(document.forms).find(hasRouteFields) || Array.from(document.forms).find(f => /poezda/search/i.test(f.action || ''));
                 }
                 if (!form) throw new Error('route_form_not_found');
                 const primary = form.querySelector('#idstationsearch_submit_button_input, input[type="submit"][value="Найти"], button[type="submit"]');
@@ -1268,33 +1323,64 @@ async def open_results_with_station_ids(page, req, diagnostics: dict, deadline: 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
     artifact_dir = Path(settings.artifact_dir) / "artifacts"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    sp = artifact_dir / "location_not_found.png"
-    hp = artifact_dir / "location_not_found.html"
     try:
-        await page.screenshot(path=str(sp), full_page=True)
-        hp.write_text(await page.content(), encoding="utf-8")
-        logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": str(sp), "html_artifact": str(hp)})
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        sp = artifact_dir / "location_not_found.png"
+        hp = artifact_dir / "location_not_found.html"
+        shot = await _bounded_artifact_call(page.screenshot(path=str(sp), full_page=False))
+        content = await _bounded_artifact_call(page.content())
+        if content is not None:
+            hp.write_text(content, encoding="utf-8")
+        logger.info("location autocomplete artifacts saved", extra={"field_name": field_name, "city_name": city_name, "screenshot": str(sp) if shot is not None else None, "html_artifact": str(hp) if content is not None else None})
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        logger.info("location autocomplete artifact capture skipped", extra={"field_name": field_name, "city_name": city_name, "reason": "timeout_or_cancelled"})
     except Exception:
-        logger.exception("location autocomplete artifact capture caught exception", extra={"field_name": field_name, "city_name": city_name})
+        logger.info("location autocomplete artifact capture caught exception", exc_info=True, extra={"field_name": field_name, "city_name": city_name})
 
 
-async def _save_step_artifact(page, step: str, artifacts: dict[str, list[str]] | None = None) -> None:
+async def _save_step_artifact(page, step: str, artifacts: dict[str, list[str]] | None = None, deadline: float | None = None, diagnostic_payload: dict | None = None, full_page: bool = False, terminal: bool = False) -> None:
+    start = time.monotonic()
+    if not terminal and not settings.capture_step_artifacts:
+        _record_artifact_skip(diagnostic_payload, step, "step_artifacts_disabled")
+        return
+    if _remaining_ms(deadline) < ARTIFACT_MIN_REMAINING_MS:
+        _record_artifact_skip(diagnostic_payload, step, "deadline_budget_low")
+        return
+    if terminal and diagnostic_payload and diagnostic_payload.get("diagnostic_artifact_count", 0) >= 1:
+        _record_artifact_skip(diagnostic_payload, step, "terminal_artifact_limit_reached")
+        return
     artifact_dir = Path(settings.artifact_dir) / "artifacts"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _record_artifact_skip(diagnostic_payload, step, "artifact_dir_unavailable")
+        return
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     safe_step = re.sub(r"[^a-z0-9_-]+", "_", step.lower())
     screenshot = artifact_dir / f"{safe_step}-{stamp}.png"
     html = artifact_dir / f"{safe_step}-{stamp}.html"
     try:
-        await page.screenshot(path=str(screenshot), full_page=True)
-        html.write_text(await page.content(), encoding="utf-8")
-        if artifacts is not None:
-            artifacts.setdefault("screenshots", []).append(str(screenshot))
-            artifacts.setdefault("html_artifacts", []).append(str(html))
-        logger.info("tutu step artifacts saved", extra={"step": step, "screenshot": str(screenshot), "html_artifact": str(html)})
+        shot = await _bounded_artifact_call(page.screenshot(path=str(screenshot), full_page=full_page))
+        content = await _bounded_artifact_call(page.content()) if _remaining_ms(deadline) >= ARTIFACT_MIN_REMAINING_MS else None
+        saved = 0
+        if shot is not None:
+            artifacts and artifacts.setdefault("screenshots", []).append(str(screenshot)); saved += 1
+        else:
+            _record_artifact_skip(diagnostic_payload, step, "screenshot_timeout_or_failed")
+        if content is not None:
+            html.write_text(content, encoding="utf-8")
+            artifacts and artifacts.setdefault("html_artifacts", []).append(str(html)); saved += 1
+        else:
+            _record_artifact_skip(diagnostic_payload, step, "html_timeout_or_failed")
+        if diagnostic_payload is not None:
+            diagnostic_payload["diagnostic_artifact_count"] = diagnostic_payload.get("diagnostic_artifact_count", 0) + saved
+            diagnostic_payload["diagnostic_artifact_elapsed_ms"] = diagnostic_payload.get("diagnostic_artifact_elapsed_ms", 0) + int((time.monotonic() - start) * 1000)
+        logger.info("tutu step artifacts saved", extra={"step": step, "screenshot": str(screenshot) if shot is not None else None, "html_artifact": str(html) if content is not None else None})
+    except (asyncio.TimeoutError, asyncio.CancelledError, PlaywrightTimeoutError):
+        _record_artifact_skip(diagnostic_payload, step, "artifact_timeout_or_cancelled")
     except Exception:
-        logger.exception("tutu step artifact capture caught exception", extra={"step": step})
+        _record_artifact_skip(diagnostic_payload, step, "artifact_failed")
+        logger.info("tutu step artifact capture caught exception", exc_info=True, extra={"step": step})
 
 
 async def collect_autocomplete_discovery(page, field_name: str, city_name: str) -> dict:
@@ -1593,7 +1679,7 @@ async def _fail_location_not_found_with_step(page, field_name: str, city_name: s
     capture = step.pop("network_capture_ref", None)
     if capture is not None:
         capture.detach()
-    await _save_step_artifact(page, f"{field_name}_selection_failed", step.get("artifacts_ref"))
+    await _save_step_artifact(page, f"{field_name}_selection_failed", step.get("artifacts_ref"), diagnostic_payload=diagnostics, terminal=True)
     step.pop("artifacts_ref", None)
     await _finish_station_step(diagnostics, field_name, step)
     _station_log("station_selection_failed", step, len((step.get("autocomplete_discovery") or {}).get("containers", [])), len((step.get("autocomplete_discovery") or {}).get("options", [])))
@@ -1792,7 +1878,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     network_capture = TutuAutocompleteNetworkCapture(page, field_name, city_name).attach()
     step["network_capture_ref"] = network_capture
     _station_log("station_selection_started", step)
-    await _save_step_artifact(page, f"{field_name}_before_typing", artifacts)
+    await _safe_capture_step_artifact(page, f"{field_name}_before_typing", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     try:
         await textbox.focus()
     except Exception:
@@ -1810,7 +1896,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         await _check_origin_guard(page, origin_guard, "destination_after_typing", diagnostics, origin_requested, city_name)
     step["textbox_value_after_typing"] = await _textbox_value(textbox)
     step["service_fields_after_typing"] = await _service_fields_snapshot(textbox, field_name)
-    await _save_step_artifact(page, f"{field_name}_after_typing", artifacts)
+    await _safe_capture_step_artifact(page, f"{field_name}_after_typing", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_after_typing"]})
 
     network_capture.stage = "after_waiting"
@@ -1832,7 +1918,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     step["autocomplete_discovery"] = discovery
     if diagnostics is not None:
         diagnostics["autocomplete_discovery"][field_name] = discovery
-    await _save_step_artifact(page, f"{field_name}_after_waiting", artifacts)
+    await _safe_capture_step_artifact(page, f"{field_name}_after_waiting", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     _station_log("station_selection_step", {**step, "current_textbox_value": step["value_after_waiting_for_autocomplete"]}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
 
     candidates = []
@@ -1896,7 +1982,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
             await _check_origin_guard(page, origin_guard, "destination_before_click", diagnostics, origin_requested, city_name)
             step["pre_click_snapshot"] = await _destination_pre_click_snapshot(page, textbox, option, diagnostics)
         network_capture.stage = "before_click"
-        await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
+        await _safe_capture_step_artifact(page, f"{field_name}_before_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
         network_capture.stage = "after_click"
         if field_name == "destination":
@@ -1905,10 +1991,10 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
         step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
         step["service_fields_after_selection"] = await _service_fields_snapshot(textbox, field_name)
-        await _save_step_artifact(page, f"{field_name}_after_click", artifacts)
+        await _safe_capture_step_artifact(page, f"{field_name}_after_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     else:
         network_capture.stage = "before_click"
-        await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
+        await _safe_capture_step_artifact(page, f"{field_name}_before_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "matching_candidate_not_found")
 
     network_capture.detach()
@@ -1973,7 +2059,7 @@ class TutuAvailabilityService:
         async with self.sem:
             try:
                 coro = self._mock(req) if settings.mock_mode or not settings.enabled else self._playwright(req)
-                timeout = settings.timeout_seconds if settings.mock_mode or not settings.enabled else min(settings.timeout_seconds, 32)
+                timeout = min(settings.timeout_seconds, 30)
                 res= await asyncio.wait_for(coro, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.exception("availability check caught exception", extra={"reason": "timeout", "timeout_seconds": timeout})
@@ -2011,10 +2097,10 @@ class TutuAvailabilityService:
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
         start_monotonic = time.monotonic()
-        request_deadline = start_monotonic + min(settings.operation_timeout_seconds, 28)
+        request_deadline = start_monotonic + min(settings.operation_timeout_seconds, 26)
         post_submit_deadline = None
-        logger.info("tutu_internal_deadline_started", extra={"service_total_deadline_seconds": min(settings.operation_timeout_seconds, 28)})
-        browser=await asyncio.wait_for(self._browser_instance(), timeout=_bounded_timeout_ms(request_deadline, 6000)/1000); context=await asyncio.wait_for(browser.new_context(locale="ru-RU"), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); page=await asyncio.wait_for(context.new_page(), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(min(settings.operation_timeout_seconds*1000, 6000))
+        logger.info("tutu_internal_deadline_started", extra={"service_total_deadline_seconds": min(settings.operation_timeout_seconds, 26)})
+        browser=await asyncio.wait_for(self._browser_instance(), timeout=_bounded_timeout_ms(request_deadline, 6000)/1000); context=await asyncio.wait_for(browser.new_context(locale="ru-RU"), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); page=await asyncio.wait_for(context.new_page(), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(min(settings.operation_timeout_seconds*1000, 6000, 26_000))
         shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}, "destination_attempt_count": 0, "origin_recovery_count": 0, "diagnostic_response_received": True}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
@@ -2069,6 +2155,10 @@ class TutuAvailabilityService:
                         logger.info("tutu_destination_retry_exhausted", extra={"destination_attempt_count": destination_attempt_count})
                         raise ValueError("destination_selection_overwrote_origin_after_recovery") from exc
                     logger.info("tutu_destination_retry_started", extra={"next_attempt": destination_attempt_count + 1})
+                    if _remaining_ms(request_deadline) < 1000:
+                        diagnostic_payload["deadline_exceeded"] = True
+                        diagnostic_payload["terminal_failure_reason"] = "service_deadline_exceeded"
+                        raise ValueError("service_deadline_exceeded") from exc
                     await _restore_origin_from_confirmed_snapshot(page, origin_guard, diagnostic_payload, request_deadline)
                     await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
                     destination_input, destination_meta, _ = await detect_station_input(page, "destination")
@@ -2099,11 +2189,11 @@ class TutuAvailabilityService:
                 diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded"
                 diagnostic_payload["terminal_failure_reason"] = "post_submit_deadline_exceeded"
                 logger.info("tutu_post_submit_diagnostic_returned", extra={"status": post_result.get("status"), "timeout_stage": diagnostic_payload["timeout_stage"], "page_url": page.url})
-                return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu post-submit deadline exceeded", warnings=["post_submit_deadline_exceeded"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+                _mark_response_serialization(diagnostic_payload, start_monotonic); _mark_response_returned(diagnostic_payload, start_monotonic); return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu post-submit deadline exceeded", warnings=["post_submit_deadline_exceeded"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
             await _safe_capture_step_artifact(page, "after_submit", {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, diagnostic_payload)
             if post_result["status"] == "empty":
                 logger.info("tutu_post_submit_diagnostic_returned", extra={"status": "empty", "page_url": page.url})
-                return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=False, train_number=req.train_number, message="Tutu returned an empty-state for this search", warnings=["availability_status_unconfirmed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+                _mark_response_serialization(diagnostic_payload, start_monotonic); _mark_response_returned(diagnostic_payload, start_monotonic); return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=False, train_number=req.train_number, message="Tutu returned an empty-state for this search", warnings=["availability_status_unconfirmed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
             _record_step(diagnostic_payload, "result_parsing_started", post_submit_deadline, "completed", {"url": page.url})
             logger.info("tutu_results_parsing_started", extra={"page_url": page.url, "train_card_count": post_result.get("train_card_count")})
             text=await _body_text_sample(page, 5000)
@@ -2114,15 +2204,20 @@ class TutuAvailabilityService:
                 await _safe_capture_step_artifact(page, "results_page_parsing_failed", {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, diagnostic_payload)
                 _record_step(diagnostic_payload, "result_parsing_completed", post_submit_deadline, "failed", {"failure_reason": "results_page_parsing_failed"})
                 logger.info("tutu_results_parsing_completed", extra={"status": "failed", "failure_reason": "results_page_parsing_failed", "page_url": page.url})
-                return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu results page loaded, but parsing failed", warnings=["results_page_parsing_failed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+                _mark_response_serialization(diagnostic_payload, start_monotonic); _mark_response_returned(diagnostic_payload, start_monotonic); return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu results page loaded, but parsing failed", warnings=["results_page_parsing_failed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
             _record_step(diagnostic_payload, "result_parsing_completed", post_submit_deadline, "completed", {"matched_train": matched})
             logger.info("tutu_results_parsing_completed", extra={"status": "completed", "matched_train": matched, "page_url": page.url})
-            return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls, "train_number" if matched else None)))
+            _mark_response_serialization(diagnostic_payload, start_monotonic); _mark_response_returned(diagnostic_payload, start_monotonic); return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls, "train_number" if matched else None)))
         except asyncio.CancelledError:
-            diagnostic_payload["terminal_failure_reason"] = diagnostic_payload.get("terminal_failure_reason") or "cancelled"
-            diagnostic_payload["timeout_stage"] = diagnostic_payload.get("timeout_stage") or "cancelled"
+            diagnostic_payload["terminal_failure_reason"] = "service_cancelled"
+            diagnostic_payload["timeout_stage"] = "service_cancelled"
+            diagnostic_payload["diagnostic_response_received"] = True
+            diagnostic_payload["elapsed_ms"] = int((time.monotonic() - start_monotonic) * 1000)
+            diagnostic_payload["remaining_budget_ms"] = _remaining_ms(request_deadline)
+            _mark_response_serialization(diagnostic_payload, start_monotonic)
+            _mark_response_returned(diagnostic_payload, start_monotonic)
             logger.info("tutu_structured_error_returned", extra={"reason": "cancelled"})
-            raise TutuDiagnosticError("cancelled", Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+            raise TutuDiagnosticError("service_cancelled", Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
         except Exception as exc:
             diagnostic_payload["elapsed_ms"] = int((time.monotonic() - start_monotonic) * 1000)
             diagnostic_payload["remaining_budget_ms"] = _remaining_ms(request_deadline)
@@ -2132,14 +2227,17 @@ class TutuAvailabilityService:
                 diagnostic_payload["timeout_stage"] = "service_deadline_exceeded"
                 diagnostic_payload["terminal_failure_reason"] = "service_deadline_exceeded"
                 logger.info("tutu_internal_deadline_low", extra={"remaining_ms": 0})
-            await _capture_error_artifacts_if_budget_allows(page, {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, request_deadline, "error")
+            if diagnostic_payload.get("terminal_failure_reason") != "service_deadline_exceeded":
+                await _capture_error_artifacts_if_budget_allows(page, {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, request_deadline, "error")
+            else:
+                diagnostic_payload.update({"artifacts_capture_skipped": True, "artifacts_capture_skip_reason": "service_deadline_exceeded"})
             logger.info("tutu_structured_error_returned", extra={"terminal_failure_reason": diagnostic_payload.get("terminal_failure_reason")})
             logger.exception("playwright availability caught exception", extra={"screenshots": shots, "html_artifacts": htmls, "selected_inputs": diagnostic_payload["selected_inputs"], "popup_candidates": diagnostic_payload["popup_candidates"]})
             raise TutuDiagnosticError(str(exc), Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls))) from exc
         finally:
-            for name, closer in (("context", context.close),):
+            for name, closer, timeout_s in (("page", page.close, 0.25), ("context", context.close, 0.5)):
                 try:
-                    await asyncio.wait_for(asyncio.shield(closer()), timeout=1.0)
+                    await asyncio.wait_for(asyncio.shield(closer()), timeout=timeout_s)
                 except Exception:
                     logger.info("tutu_cleanup_timed_out", extra={"resource": name})
 service=TutuAvailabilityService()
