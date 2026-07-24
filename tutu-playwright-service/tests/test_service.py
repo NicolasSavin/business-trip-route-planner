@@ -850,3 +850,169 @@ def test_popular_city_response_not_matching_candidate_not_found():
     responses = [{"json_probe": {"contains_requested_city": False, "text_values_sample": ["Москва", "Санкт-Петербург", "Казань"]}}]
 
     assert _popular_city_response_without_requested(responses, "Рязань") is True
+
+class RouteLocator:
+    def __init__(self, page, selector, elements):
+        self.page = page
+        self.selector = selector
+        self.elements = elements
+        self.index = None
+
+    def nth(self, index):
+        loc = RouteLocator(self.page, self.selector, self.elements)
+        loc.index = index
+        return loc
+
+    async def count(self):
+        return len(self.elements) if self.index is None else (1 if self.elements else 0)
+
+    async def input_value(self):
+        return self.elements[self.index or 0].get("value", "")
+
+    async def evaluate(self, script):
+        element = self.elements[self.index or 0]
+        if "closest('form')" in script:
+            return {
+                "type": element.get("type"),
+                "tag_name": element.get("tag_name", "input"),
+                "form_contains_route_fields": element.get("form_contains_route_fields", False),
+                "id": element.get("id"),
+                "value": element.get("value", ""),
+            }
+        return element.get("value", "")
+
+    async def wait_for(self, **kwargs):
+        return None
+
+    async def is_visible(self, timeout=None):
+        return self.elements[self.index or 0].get("visible", True)
+
+    async def is_enabled(self, timeout=None):
+        return self.elements[self.index or 0].get("enabled", True)
+
+    async def click(self):
+        self.page.clicked.append(self.selector)
+        if self.elements[self.index or 0].get("changes_url"):
+            self.page.url = self.page.url + "search/"
+
+
+class RoutePage:
+    def __init__(self, values=None, submit_buttons=None, rerender=False):
+        self.values = values or {
+            "schedule_station_from": "Москва",
+            "nnst1": "2000000",
+            "schedule_station_to": "Рязань",
+            "nnst2": "2000125",
+        }
+        self.submit_buttons = submit_buttons or {
+            "#idstationsearch_submit_button_input": [{"id": "idstationsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": True, "changes_url": True}],
+            "#idtrainsearch_submit_button_input": [{"id": "idtrainsearch_submit_button_input", "type": "submit", "value": "Найти", "form_contains_route_fields": False, "changes_url": True}],
+        }
+        self.url = "https://www.tutu.ru/poezda/"
+        self.clicked = []
+        self.locator_calls = []
+        self.rerender = rerender
+
+    def locator(self, selector):
+        self.locator_calls.append(selector)
+        if selector.startswith("input[name="):
+            name = selector.split("'")[1]
+            return RouteLocator(self, selector, [{"value": self.values.get(name, "")}])
+        if selector in self.submit_buttons:
+            return RouteLocator(self, selector, self.submit_buttons[selector])
+        if selector.startswith("form:has"):
+            buttons = self.submit_buttons.get("fallback", [])
+            return RouteLocator(self, selector, buttons)
+        return RouteLocator(self, selector, [])
+
+    async def screenshot(self, path, full_page=True):
+        pass
+
+    async def content(self):
+        return "<html></html>"
+
+    async def wait_for_url(self, predicate, timeout=None):
+        if predicate(self.url):
+            return None
+        raise TimeoutError("url did not change")
+
+
+@pytest.mark.asyncio
+async def test_route_verification_passes_for_moscow_ryazan_hidden_ids():
+    from app.service import _verify_route_fields
+
+    page = RoutePage()
+    diagnostics = {"origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}}
+
+    verification = await _verify_route_fields(page, "Москва", "Рязань", diagnostics)
+
+    assert verification["verified"] is True
+    assert verification["origin"]["hidden_value"] == "2000000"
+    assert verification["destination"]["hidden_value"] == "2000125"
+
+
+@pytest.mark.asyncio
+async def test_route_verification_fails_when_destination_hidden_missing():
+    from app.service import _verify_route_fields
+
+    page = RoutePage(values={"schedule_station_from": "Москва", "nnst1": "2000000", "schedule_station_to": "Рязань", "nnst2": ""})
+    diagnostics = {"origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}}
+
+    with pytest.raises(ValueError, match="destination_hidden_station_missing"):
+        await _verify_route_fields(page, "Москва", "Рязань", diagnostics)
+    assert diagnostics["route_fields_verification"]["destination"]["failure_reason"] == "destination_hidden_station_missing"
+
+
+@pytest.mark.asyncio
+async def test_route_submit_uses_station_search_button_when_two_find_buttons(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage()
+    diagnostics = {}
+
+    await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert page.clicked == ["#idstationsearch_submit_button_input"]
+    assert diagnostics["submit_selector"] == "#idstationsearch_submit_button_input"
+
+
+@pytest.mark.asyncio
+async def test_route_submit_never_clicks_train_number_submit(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage()
+
+    await service_module._click_route_submit(page, {}, {"screenshots": [], "html_artifacts": []})
+
+    assert "#idtrainsearch_submit_button_input" not in page.clicked
+
+
+@pytest.mark.asyncio
+async def test_route_verification_reacquires_rerendered_dom_fields():
+    from app.service import _verify_route_fields
+
+    page = RoutePage(rerender=True)
+    diagnostics = {"origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}}
+
+    await _verify_route_fields(page, "Москва", "Рязань", diagnostics)
+
+    assert "input[name='schedule_station_from']" in page.locator_calls
+    assert "input[name='nnst2']" in page.locator_calls
+    assert diagnostics["route_fields_verification"]["verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_route_submit_url_change_is_navigation_success(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    page = RoutePage()
+    diagnostics = {}
+
+    result = await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
+
+    assert result == "url_changed"
+    assert diagnostics["navigation_result"] == "url_changed"
+    assert diagnostics["before_submit_url"] != diagnostics["after_submit_url"]

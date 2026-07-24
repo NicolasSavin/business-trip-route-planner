@@ -456,12 +456,150 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         form_reacquired_after_origin=diagnostic_payload.get("form_reacquired_after_origin"),
         final_origin_value=diagnostic_payload.get("final_origin_value"),
         final_destination_value=diagnostic_payload.get("final_destination_value"),
+        route_fields_verification=diagnostic_payload.get("route_fields_verification", {}),
+        route_submit_button=diagnostic_payload.get("route_submit_button", {}),
+        before_submit_url=diagnostic_payload.get("before_submit_url"),
+        after_submit_url=diagnostic_payload.get("after_submit_url"),
+        submit_selector=diagnostic_payload.get("submit_selector"),
+        navigation_result=diagnostic_payload.get("navigation_result"),
         network_events=diagnostic_payload.get("network_events", {}),
         autocomplete_requests=diagnostic_payload.get("autocomplete_requests", {}),
         autocomplete_responses=diagnostic_payload.get("autocomplete_responses", {}),
         autocomplete_request_failures=diagnostic_payload.get("autocomplete_request_failures", {}),
         network_summary=diagnostic_payload.get("network_summary", {}),
     )
+
+
+async def _route_field_value(page, selector: str) -> str:
+    locator = page.locator(selector)
+    try:
+        if await locator.count() < 1:
+            return ""
+        return (await locator.nth(0).input_value() or "").strip()
+    except Exception:
+        try:
+            return (await locator.nth(0).evaluate("el => el.value || ''") or "").strip()
+        except Exception:
+            return ""
+
+
+def _route_field_failure(field_name: str, visible_matches: bool, hidden_present: bool, station_selected: bool) -> str | None:
+    if not station_selected:
+        return "station_selection_state_missing"
+    if not visible_matches:
+        return f"{field_name}_visible_value_mismatch"
+    if not hidden_present:
+        return f"{field_name}_hidden_station_missing"
+    return None
+
+
+async def _verify_route_fields(page, origin_requested: str, destination_requested: str, diagnostic_payload: dict) -> dict:
+    logger.info("route_fields_verification_started", extra={"origin": origin_requested, "destination": destination_requested})
+    fields = {
+        "origin": (origin_requested, "input[name='schedule_station_from']", "input[name='nnst1']"),
+        "destination": (destination_requested, "input[name='schedule_station_to']", "input[name='nnst2']"),
+    }
+    verification = {}
+    failures = []
+    for field_name, (requested, visible_selector, hidden_selector) in fields.items():
+        visible_value = await _route_field_value(page, visible_selector)
+        hidden_value = await _route_field_value(page, hidden_selector)
+        visible_matches = normalize_location_text(visible_value) == normalize_location_text(requested)
+        hidden_present = bool(hidden_value.strip())
+        station_selected = bool((diagnostic_payload.get(f"{field_name}_station_selection") or {}).get("station_selected"))
+        failure_reason = _route_field_failure(field_name, visible_matches, hidden_present, station_selected)
+        verified = failure_reason is None
+        verification[field_name] = {
+            "requested": requested,
+            "visible_value": visible_value,
+            "hidden_value": hidden_value,
+            "visible_matches": visible_matches,
+            "hidden_present": hidden_present,
+            "station_selected": station_selected,
+            "verified": verified,
+            "failure_reason": failure_reason,
+        }
+        if failure_reason:
+            failures.append(failure_reason)
+        logger.info("route_field_verified", extra={"field_name": field_name, **verification[field_name]})
+    verification["verified"] = not failures
+    diagnostic_payload["route_fields_verification"] = verification
+    diagnostic_payload["final_origin_value"] = verification["origin"]["visible_value"]
+    diagnostic_payload["final_destination_value"] = verification["destination"]["visible_value"]
+    if failures:
+        raise ValueError(failures[0])
+    logger.info("route_fields_verified", extra=verification)
+    return verification
+
+
+async def _submit_button_info(locator) -> dict:
+    try:
+        return await locator.evaluate(
+            """
+            el => {
+                const form = el.closest('form');
+                const has = name => !!(form && form.querySelector(`input[name="${name}"]`));
+                return {
+                    type: (el.getAttribute('type') || '').toLowerCase(),
+                    tag_name: el.tagName.toLowerCase(),
+                    form_contains_route_fields: !!form && has('schedule_station_from') && has('schedule_station_to') && has('nnst1') && has('nnst2'),
+                    id: el.id || null,
+                    value: el.value || el.textContent || '',
+                };
+            }
+            """
+        )
+    except Exception:
+        return {"type": None, "tag_name": None, "form_contains_route_fields": False}
+
+
+async def _detect_route_submit_button(page, diagnostic_payload: dict):
+    primary_selector = "#idstationsearch_submit_button_input"
+    primary = page.locator(primary_selector)
+    primary_count = await _locator_count(primary)
+    if primary_count == 1:
+        info = await _submit_button_info(primary)
+        if info.get("type") == "submit" and info.get("form_contains_route_fields"):
+            diagnostic_payload["route_submit_button"] = {"selector": primary_selector, "count": primary_count, **info}
+            logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
+            return primary, primary_selector
+    fallback_selector = "form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to']):has(input[name='nnst1']):has(input[name='nnst2']) input[type='submit'][value='Найти']"
+    fallback = page.locator(fallback_selector)
+    fallback_count = await _locator_count(fallback)
+    if fallback_count != 1:
+        diagnostic_payload["route_submit_button"] = {"selector": fallback_selector, "count": fallback_count, "primary_count": primary_count}
+        raise ValueError("route_submit_button_ambiguous")
+    diagnostic_payload["route_submit_button"] = {"selector": fallback_selector, "count": fallback_count, "primary_count": primary_count, **await _submit_button_info(fallback)}
+    logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
+    return fallback, fallback_selector
+
+
+async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[str, list[str]]):
+    submit, selector = await _detect_route_submit_button(page, diagnostic_payload)
+    await _save_step_artifact(page, "before_submit", artifacts)
+    before_url = page.url
+    diagnostic_payload["before_submit_url"] = before_url
+    diagnostic_payload["submit_selector"] = selector
+    try:
+        await submit.wait_for(state="visible", timeout=5000)
+    except Exception:
+        if not await submit.is_visible(timeout=5000):
+            raise
+    if not await submit.is_enabled(timeout=5000):
+        raise ValueError("route_submit_button_disabled")
+    await submit.click()
+    logger.info("route_submit_clicked", extra={"selector": selector, "url_before": before_url})
+    navigation_result = "not_observed"
+    try:
+        await page.wait_for_url(lambda url: url != before_url, timeout=15000)
+        navigation_result = "url_changed"
+        logger.info("route_navigation_completed", extra={"navigation_result": navigation_result, "url_before": before_url, "url_after": page.url})
+    except Exception:
+        logger.info("route_navigation_failed", extra={"navigation_result": navigation_result, "url_before": before_url, "url_after": page.url})
+    diagnostic_payload["after_submit_url"] = page.url
+    diagnostic_payload["navigation_result"] = navigation_result
+    await _save_step_artifact(page, "after_submit", artifacts)
+    return navigation_result
 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
@@ -1222,21 +1360,9 @@ class TutuAvailabilityService:
             except Exception:
                 await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
                 raise
-            origin_verify, origin_verify_meta, _ = await detect_station_input(page, "origin")
-            destination_verify, destination_verify_meta, _ = await detect_station_input(page, "destination")
-            diagnostic_payload["selected_inputs"]["origin"] = {**origin_verify_meta, "dom_identity": await _element_identity(origin_verify)}
-            diagnostic_payload["selected_inputs"]["destination"] = {**destination_verify_meta, "dom_identity": await _element_identity(destination_verify)}
-            same_final = await _same_element(origin_verify, destination_verify)
-            diagnostic_payload["origin_destination_same_element"] = same_final
-            diagnostic_payload["final_origin_value"] = await _textbox_value(origin_verify)
-            diagnostic_payload["final_destination_value"] = await _textbox_value(destination_verify)
-            logger.info("route_fields_verified", extra={"origin": diagnostic_payload["final_origin_value"], "destination": diagnostic_payload["final_destination_value"], "origin_destination_same_element": same_final})
-            if same_final:
-                raise ValueError("origin_destination_same_element")
-            if normalize_location_text(req.origin) not in normalize_location_text(diagnostic_payload["final_origin_value"]) or normalize_location_text(req.destination) not in normalize_location_text(diagnostic_payload["final_destination_value"]):
-                raise ValueError("route_fields_verified_failed")
+            await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
-            await page.get_by_role("button", name="Найти", exact=False).click()
+            await _click_route_submit(page, diagnostic_payload, {"screenshots": shots, "html_artifacts": htmls})
             logger.info("search submitted")
             await page.get_by_text(req.train_number or "", exact=False).first.wait_for(timeout=15000)
             logger.info("search results received", extra={"page_url": page.url})
