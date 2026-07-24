@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
 
@@ -23,8 +24,8 @@ def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Que
     if len(q.strip()) >= 2:
         try:
             matches = yandex_location_resolver.resolve_all(q)[:limit]
-        except Exception as exc:
-            logger.warning("Yandex location suggestions failed for %r: %s", q, exc)
+        except sqlite3.DatabaseError as exc:
+            logger.warning("Yandex location suggestions database failed for %r: %s", q, exc)
             matches = []
         if matches:
             return LocationSuggestResponse(items=[_to_suggestion(item) for item in matches])
