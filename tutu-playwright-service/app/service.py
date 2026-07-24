@@ -16,6 +16,187 @@ ROUTE_FIELD_LABELS = {
 MAX_DIAGNOSTIC_ITEMS = 50
 MAX_DIAGNOSTIC_STRING = 500
 
+AUTOCOMPLETE_NETWORK_KEYWORDS = ("suggest", "autocomplete", "station", "city", "route", "search", "railway", "poezda")
+AUTOCOMPLETE_BODY_SAMPLE_LIMIT = 16 * 1024
+SAFE_HEADER_DENY_RE = re.compile(r"(cookie|authorization|token|session|secret|set-cookie)", re.I)
+SAFE_QUERY_DENY_RE = re.compile(r"(token|session|sid|auth|cookie|key|secret|email|phone|user)", re.I)
+
+
+def _safe_url(url: str) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    try:
+        parts = urlsplit(url)
+        safe_q = []
+        for key, value in parse_qsl(parts.query, keep_blank_values=True):
+            if SAFE_QUERY_DENY_RE.search(key):
+                value = "[redacted]"
+            elif len(value) > 120:
+                value = value[:80] + "…[truncated]"
+            safe_q.append((key, value))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(safe_q, doseq=True), ""))
+    except Exception:
+        return _safe_text(url, 1000) or ""
+
+
+def _safe_headers(headers: dict | None) -> dict:
+    out = {}
+    for key, value in (headers or {}).items():
+        if SAFE_HEADER_DENY_RE.search(str(key)):
+            continue
+        out[str(key)[:80]] = _safe_text(value, 300)
+    return out
+
+
+def _endpoint(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        return f"{parts.netloc}{parts.path}"
+    except Exception:
+        return _safe_text(url, 200) or ""
+
+
+def _network_contains_city(*values, city: str | None = None) -> bool:
+    city_norm = normalize_location_text(city or "")
+    if not city_norm:
+        return False
+    return any(city_norm in normalize_location_text(str(value or "")) for value in values)
+
+
+def _looks_autocomplete_related(url: str, post_data: str | None = None, city: str | None = None) -> bool:
+    haystack = f"{url or ''} {post_data or ''}".lower()
+    return any(k in haystack for k in AUTOCOMPLETE_NETWORK_KEYWORDS) or _network_contains_city(url, post_data, city=city)
+
+
+def _json_probe(text: str | None, requested_city: str | None) -> dict:
+    probe = {"is_json": False, "is_array": False, "item_count": None, "contains_requested_city": False, "top_level_keys": [], "text_values_sample": []}
+    if not text:
+        return probe
+    probe["contains_requested_city"] = _network_contains_city(text, city=requested_city)
+    try:
+        data = json.loads(text)
+    except Exception:
+        return probe
+    probe["is_json"] = True
+    probe["is_array"] = isinstance(data, list)
+    if isinstance(data, list):
+        probe["item_count"] = len(data)
+    elif isinstance(data, dict):
+        probe["top_level_keys"] = [str(k)[:80] for k in list(data.keys())[:20]]
+        for value in data.values():
+            if isinstance(value, list):
+                probe["item_count"] = len(value)
+                break
+    samples = []
+    def walk(value):
+        if len(samples) >= 8:
+            return
+        if isinstance(value, str) and value.strip():
+            samples.append(_safe_text(value, 200))
+        elif isinstance(value, dict):
+            for v in list(value.values())[:20]: walk(v)
+        elif isinstance(value, list):
+            for v in value[:20]: walk(v)
+    walk(data)
+    probe["text_values_sample"] = samples
+    probe["contains_requested_city"] = probe["contains_requested_city"] or any(_network_contains_city(v, city=requested_city) for v in samples)
+    return probe
+
+
+def _network_summary(requests: list[dict], responses: list[dict], failures: list[dict], popup_rendered: bool = False) -> dict:
+    statuses = {}
+    endpoints = {}
+    for response in responses:
+        status = str(response.get("status"))
+        statuses[status] = statuses.get(status, 0) + 1
+    for request in requests:
+        endpoint = request.get("endpoint") or _endpoint(request.get("url") or "")
+        endpoints[endpoint] = endpoints.get(endpoint, 0) + 1
+    with_city = any(r.get("contains_requested_city") for r in requests)
+    response_with_options = any((r.get("json_probe") or {}).get("contains_requested_city") and ((r.get("json_probe") or {}).get("item_count") or 0) > 0 for r in responses)
+    reason = "unknown"
+    if not requests:
+        reason = "no_request_sent"
+    elif failures:
+        reason = "request_failed"
+    elif any(400 <= (r.get("status") or 0) < 500 for r in responses):
+        reason = "response_4xx"
+    elif any((r.get("status") or 0) >= 500 for r in responses):
+        reason = "response_5xx"
+    elif responses and all((not r.get("body_size")) or ((r.get("json_probe") or {}).get("item_count") == 0) for r in responses):
+        reason = "response_empty"
+    elif any(r.get("body_read_error") for r in responses) and not any(r.get("body_sample") for r in responses):
+        reason = "response_body_unreadable"
+    elif responses and not any((r.get("json_probe") or {}).get("contains_requested_city") for r in responses):
+        reason = "response_contains_no_matching_city"
+    elif response_with_options and not popup_rendered:
+        reason = "request_sent_but_popup_not_rendered"
+    return {"total_xhr_fetch": len(requests), "relevant_requests": len(requests), "relevant_responses": len(responses), "failed_requests": len(failures), "statuses": statuses, "endpoints": endpoints, "request_with_city_found": with_city, "successful_response_with_options_detected": response_with_options, "probable_failure_reason": reason}
+
+
+class TutuAutocompleteNetworkCapture:
+    def __init__(self, page, field_name: str, requested_city: str):
+        self.page=page; self.field_name=field_name; self.requested_city=requested_city; self.stage="before_typing"; self.requests=[]; self.responses=[]; self.failures=[]; self._by_request={}; self._started={}; self._counter=0; self._attached=False
+    def attach(self):
+        if not hasattr(self.page, "on"): return self
+        self.page.on("request", self._on_request); self.page.on("response", self._on_response); self.page.on("requestfailed", self._on_request_failed); self._attached=True; return self
+    def detach(self):
+        if not self._attached: return
+        for event, cb in (("request", self._on_request),("response", self._on_response),("requestfailed", self._on_request_failed)):
+            try: self.page.remove_listener(event, cb)
+            except Exception:
+                try: self.page.off(event, cb)
+                except Exception: pass
+        self._attached=False
+    def _rid(self, request):
+        if request not in self._by_request:
+            self._counter += 1; self._by_request[request] = f"{self.field_name}-{self._counter}"
+        return self._by_request[request]
+    def _request_payload(self, request):
+        post = None
+        try: post = request.post_data
+        except Exception: post = None
+        return post
+    def _request_relevant(self, request, post):
+        try: rtype = request.resource_type
+        except Exception: rtype = ""
+        try: url = request.url
+        except Exception: url = ""
+        if rtype not in {"xhr", "fetch"} and not (rtype in {"document", "script"} and _looks_autocomplete_related(url, None, None)):
+            return False
+        return _looks_autocomplete_related(url, post, self.requested_city)
+    def _on_request(self, request):
+        post = self._request_payload(request)
+        if not self._request_relevant(request, post): return
+        rid = self._rid(request); self._started[rid]=time.monotonic()
+        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(getattr(request,"url",None) or ""), "endpoint": _endpoint(getattr(request,"url",None) or ""), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_text(post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(getattr(request,"url",None), post, city=self.requested_city)}
+        self.requests.append(item); logger.info("tutu_autocomplete_request", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": item["endpoint"], "status": None, "elapsed_ms": None, "response_item_count": None, "contains_requested_city": item["contains_requested_city"], "probable_failure_reason": None})
+    async def _on_response(self, response):
+        request = response.request; rid = self._rid(request)
+        if rid not in self._started and not any(r.get("request_id")==rid for r in self.requests): return
+        headers = getattr(response, "headers", {}) or {}; ctype = headers.get("content-type") or headers.get("Content-Type") or ""
+        body_sample=None; body_size=None; body_read_error=None
+        if not re.search(r"(image|font|octet-stream|zip|pdf|protobuf)", ctype, re.I):
+            try:
+                body = await response.text(); body_size=len(body.encode("utf-8")); body_sample=body[:AUTOCOMPLETE_BODY_SAMPLE_LIMIT]
+            except Exception as exc: body_read_error=type(exc).__name__
+        probe = _json_probe(body_sample, self.requested_city)
+        elapsed = int((time.monotonic()-self._started.get(rid, time.monotonic()))*1000)
+        item={"request_id": rid, "status": getattr(response,"status",None), "status_text": getattr(response,"status_text",None), "url": _safe_url(getattr(response,"url",None) or ""), "content_type": ctype, "response_headers_safe": _safe_headers(headers), "elapsed_ms": elapsed, "body_sample": body_sample, "body_size": body_size, "body_read_error": body_read_error, "json_probe": probe}
+        self.responses.append(item); logger.info("tutu_autocomplete_response", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": None, "endpoint": _endpoint(item["url"]), "status": item["status"], "elapsed_ms": elapsed, "response_item_count": probe.get("item_count"), "contains_requested_city": probe.get("contains_requested_city"), "probable_failure_reason": None})
+    def _on_request_failed(self, request):
+        post = self._request_payload(request)
+        if not self._request_relevant(request, post): return
+        rid = self._rid(request); failure = None
+        try: failure = request.failure
+        except Exception: failure = None
+        item={"request_id": rid, "url": _safe_url(getattr(request,"url",None) or ""), "method": getattr(request,"method",None), "failure_reason": failure, "stage": self.stage, "requested_city": self.requested_city, "field_name": self.field_name}
+        self.failures.append(item); logger.info("tutu_autocomplete_request_failed", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": _endpoint(item["url"]), "failure_reason": failure})
+    def diagnostics(self, popup_rendered: bool = False) -> dict:
+        summary = _network_summary(self.requests, self.responses, self.failures, popup_rendered)
+        logger.info("tutu_autocomplete_network_summary", extra={"field_name": self.field_name, "requested_city": self.requested_city, "probable_failure_reason": summary.get("probable_failure_reason"), "relevant_requests": summary.get("relevant_requests"), "relevant_responses": summary.get("relevant_responses"), "failed_requests": summary.get("failed_requests")})
+        return {"network_events": self.requests + self.responses + self.failures, "autocomplete_requests": self.requests, "autocomplete_responses": self.responses, "autocomplete_request_failures": self.failures, "network_summary": summary}
+
 
 def _safe_text(value, limit: int = MAX_DIAGNOSTIC_STRING):
     if value is None:
@@ -50,6 +231,11 @@ def _ensure_station_diagnostics(diagnostics: dict | None):
     diagnostics.setdefault("form_reacquired_after_origin", False)
     diagnostics.setdefault("final_origin_value", None)
     diagnostics.setdefault("final_destination_value", None)
+    diagnostics.setdefault("network_events", {})
+    diagnostics.setdefault("autocomplete_requests", {})
+    diagnostics.setdefault("autocomplete_responses", {})
+    diagnostics.setdefault("autocomplete_request_failures", {})
+    diagnostics.setdefault("network_summary", {})
     return diagnostics
 
 
@@ -197,6 +383,11 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         form_reacquired_after_origin=diagnostic_payload.get("form_reacquired_after_origin"),
         final_origin_value=diagnostic_payload.get("final_origin_value"),
         final_destination_value=diagnostic_payload.get("final_destination_value"),
+        network_events=diagnostic_payload.get("network_events", {}),
+        autocomplete_requests=diagnostic_payload.get("autocomplete_requests", {}),
+        autocomplete_responses=diagnostic_payload.get("autocomplete_responses", {}),
+        autocomplete_request_failures=diagnostic_payload.get("autocomplete_request_failures", {}),
+        network_summary=diagnostic_payload.get("network_summary", {}),
     )
 
 
@@ -524,6 +715,9 @@ async def _fail_location_not_found_with_step(page, field_name: str, city_name: s
     step["station_selected"] = False
     step["current_textbox_value"] = await _textbox_value(step.get("textbox_ref")) if step.get("textbox_ref") is not None else None
     step.pop("textbox_ref", None)
+    capture = step.pop("network_capture_ref", None)
+    if capture is not None:
+        capture.detach()
     await _save_step_artifact(page, f"{field_name}_selection_failed", step.get("artifacts_ref"))
     step.pop("artifacts_ref", None)
     await _finish_station_step(diagnostics, field_name, step)
@@ -547,6 +741,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         "textbox_ref": textbox,
         "artifacts_ref": artifacts,
     }
+    network_capture = TutuAutocompleteNetworkCapture(page, field_name, city_name).attach()
+    step["network_capture_ref"] = network_capture
     _station_log("station_selection_started", step)
     await _save_step_artifact(page, f"{field_name}_before_typing", artifacts)
     try:
@@ -556,6 +752,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     step["textbox_value_before_typing"] = await _textbox_value(textbox)
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_before_typing"]})
 
+    network_capture.stage = "after_typing"
     await textbox.fill(city_name)
     try:
         await textbox.evaluate("""(el, value) => { el.value = value; el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value})); el.dispatchEvent(new Event('change', {bubbles: true})); }""", city_name)
@@ -565,6 +762,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     await _save_step_artifact(page, f"{field_name}_after_typing", artifacts)
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_after_typing"]})
 
+    network_capture.stage = "after_waiting"
     deadline = time.monotonic() + LOCATION_AUTOCOMPLETE_TIMEOUT_MS / 1000
     options = None
     count = 0
@@ -603,6 +801,14 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         diagnostics.setdefault("popup_candidates", {})[field_name] = _limit_diagnostic(popup_payload)
     step["popup_candidates"] = _limit_diagnostic(popup_payload)
     logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": candidate_texts})
+    network_payload = network_capture.diagnostics(popup_rendered=bool(count or candidates or (discovery.get("options") or [])))
+    step.update(network_payload)
+    if diagnostics is not None:
+        diagnostics["network_events"][field_name] = _limit_diagnostic(network_payload["network_events"])
+        diagnostics["autocomplete_requests"][field_name] = _limit_diagnostic(network_payload["autocomplete_requests"])
+        diagnostics["autocomplete_responses"][field_name] = _limit_diagnostic(network_payload["autocomplete_responses"])
+        diagnostics["autocomplete_request_failures"][field_name] = _limit_diagnostic(network_payload["autocomplete_request_failures"])
+        diagnostics["network_summary"][field_name] = _limit_diagnostic(network_payload["network_summary"])
 
     if not count and not candidates:
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_not_opened")
@@ -611,15 +817,19 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     if matches:
         rank, _index, text, option, _matched = matches[0]
         step["clicked_candidate"] = text
+        network_capture.stage = "before_click"
         await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
+        network_capture.stage = "after_click"
         logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
         step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
         await _save_step_artifact(page, f"{field_name}_after_click", artifacts)
     else:
+        network_capture.stage = "before_click"
         await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "matching_candidate_not_found")
 
+    network_capture.detach()
     try:
         await textbox.blur()
     except Exception:
@@ -644,6 +854,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     step["station_selected"] = True
     step.pop("textbox_ref", None)
     step.pop("artifacts_ref", None)
+    step.pop("network_capture_ref", None)
+    network_capture.detach()
     await _finish_station_step(diagnostics, field_name, step)
     _station_log("station_selection_verified", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
     return final_value
@@ -712,7 +924,7 @@ class TutuAvailabilityService:
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
         browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.operation_timeout_seconds*1000)
-        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+        shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
             await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded")
