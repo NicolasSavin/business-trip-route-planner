@@ -49,6 +49,8 @@ class Diagnostics(BaseModel):
     remaining_budget_ms: int | None = None
     deadline_exceeded: bool = False
     timeout_stage: str | None = None
+    route_field_invariants: dict[str, Any] = Field(default_factory=dict)
+    sale_period_route_collision_detected: bool = False
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None

@@ -1211,3 +1211,64 @@ async def test_route_submit_evaluate_click_when_playwright_click_fails(tmp_path,
     assert result == "submitted"
     assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
     assert diagnostics["post_submit_steps"][-2]["details"]["click_strategy"] == "evaluate_click_or_request_submit"
+
+@pytest.mark.asyncio
+async def test_origin_guard_detects_destination_overwrite():
+    from app import service as service_module
+
+    page = RoutePage(values={"schedule_station_from": "Санкт-Петербург", "nnst1": "2004000", "schedule_station_to": "Санкт-Петербург", "nnst2": "2004000"})
+    diagnostics = {}
+    guard = {"visible_value": "Рязань", "hidden_value": "2000125", "input_dom_identity": "origin", "hidden_dom_identity": "nnst1"}
+
+    with pytest.raises(service_module.TutuOriginGuardViolation):
+        await service_module._check_origin_guard(page, guard, "destination_after_click", diagnostics, "Рязань", "Санкт-Петербург")
+
+    assert diagnostics["destination_station_selection"]["station_selected"] is False
+    assert diagnostics["destination_station_selection"]["failure_reason"] == "destination_selection_overwrote_origin"
+    assert diagnostics["route_field_invariants"]["violations"][0]["failure_reason"] == "destination_selection_overwrote_origin"
+
+
+@pytest.mark.asyncio
+async def test_route_invariants_pass_after_destination_selection():
+    from app import service as service_module
+
+    page = RoutePage(values={"schedule_station_from": "Рязань", "nnst1": "2000125", "schedule_station_to": "Санкт-Петербург", "nnst2": "2004000"})
+    diagnostics = {"origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}}
+    guard = {"visible_value": "Рязань", "hidden_value": "2000125"}
+
+    await service_module._check_origin_guard(page, guard, "destination_after_click", diagnostics, "Рязань", "Санкт-Петербург")
+    verification = await service_module._verify_route_fields(page, "Рязань", "Санкт-Петербург", diagnostics)
+
+    assert verification["verified"] is True
+    assert verification["origin"]["hidden_value"] == "2000125"
+    assert verification["destination"]["hidden_value"] == "2004000"
+
+
+def test_sale_period_same_station_is_route_collision():
+    from app import service as service_module
+
+    diagnostics = {}
+    events = [{"url": "https://www.tutu.ru/ajax/poezda/sale_period/?departure_station_number=2004000&arrival_station_number=2004000"}]
+
+    assert service_module._classify_sale_period_collisions(events, "Рязань", "Санкт-Петербург", diagnostics) is True
+    assert diagnostics["sale_period_route_collision_detected"] is True
+    assert events[0]["route_field_collision"] is True
+
+
+@pytest.mark.asyncio
+async def test_route_submit_uses_form_request_submit_when_button_absent(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+
+    class FormRoutePage(RoutePage):
+        def locator(self, selector):
+            self.locator_calls.append(selector)
+            if selector == "form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to'])":
+                return RouteLocator(self, selector, [{"type": "", "tag_name": "form", "value": "", "form_contains_route_fields": True, "changes_url": True}])
+            return super().locator(selector)
+
+    page = FormRoutePage(submit_buttons={"#idstationsearch_submit_button_input": [], "fallback": []})
+    await service_module._click_route_submit(page, {}, {"screenshots": [], "html_artifacts": []})
+
+    assert page.clicked == ["evaluate:form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to'])"]
