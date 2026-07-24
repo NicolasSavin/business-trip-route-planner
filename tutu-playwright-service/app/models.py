@@ -65,6 +65,12 @@ class Diagnostics(BaseModel):
     artifacts_capture_skipped: bool | None = None
     artifacts_capture_skip_reason: str | None = None
     artifacts_capture_elapsed_ms: int | None = None
+    diagnostic_artifact_elapsed_ms: int | None = None
+    diagnostic_artifact_count: int = 0
+    diagnostic_artifacts_skipped: bool | None = None
+    diagnostic_artifacts_skip_reason: str | None = None
+    response_serialization_started_ms: int | None = None
+    response_returned_ms: int | None = None
     terminal_failure_reason: str | None = None
     diagnostic_response_received: bool = True
 

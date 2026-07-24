@@ -1474,6 +1474,137 @@ def test_timeout_settings_are_capped_below_backend_read_timeout(monkeypatch):
     monkeypatch.setattr(service_module.settings, "operation_timeout_seconds", 40)
     monkeypatch.setattr(service_module.settings, "route_open_deadline_seconds", 40)
 
-    assert min(service_module.settings.timeout_seconds, 32) == 32
-    assert min(service_module.settings.operation_timeout_seconds, 28) == 28
+    assert min(service_module.settings.timeout_seconds, 30) == 30
+    assert min(service_module.settings.operation_timeout_seconds, 26) == 26
     assert min(service_module.settings.route_open_deadline_seconds, 8) == 8
+
+@pytest.mark.asyncio
+async def test_step_artifacts_disabled_skips_screenshot_and_content(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "capture_step_artifacts", False)
+
+    class ArtifactPage:
+        async def screenshot(self, *args, **kwargs):
+            raise AssertionError("screenshot should not be called")
+        async def content(self):
+            raise AssertionError("content should not be called")
+
+    diagnostics = {}
+    artifacts = {"screenshots": [], "html_artifacts": []}
+    await service_module._safe_capture_step_artifact(ArtifactPage(), "origin_before_typing", artifacts, time.monotonic() + 5, diagnostics)
+
+    assert artifacts == {"screenshots": [], "html_artifacts": []}
+    assert diagnostics["diagnostic_artifacts_skipped"] is True
+    assert diagnostics["diagnostic_artifacts_skip_reason"] == "step_artifacts_disabled"
+
+
+@pytest.mark.asyncio
+async def test_hanging_screenshot_does_not_exhaust_30_second_response(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "capture_step_artifacts", True)
+
+    class HangingArtifactPage:
+        async def screenshot(self, *args, **kwargs):
+            await asyncio.sleep(60)
+        async def content(self):
+            return "<html></html>"
+
+    diagnostics = {}
+    start = time.monotonic()
+    await service_module._save_step_artifact(
+        HangingArtifactPage(),
+        "terminal_error",
+        {"screenshots": [], "html_artifacts": []},
+        deadline=time.monotonic() + 3,
+        diagnostic_payload=diagnostics,
+        terminal=True,
+    )
+
+    assert time.monotonic() - start < 1.5
+    assert diagnostics["diagnostic_artifacts_skipped"] is True
+    assert diagnostics["diagnostic_artifact_elapsed_ms"] < 1500
+
+
+@pytest.mark.asyncio
+async def test_service_deadline_exceeded_skips_recovery_and_artifacts(monkeypatch):
+    from app import service as service_module
+
+    class NoOpsPage:
+        async def screenshot(self, *args, **kwargs):
+            raise AssertionError("no artifacts after service deadline")
+        async def content(self):
+            raise AssertionError("no artifacts after service deadline")
+
+    diagnostics = {"deadline_exceeded": True, "terminal_failure_reason": "service_deadline_exceeded"}
+    await service_module._capture_error_artifacts_if_budget_allows(
+        NoOpsPage(), {"screenshots": [], "html_artifacts": []}, diagnostics, time.monotonic() - 1
+    )
+
+    assert diagnostics["artifacts_capture_skipped"] is True
+    assert diagnostics["artifacts_capture_skip_reason"] == "service_deadline_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_structured_diagnostics_without_artifacts(monkeypatch):
+    from app import service as service_module
+
+    class CancelPage:
+        url = "https://www.tutu.ru/poezda/"
+        async def close(self):
+            return None
+        async def screenshot(self, *args, **kwargs):
+            raise AssertionError("cancelled requests must not capture artifacts")
+        async def content(self):
+            raise AssertionError("cancelled requests must not capture html")
+        def set_default_timeout(self, timeout):
+            self.default_timeout = timeout
+
+    class CancelContext:
+        async def new_page(self):
+            return CancelPage()
+        async def close(self):
+            return None
+
+    class CancelBrowser:
+        async def new_context(self, **kwargs):
+            return CancelContext()
+
+    svc = service_module.TutuAvailabilityService()
+    async def browser_instance():
+        return CancelBrowser()
+    monkeypatch.setattr(svc, "_browser_instance", browser_instance)
+    async def cancelled_nav(page, deadline, diagnostics):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(service_module, "_initial_tutu_navigation", cancelled_nav)
+
+    req = AvailabilityCheckRequest(origin="Москва", destination="Рязань", departure_date=date(2026, 8, 1), train_number="001")
+    with pytest.raises(service_module.TutuDiagnosticError) as exc_info:
+        await svc._playwright(req)
+
+    assert exc_info.value.diagnostics.terminal_failure_reason == "service_cancelled"
+    assert exc_info.value.diagnostics.diagnostic_response_received is True
+    assert exc_info.value.diagnostics.screenshots == []
+    assert exc_info.value.diagnostics.html_artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_segments_return_before_backend_read_timeout(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "enabled", True)
+    monkeypatch.setattr(service_module.settings, "mock_mode", False)
+    monkeypatch.setattr(service_module.settings, "timeout_seconds", 30)
+    monkeypatch.setattr(service_module.settings, "concurrency", 2)
+
+    async def slow_provider(self, req):
+        await asyncio.sleep(0.05)
+        return service_module.AvailabilityCheckResponse(status=service_module.AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="bounded")
+
+    monkeypatch.setattr(service_module.TutuAvailabilityService, "_playwright", slow_provider)
+    svc = service_module.TutuAvailabilityService()
+    reqs = [AvailabilityCheckRequest(origin="Москва", destination="Рязань", departure_date=date(2026, 8, 1), train_number=str(i)) for i in range(2)]
+    start = time.monotonic()
+
+    results = await asyncio.gather(*(svc.check(req) for req in reqs))
+
+    assert time.monotonic() - start < 1
+    assert all(result.status == service_module.AvailabilityStatus.PROVIDER_ERROR for result in results)

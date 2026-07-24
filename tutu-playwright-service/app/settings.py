@@ -3,8 +3,8 @@ from pydantic import BaseModel
 class Settings(BaseModel):
     enabled: bool = os.getenv("TUTU_PLAYWRIGHT_ENABLED", "false").lower() == "true"
     headless: bool = os.getenv("TUTU_PLAYWRIGHT_HEADLESS", "true").lower() == "true"
-    timeout_seconds: int = min(int(os.getenv("TUTU_PLAYWRIGHT_TIMEOUT_SECONDS", "32")), 32)
-    operation_timeout_seconds: int = min(int(os.getenv("TUTU_PLAYWRIGHT_OPERATION_TIMEOUT_SECONDS", "28")), 28)
+    timeout_seconds: int = min(int(os.getenv("TUTU_PLAYWRIGHT_TIMEOUT_SECONDS", "30")), 30)
+    operation_timeout_seconds: int = min(int(os.getenv("TUTU_PLAYWRIGHT_OPERATION_TIMEOUT_SECONDS", "26")), 26)
     post_submit_deadline_seconds: int = int(os.getenv("TUTU_PLAYWRIGHT_POST_SUBMIT_DEADLINE_SECONDS", "25"))
     route_open_deadline_seconds: int = min(int(os.getenv("TUTU_PLAYWRIGHT_ROUTE_OPEN_DEADLINE_SECONDS", "8")), 8)
     submit_click_timeout_ms: int = int(os.getenv("TUTU_PLAYWRIGHT_SUBMIT_CLICK_TIMEOUT_MS", "5000"))
@@ -18,4 +18,5 @@ class Settings(BaseModel):
     service_api_token: str = os.getenv("SERVICE_API_TOKEN", "")
     mock_mode: bool = os.getenv("TUTU_PLAYWRIGHT_MOCK", "true").lower() == "true"
     tutu_base_url: str = os.getenv("TUTU_BASE_URL", "https://www.tutu.ru")
+    capture_step_artifacts: bool = os.getenv("TUTU_CAPTURE_STEP_ARTIFACTS", "false").lower() == "true"
 settings = Settings()
