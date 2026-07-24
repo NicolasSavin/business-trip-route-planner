@@ -73,6 +73,44 @@ def _log_post_submit(event: str, req=None, stage: str | None = None, page_url: s
     logger.info(event, extra={"origin": getattr(req, "origin", None), "destination": getattr(req, "destination", None), "train_number": getattr(req, "train_number", None), "stage": stage, "elapsed_ms": elapsed_ms, "remaining_budget_ms": _remaining_ms(deadline), "page_url": page_url, **extra})
 
 
+async def _route_inputs_present(page, timeout_ms: int = 1000) -> bool:
+    selector = "input[name='schedule_station_from'], input[name='schedule_station_to']"
+    try:
+        await page.locator(selector).first.wait_for(timeout=timeout_ms)
+    except Exception:
+        pass
+    try:
+        return await page.locator("input[name='schedule_station_from']").count() > 0 and await page.locator("input[name='schedule_station_to']").count() > 0
+    except Exception:
+        try:
+            return bool(await page.evaluate("() => !!document.querySelector(\"input[name='schedule_station_from']\") && !!document.querySelector(\"input[name='schedule_station_to']\")"))
+        except Exception:
+            return False
+
+
+async def _initial_tutu_navigation(page, deadline: float, diagnostic_payload: dict) -> None:
+    nav_deadline = min(deadline, time.monotonic() + 12)
+    url = f"{settings.tutu_base_url.rstrip('/')}/poezda/"
+    diagnostic_payload["initial_navigation"] = {"url": url, "wait_until": "commit", "timeout_ms": _bounded_timeout_ms(nav_deadline, 12_000)}
+    try:
+        await page.goto(url, wait_until="commit", timeout=_bounded_timeout_ms(nav_deadline, 12_000))
+        diagnostic_payload["initial_navigation"].update({"goto_status": "completed", "page_url": page.url})
+    except PlaywrightTimeoutError as exc:
+        usable = "tutu.ru" in (getattr(page, "url", "") or "") and await _route_inputs_present(page, timeout_ms=250)
+        diagnostic_payload["initial_navigation"].update({"goto_status": "timeout", "page_url": getattr(page, "url", None), "continued_after_timeout": usable})
+        if not usable:
+            diagnostic_payload["terminal_failure_reason"] = "initial_navigation_timeout"
+            raise ValueError("initial_navigation_timeout") from exc
+    except Exception as exc:
+        diagnostic_payload["initial_navigation"].update({"goto_status": "failed", "page_url": getattr(page, "url", None), "error": type(exc).__name__})
+        diagnostic_payload["terminal_failure_reason"] = "initial_navigation_timeout"
+        raise ValueError("initial_navigation_timeout") from exc
+    if not await _route_inputs_present(page, timeout_ms=_bounded_timeout_ms(nav_deadline, 5_000)):
+        diagnostic_payload["terminal_failure_reason"] = "initial_navigation_timeout"
+        raise ValueError("initial_navigation_timeout")
+    diagnostic_payload["initial_navigation"].update({"route_inputs_found": True, "page_url": page.url})
+
+
 async def collect_tutu_dom_contract(page, diagnostic_payload: dict | None = None) -> dict:
     try:
         snapshot = await page.evaluate(
@@ -254,7 +292,16 @@ async def wait_for_tutu_search_result(page, deadline, diagnostic_payload=None, r
         if "validation_error" in matched: result["status"]="validation_error"; break
         if "empty_state" in matched: result["status"]="empty"; break
         if result["train_card_count"] or "train_number" in matched or "availability_text" in matched or (result["url_changed"] and result["results_container_found"]): result["status"]="results"; _log_post_submit("tutu_results_signal_detected", req, name, url, int((time.monotonic()-start)*1000), deadline, matched_signals=matched); break
-    await observe("plus_1_second",1); await observe("plus_3_seconds",2); await observe("after_result_wait",0)
+    if result["status"] == "unknown" or _remaining_ms(deadline) <= 0:
+        diagnostic_payload["terminal_failure_reason"] = "post_submit_deadline_exceeded"
+        diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded"
+        diagnostic_payload["deadline_exceeded"] = True
+        result["status"] = "navigation_timeout" if not result["url_changed"] else "unknown"
+        result["elapsed_ms"] = int((time.monotonic()-start)*1000)
+        return result
+    await observe("plus_1_second",1)
+    if _remaining_ms(deadline) > 0: await observe("plus_3_seconds",2)
+    await observe("after_result_wait",0)
     result["elapsed_ms"]=int((time.monotonic()-start)*1000)
     if result["status"] == "unknown": result["status"] = "navigation_timeout" if not result["url_changed"] else "unknown"
     return result
@@ -739,6 +786,7 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         artifacts_capture_skip_reason=diagnostic_payload.get("artifacts_capture_skip_reason"),
         artifacts_capture_elapsed_ms=diagnostic_payload.get("artifacts_capture_elapsed_ms"),
         terminal_failure_reason=diagnostic_payload.get("terminal_failure_reason"),
+        diagnostic_response_received=diagnostic_payload.get("diagnostic_response_received", True),
     )
 
 
@@ -1184,7 +1232,7 @@ async def open_tutu_results_page(page, req, diagnostics: dict, deadline: float |
         logger.info("tutu_direct_route_navigation_started", extra={"url": _safe_url(direct.get("url") or "")})
         astart=time.monotonic(); ub=page.url
         try:
-            await page.goto(direct["url"], wait_until="domcontentloaded", timeout=_bounded_timeout_ms(local_deadline, 3000))
+            await page.goto(direct["url"], wait_until="commit", timeout=_bounded_timeout_ms(local_deadline, 3000))
             attempt={"strategy":"direct_get","status":"success","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":None}
         except Exception as exc:
             attempt={"strategy":"direct_get","status":"failed","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":str(exc)[:200]}
@@ -1925,10 +1973,10 @@ class TutuAvailabilityService:
         async with self.sem:
             try:
                 coro = self._mock(req) if settings.mock_mode or not settings.enabled else self._playwright(req)
-                timeout = settings.timeout_seconds if settings.mock_mode or not settings.enabled else max(settings.timeout_seconds, settings.operation_timeout_seconds + 5)
+                timeout = settings.timeout_seconds if settings.mock_mode or not settings.enabled else min(settings.timeout_seconds, 32)
                 res= await asyncio.wait_for(coro, timeout=timeout)
             except asyncio.TimeoutError:
-                logger.exception("availability check caught exception", extra={"reason": "timeout", "timeout_seconds": settings.timeout_seconds})
+                logger.exception("availability check caught exception", extra={"reason": "timeout", "timeout_seconds": timeout})
                 logger.info("early exit condition observed", extra={"reason": "timeout"})
                 res=AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, train_number=req.train_number, message="Tutu availability check timed out")
             except Exception as exc:
@@ -1963,14 +2011,14 @@ class TutuAvailabilityService:
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
         start_monotonic = time.monotonic()
-        request_deadline = start_monotonic + settings.operation_timeout_seconds
+        request_deadline = start_monotonic + min(settings.operation_timeout_seconds, 28)
         post_submit_deadline = None
-        logger.info("tutu_internal_deadline_started", extra={"service_total_deadline_seconds": settings.operation_timeout_seconds})
+        logger.info("tutu_internal_deadline_started", extra={"service_total_deadline_seconds": min(settings.operation_timeout_seconds, 28)})
         browser=await asyncio.wait_for(self._browser_instance(), timeout=_bounded_timeout_ms(request_deadline, 6000)/1000); context=await asyncio.wait_for(browser.new_context(locale="ru-RU"), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); page=await asyncio.wait_for(context.new_page(), timeout=_bounded_timeout_ms(request_deadline, 2000)/1000); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(min(settings.operation_timeout_seconds*1000, 6000))
         shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}, "destination_attempt_count": 0, "origin_recovery_count": 0, "diagnostic_response_received": True}
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
-            await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded", timeout=_bounded_timeout_ms(request_deadline, 6000))
+            await _initial_tutu_navigation(page, request_deadline, diagnostic_payload)
             await collect_tutu_dom_contract(page, diagnostic_payload)
             frame_infos = [{"url": frame.url, "name": frame.name} for frame in page.frames]
             logger.info("tutu frame inventory", extra={"frame_count": len(frame_infos), "frames": frame_infos})
@@ -2031,7 +2079,7 @@ class TutuAvailabilityService:
                     raise
             await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
-            post_submit_deadline = min(request_deadline, time.monotonic() + settings.route_open_deadline_seconds)
+            post_submit_deadline = min(request_deadline - 2, time.monotonic() + min(settings.route_open_deadline_seconds, 8))
             capture = PostSubmitNetworkCapture(page, post_submit_deadline).attach()
             try:
                 origin_id = diagnostic_payload.get("route_fields_verification", {}).get("origin", {}).get("hidden_value")
@@ -2047,14 +2095,15 @@ class TutuAvailabilityService:
             diagnostic_payload["after_submit_url"] = page.url
             diagnostic_payload["remaining_budget_ms"] = _remaining_ms(post_submit_deadline)
             diagnostic_payload["deadline_exceeded"] = _remaining_ms(post_submit_deadline) <= 0
+            if diagnostic_payload.get("deadline_exceeded") or post_result.get("status") in {"navigation_timeout", "unknown", "failed"}:
+                diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded"
+                diagnostic_payload["terminal_failure_reason"] = "post_submit_deadline_exceeded"
+                logger.info("tutu_post_submit_diagnostic_returned", extra={"status": post_result.get("status"), "timeout_stage": diagnostic_payload["timeout_stage"], "page_url": page.url})
+                return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu post-submit deadline exceeded", warnings=["post_submit_deadline_exceeded"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
             await _safe_capture_step_artifact(page, "after_submit", {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, diagnostic_payload)
             if post_result["status"] == "empty":
                 logger.info("tutu_post_submit_diagnostic_returned", extra={"status": "empty", "page_url": page.url})
                 return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=False, train_number=req.train_number, message="Tutu returned an empty-state for this search", warnings=["availability_status_unconfirmed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
-            if post_result["status"] in {"navigation_timeout", "unknown", "failed"} or diagnostic_payload.get("deadline_exceeded"):
-                diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded" if diagnostic_payload.get("deadline_exceeded") else "navigation_timeout"
-                logger.info("tutu_post_submit_diagnostic_returned", extra={"status": post_result["status"], "timeout_stage": diagnostic_payload["timeout_stage"], "page_url": page.url})
-                raise ValueError(diagnostic_payload["timeout_stage"])
             _record_step(diagnostic_payload, "result_parsing_started", post_submit_deadline, "completed", {"url": page.url})
             logger.info("tutu_results_parsing_started", extra={"page_url": page.url, "train_card_count": post_result.get("train_card_count")})
             text=await _body_text_sample(page, 5000)
