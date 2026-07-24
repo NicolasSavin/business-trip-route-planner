@@ -560,16 +560,28 @@ async def _candidate_options_for_input(page, textbox, field_name: str):
                 return linked_locator
     except Exception:
         pass
+    if field_name != "destination":
+        try:
+            field_popup = page.locator(f"[class*='j-city_{class_hint}_suggest_container'], [class*='city_{class_hint}' i][class*='suggest' i]")
+            field_options = field_popup.locator("[role='option'], li, button, div, span")
+            if hasattr(field_options, "filter"):
+                field_options = field_options.filter(has_text=re.compile(r"\S"))
+            if await _visible_locator_count(field_options):
+                return field_options
+        except Exception:
+            pass
+        return await _candidate_options(page)
     try:
-        field_popup = page.locator(f"[class*='j-city_{class_hint}_suggest_container'], [class*='city_{class_hint}' i][class*='suggest' i]")
-        field_options = field_popup.locator("[role='option'], li, button, div, span")
-        if hasattr(field_options, "filter"):
-            field_options = field_options.filter(has_text=re.compile(r"\S"))
-        if await _visible_locator_count(field_options):
-            return field_options
+        # Destination popup ownership is intentionally not inferred from from/to classes:
+        # Tutu can render destination suggestions with j-city_from_suggest_container.
+        near_popup_options = page.locator("[role='listbox'], [class*='suggest' i], [class*='autocomplete' i], [class*='popup' i]").locator("[role='option'], li, button, div, span")
+        if hasattr(near_popup_options, "filter"):
+            near_popup_options = near_popup_options.filter(has_text=re.compile(r"\S"))
+        if await _visible_locator_count(near_popup_options):
+            return near_popup_options
     except Exception:
         pass
-    return await _candidate_options(page)
+    return page.locator("__tutu_destination_scoped_popup_not_found__")
 
 
 async def _autocomplete_is_closed(page) -> bool:
@@ -631,7 +643,101 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         remaining_budget_ms=diagnostic_payload.get("remaining_budget_ms"),
         deadline_exceeded=diagnostic_payload.get("deadline_exceeded", False),
         timeout_stage=diagnostic_payload.get("timeout_stage"),
+        route_field_invariants=diagnostic_payload.get("route_field_invariants", {}),
+        sale_period_route_collision_detected=diagnostic_payload.get("sale_period_route_collision_detected", False),
     )
+
+
+
+
+class TutuOriginGuardViolation(Exception):
+    pass
+
+
+async def _strict_route_snapshot(page, input_locator=None, hidden_selector: str | None = None) -> dict:
+    visible_value = await _textbox_value(input_locator) if input_locator is not None else await _route_field_value(page, "input[name=\'schedule_station_from\']")
+    hidden_value = await _route_field_value(page, hidden_selector or "input[name='nnst1']")
+    input_dom_identity = await _element_identity(input_locator) if input_locator is not None else None
+    hidden_dom_identity = None
+    try:
+        hidden = page.locator(hidden_selector or "input[name='nnst1']").nth(0)
+        hidden_dom_identity = await _element_identity(hidden)
+    except Exception:
+        pass
+    return {"visible_value": visible_value, "hidden_value": hidden_value, "input_dom_identity": input_dom_identity, "hidden_dom_identity": hidden_dom_identity}
+
+
+def _ensure_route_field_invariants(diagnostics: dict | None, origin_requested: str | None = None, destination_requested: str | None = None) -> dict | None:
+    if diagnostics is None:
+        return None
+    inv = diagnostics.setdefault("route_field_invariants", {"origin_requested": origin_requested, "origin_expected_hidden": None, "destination_requested": destination_requested, "checks": [], "violations": []})
+    if origin_requested is not None: inv["origin_requested"] = origin_requested
+    if destination_requested is not None: inv["destination_requested"] = destination_requested
+    return inv
+
+
+async def _check_origin_guard(page, guard: dict | None, stage: str, diagnostics: dict | None = None, origin_requested: str | None = None, destination_requested: str | None = None, destination_input=None) -> dict:
+    if not guard:
+        return {"ok": True}
+    current = await _strict_route_snapshot(page)
+    ok_visible = normalize_location_text(current.get("visible_value")) == normalize_location_text(guard.get("visible_value"))
+    ok_hidden = (current.get("hidden_value") or "") == (guard.get("hidden_value") or "")
+    check = {"stage": stage, "origin_visible_unchanged": ok_visible, "origin_hidden_unchanged": ok_hidden, "destination_visible_correct": None, "destination_hidden_present": None, "origin_visible_value": current.get("visible_value"), "origin_hidden_value": current.get("hidden_value")}
+    inv = _ensure_route_field_invariants(diagnostics, origin_requested, destination_requested)
+    if inv is not None:
+        inv["origin_expected_hidden"] = guard.get("hidden_value")
+        inv.setdefault("checks", []).append(check)
+    logger.info("tutu_origin_guard_checked", extra={"stage": stage, "ok": ok_visible and ok_hidden, **check})
+    if not (ok_visible and ok_hidden):
+        violation = {"stage": stage, "failure_reason": "destination_selection_overwrote_origin", "expected": guard, "actual": current}
+        if inv is not None: inv.setdefault("violations", []).append(violation)
+        if diagnostics is not None:
+            diagnostics["destination_overwrote_origin"] = violation
+            diagnostics.setdefault("destination_station_selection", {})["failure_reason"] = "destination_selection_overwrote_origin"
+            diagnostics.setdefault("destination_station_selection", {})["station_selected"] = False
+        logger.info("tutu_origin_guard_violated", extra=violation)
+        raise TutuOriginGuardViolation("destination_selection_overwrote_origin")
+    return {"ok": True, **check}
+
+
+async def _close_origin_autocomplete(page, origin_input, diagnostics: dict | None = None) -> None:
+    try: await origin_input.blur()
+    except Exception: pass
+    try: await page.keyboard.press("Escape")
+    except Exception: pass
+    try: await page.locator("body").click(timeout=500)
+    except Exception: pass
+    try: await page.wait_for_function("() => !document.querySelector('[role=listbox], [class*=suggest]') || Array.from(document.querySelectorAll('[role=listbox], [class*=suggest]')).every(e => getComputedStyle(e).display === 'none' || e.hidden || e.offsetParent === null)", timeout=1000)
+    except Exception: pass
+    if diagnostics is not None:
+        diagnostics["origin_autocomplete_closed_before_destination"] = True
+        diagnostics.get("popup_candidates", {}).pop("origin_attempt_state", None)
+
+
+async def _destination_pre_click_snapshot(page, destination_input, option, diagnostics: dict | None = None) -> dict:
+    snap = {"active_element": await _active_element_snapshot(page), "current_nnst1": await _route_field_value(page, "input[name='nnst1']"), "current_nnst2": await _route_field_value(page, "input[name='nnst2']")}
+    for name, loc in (("input", destination_input), ("candidate", option)):
+        try: snap[f"{name}_dom_identity"] = await _element_identity(loc)
+        except Exception: pass
+        try: snap[f"{name}_bounding_box"] = await loc.bounding_box()
+        except Exception: pass
+    if diagnostics is not None: diagnostics["destination_pre_click_snapshot"] = _limit_diagnostic(snap)
+    return snap
+
+
+def _classify_sale_period_collisions(events: list[dict], origin_requested: str, destination_requested: str, diagnostics: dict) -> bool:
+    collision = False
+    for event in events or []:
+        url = event.get("url") or ""
+        if "sale_period" not in url: continue
+        q = dict(parse_qsl(urlsplit(url).query))
+        dep, arr = q.get("departure_station_number"), q.get("arrival_station_number")
+        if dep and arr and dep == arr and normalize_location_text(origin_requested) != normalize_location_text(destination_requested):
+            collision = True
+            event["route_field_collision"] = True
+    diagnostics["sale_period_route_collision_detected"] = collision
+    if collision: logger.info("tutu_destination_overwrote_origin", extra={"sale_period_route_collision_detected": True})
+    return collision
 
 
 async def _route_field_value(page, selector: str) -> str:
@@ -782,7 +888,17 @@ async def _detect_route_submit_button(page, diagnostic_payload: dict):
     fallback = page.locator(fallback_selector)
     fallback_count = await _locator_count(fallback)
     if fallback_count == 0:
+        route_form_selector = "form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to'])"
+        route_form = page.locator(route_form_selector)
+        route_form_count = await _locator_count(route_form)
+        if route_form_count == 1:
+            info = await _submit_button_info(route_form)
+            diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, info, "form_request_submit", None)
+            diagnostic_payload["route_submit_button"].update({"route_form_selector": route_form_selector, "route_form_count": route_form_count})
+            logger.info("route_submit_button_detected", extra=diagnostic_payload["route_submit_button"])
+            return route_form, route_form_selector
         diagnostic_payload["route_submit_button"] = _route_submit_diagnostics(primary_selector, primary_count, fallback_selector, fallback_count, None, None, "route_submit_button_not_found")
+        diagnostic_payload["route_submit_button"].update({"route_form_selector": route_form_selector, "route_form_count": route_form_count})
         logger.info("tutu_route_submit_not_found", extra=diagnostic_payload["route_submit_button"])
         raise ValueError("route_submit_button_not_found")
     if fallback_count > 1:
@@ -834,6 +950,8 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
     try:
         strategy = "playwright_click"
         try:
+            if selector.startswith("form:") and "input[type='submit']" not in selector:
+                raise RuntimeError("use_form_request_submit")
             await asyncio.wait_for(submit.click(), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
         except Exception as click_error:
             strategy = "evaluate_click_or_request_submit"
@@ -842,7 +960,11 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
                 submit.evaluate(
                     """
                     el => {
-                        const form = el.form || el.closest('form');
+                        const form = el.matches && el.matches('form') ? el : (el.form || el.closest('form'));
+                        if (el.matches && el.matches('form') && typeof el.requestSubmit === 'function') {
+                            el.requestSubmit();
+                            return 'request_submit';
+                        }
                         if (typeof el.click === 'function') {
                             el.click();
                             return 'element_click';
@@ -1369,7 +1491,7 @@ async def _type_station_like_user(page, textbox, city_name: str, step: dict, net
     step["keydown_count"] = counters.get("keydown", 0); step["keyup_count"] = counters.get("keyup", 0); step["input_event_count"] = counters.get("input", 0); step["change_event_count"] = counters.get("change", 0)
     step["active_element_after_typing"] = await _active_element_snapshot(page)
 
-async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None):
+async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None, origin_guard: dict | None = None, origin_requested: str | None = None):
     diagnostics = _ensure_station_diagnostics(diagnostics)
     step = {
         "requested_city": city_name,
@@ -1406,11 +1528,17 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         await textbox.focus()
     except Exception:
         pass
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_after_focus", diagnostics, origin_requested, city_name)
     step["textbox_value_before_typing"] = await _textbox_value(textbox)
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_before_typing"]})
 
     step["service_fields_before_typing"] = await _service_fields_snapshot(textbox, field_name)
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_before_clear", diagnostics, origin_requested, city_name)
     await _type_station_like_user(page, textbox, city_name, step, network_capture)
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_after_typing", diagnostics, origin_requested, city_name)
     step["textbox_value_after_typing"] = await _textbox_value(textbox)
     step["service_fields_after_typing"] = await _service_fields_snapshot(textbox, field_name)
     await _save_step_artifact(page, f"{field_name}_after_typing", artifacts)
@@ -1428,6 +1556,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         if network_capture.requests or _service_fields_changed(step.get("service_fields_before_typing"), await _service_fields_snapshot(textbox, field_name)):
             break
         await asyncio.sleep(0.2)
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_after_autocomplete", diagnostics, origin_requested, city_name)
     step["value_after_waiting_for_autocomplete"] = await _textbox_value(textbox)
     discovery = await collect_autocomplete_discovery(page, field_name, city_name)
     step["autocomplete_discovery"] = discovery
@@ -1492,10 +1622,17 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         rank, _index, text, option, _matched = matches[0]
         step["clicked_candidate"] = text
         logger.info("tutu_station_option_found", extra={"field_name": field_name, "requested_city": city_name, "selected_candidate": text})
+        if field_name == "destination":
+            logger.info("tutu_destination_popup_scoped", extra={"requested_city": city_name, "selected_candidate": text, "scoping": "field_candidate_locator"})
+            await _check_origin_guard(page, origin_guard, "destination_before_click", diagnostics, origin_requested, city_name)
+            step["pre_click_snapshot"] = await _destination_pre_click_snapshot(page, textbox, option, diagnostics)
         network_capture.stage = "before_click"
         await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
         network_capture.stage = "after_click"
+        if field_name == "destination":
+            logger.info("tutu_destination_candidate_selected", extra={"requested_city": city_name, "selected_candidate": text})
+            await _check_origin_guard(page, origin_guard, "destination_after_click", diagnostics, origin_requested, city_name)
         logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
         step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
         step["service_fields_after_selection"] = await _service_fields_snapshot(textbox, field_name)
@@ -1513,6 +1650,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
             await page.locator("body").click(timeout=1000)
         except Exception:
             pass
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_after_blur", diagnostics, origin_requested, city_name)
     step["value_after_blur"] = await _textbox_value(textbox)
     final_value = step["value_after_blur"] or step["value_after_clicking_suggestion"] or ""
     clicked_norm = normalize_location_text(step.get("clicked_candidate") or "")
@@ -1618,6 +1757,11 @@ class TutuAvailabilityService:
             origin_meta["dom_identity"] = await _element_identity(origin_input)
             diagnostic_payload["selected_inputs"]["origin"] = origin_meta
             await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
+            origin_guard = await _strict_route_snapshot(page, origin_input)
+            _ensure_route_field_invariants(diagnostic_payload, req.origin, req.destination)["origin_expected_hidden"] = origin_guard.get("hidden_value")
+            diagnostic_payload["origin_guard"] = origin_guard
+            logger.info("tutu_origin_guard_created", extra=origin_guard)
+            await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
             await asyncio.sleep(0.5)
 
             destination_input, destination_meta, _ = await detect_station_input(page, "destination")
@@ -1630,11 +1774,32 @@ class TutuAvailabilityService:
                 diagnostic_payload["field_resolution_collision"] = {"reason": "destination_resolved_to_origin", "origin": origin_meta, "destination": destination_meta}
                 logger.info("station_input_collision", extra={"field_name": "destination", "failure_reason": "field_resolution_collision", "origin_input": origin_meta, "destination_input": destination_meta})
                 raise ValueError("field_resolution_collision")
-            try:
-                await select_location(page, destination_input, req.destination, "destination", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
-            except Exception:
-                await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
-                raise
+            recovery_attempts = 0
+            while True:
+                try:
+                    await select_location(page, destination_input, req.destination, "destination", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload, origin_guard, req.origin)
+                    await _check_origin_guard(page, origin_guard, "destination_after_sale_period", diagnostic_payload, req.origin, req.destination)
+                    break
+                except TutuOriginGuardViolation:
+                    logger.info("tutu_destination_overwrote_origin", extra={"attempt": recovery_attempts + 1, "origin": req.origin, "destination": req.destination})
+                    if recovery_attempts >= 2:
+                        await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
+                        raise
+                    recovery_attempts += 1
+                    diagnostic_payload["origin_recovery_attempts"] = recovery_attempts
+                    logger.info("tutu_origin_recovery_started", extra={"attempt": recovery_attempts})
+                    await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
+                    origin_input, origin_meta, _ = await detect_station_input(page, "origin")
+                    await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
+                    origin_guard = await _strict_route_snapshot(page, origin_input)
+                    logger.info("tutu_origin_recovery_completed", extra={"attempt": recovery_attempts, **origin_guard})
+                    await _close_origin_autocomplete(page, origin_input, diagnostic_payload)
+                    destination_input, destination_meta, _ = await detect_station_input(page, "destination")
+                    destination_meta["dom_identity"] = await _element_identity(destination_input)
+                    diagnostic_payload["selected_inputs"]["destination"] = destination_meta
+                except Exception:
+                    await _save_step_artifact(page, "destination_selection_failed", {"screenshots": shots, "html_artifacts": htmls})
+                    raise
             await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
             post_submit_deadline = min(request_deadline, time.monotonic() + settings.post_submit_deadline_seconds)
@@ -1645,6 +1810,7 @@ class TutuAvailabilityService:
                 post_result = await wait_for_tutu_search_result(page, post_submit_deadline, diagnostic_payload, req)
             finally:
                 capture.detach()
+            _classify_sale_period_collisions(capture.events, req.origin, req.destination, diagnostic_payload)
             diagnostic_payload["post_submit_network_events"] = capture.events
             diagnostic_payload["post_submit_network_summary"] = capture.summary()
             diagnostic_payload["post_submit_result"] = post_result
