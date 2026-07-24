@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 from collections import OrderedDict
@@ -34,7 +36,10 @@ class LocationNormalizer:
 
     @classmethod
     def normalize(cls, text: str) -> str:
-        value = " ".join(text.lower().replace("ё", "е").replace("-", " ").split())
+        value = unicodedata.normalize("NFC", text or "").strip().casefold().replace("ё", "е")
+        value = re.sub(r"[‐‑‒–—―−]", "-", value)
+        value = re.sub(r"[-.,/]+", " ", value)
+        value = " ".join(value.split())
         return cls.aliases.get(value, value)
 
 
@@ -65,6 +70,10 @@ DEFAULT_LOCATIONS = [
     LocationRecord("city:c2", "Санкт-Петербург", "Санкт-Петербург", "city", "c2", "Санкт-Петербург", aliases=("спб", "питер", "санкт петербург")),
     LocationRecord("station:s9602494", "Санкт-Петербург-Главн.", "Санкт-Петербург, Московский вокзал", "railway_station", "s9602494", "Санкт-Петербург", aliases=("московский вокзал",)),
     LocationRecord("city:c42", "Сарапул", "Сарапул", "city", "c42", "Удмуртия"),
+    LocationRecord("city:c11", "Рязань", "Рязань (train/bus)", "city", "c11", "Рязанская область"),
+    LocationRecord("station:s9601101", "Рязань-1", "Рязань-1, железнодорожная станция", "railway_station", "s9601101", "Рязанская область", aliases=("рязань 1",)),
+    LocationRecord("city:c14", "Тверь", "Тверь", "city", "c14", "Тверская область"),
+    LocationRecord("station:s9602496", "Тверь", "Тверь, железнодорожная станция", "railway_station", "s9602496", "Тверская область"),
     LocationRecord("city:c197", "Бийск", "Бийск", "city", "c197", "Алтайский край"),
     LocationRecord("station:s9610404", "Бийск", "Бийск, железнодорожная станция", "railway_station", "s9610404", "Алтайский край"),
     LocationRecord("city:c194", "Саратов", "Саратов", "city", "c194", "Саратовская область"),
@@ -117,9 +126,9 @@ class LocationRepository:
         cached = self.cache.get(key)
         if cached is not None:
             return cached
-        ranked: list[tuple[int, int, str, LocationRecord]] = []
+        ranked: list[tuple[int, int, int, LocationRecord]] = []
         type_rank = {"city": 0, "settlement": 1, "railway_station": 2, "bus_station": 3, "station": 4}
-        for record in self.records:
+        for index, record in enumerate(self.records):
             best: int | None = None
             for text in record.searchable:
                 words = text.split()
@@ -135,7 +144,7 @@ class LocationRepository:
                     continue
                 best = score if best is None else min(best, score)
             if best is not None:
-                ranked.append((best, type_rank[record.type], record.display_name, record))
+                ranked.append((best, type_rank[record.type], index, record))
         result = [record.to_suggestion() for *_ignore, record in sorted(ranked)[:limit]]
         self.cache.set(key, result)
         return result

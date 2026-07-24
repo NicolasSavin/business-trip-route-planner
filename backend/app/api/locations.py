@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
 
-from app.locations import LocationSuggestResponse, LocationSuggestion, location_repository
+from app.locations import LocationNormalizer, LocationSuggestResponse, LocationSuggestion, location_repository
 from app.providers.yandex.location_service import yandex_location_resolver
 
 router = APIRouter(prefix="/api/v1/locations", tags=["locations"])
@@ -20,15 +20,26 @@ def _to_suggestion(match) -> LocationSuggestion:
 
 @router.get("/suggest", response_model=LocationSuggestResponse)
 def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Query(default=10, ge=1, le=20)) -> LocationSuggestResponse:
-    if len(q.strip()) >= 2:
+    normalized = LocationNormalizer.normalize(q)
+    logger.info("location_suggest_started", extra={"query": q, "limit": limit})
+    logger.info("location_suggest_normalized", extra={"query": q, "normalized_query": normalized})
+    matches = []
+    if len(normalized) >= 2:
         try:
             matches = yandex_location_resolver.resolve_all(q)[:limit]
         except Exception as exc:
             logger.warning("Yandex location suggestions failed for %r: %s", q, exc)
             matches = []
-        if matches:
-            return LocationSuggestResponse(items=[_to_suggestion(item) for item in matches])
-    return LocationSuggestResponse(items=location_repository.suggest(q, min(limit, 10)))
+    diag = getattr(yandex_location_resolver, "_last_diag", {}) or {}
+    logger.info("location_suggest_local_results", extra={"query": q, "normalized_query": normalized, "count": diag.get("local_results", len(matches))})
+    logger.info("location_suggest_fallback_results", extra={"query": q, "normalized_query": normalized, "count": diag.get("fallback_results", 0)})
+    logger.info("location_suggest_external_results", extra={"query": q, "normalized_query": normalized, "count": diag.get("external_results", 0)})
+    if matches:
+        items = [_to_suggestion(item) for item in matches]
+    else:
+        items = location_repository.suggest(q, min(limit, 10))
+    logger.info("location_suggest_completed", extra={"query": q, "normalized_query": normalized, "count": len(items)})
+    return LocationSuggestResponse(items=items)
 
 
 @router.get("/resolve")
