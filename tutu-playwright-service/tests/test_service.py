@@ -1,4 +1,5 @@
 import pytest
+import time
 from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.service import service
@@ -869,6 +870,13 @@ class RouteLocator:
     async def input_value(self):
         return self.elements[self.index or 0].get("value", "")
 
+    async def inner_text(self, timeout=None):
+        return self.elements[self.index or 0].get("value", "")
+
+    @property
+    def first(self):
+        return self.nth(0)
+
     async def evaluate(self, script):
         element = self.elements[self.index or 0]
         if "closest('form')" in script:
@@ -923,6 +931,8 @@ class RoutePage:
         if selector.startswith("form:has"):
             buttons = self.submit_buttons.get("fallback", [])
             return RouteLocator(self, selector, buttons)
+        if selector == "body":
+            return RouteLocator(self, selector, [{"value": getattr(self, "body_text", "")}])
         return RouteLocator(self, selector, [])
 
     async def screenshot(self, path, full_page=True):
@@ -1013,6 +1023,45 @@ async def test_route_submit_url_change_is_navigation_success(tmp_path, monkeypat
 
     result = await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
 
-    assert result == "url_changed"
-    assert diagnostics["navigation_result"] == "url_changed"
-    assert diagnostics["before_submit_url"] != diagnostics["after_submit_url"]
+    assert result == "submitted"
+    assert diagnostics["before_submit_url"] != page.url
+
+@pytest.mark.asyncio
+async def test_post_submit_url_change_succeeds_without_networkidle(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "navigation_timeout_ms", 100)
+    monkeypatch.setattr(service_module.settings, "results_container_timeout_ms", 100)
+    monkeypatch.setattr(service_module.settings, "train_cards_timeout_ms", 100)
+    monkeypatch.setattr(service_module.settings, "availability_timeout_ms", 100)
+    page = RoutePage()
+    page.url = "https://www.tutu.ru/poezda/search/"
+    page.body_text = "Москва Рязань билеты купе"
+    diagnostics = {"before_submit_url": "https://www.tutu.ru/poezda/"}
+    result = await service_module.wait_for_tutu_search_result(page, time.monotonic() + 2, diagnostics)
+    assert result["status"] == "results"
+    assert "availability_text" in result["matched_signals"]
+
+@pytest.mark.asyncio
+async def test_post_submit_empty_state_returns_without_global_timeout(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "navigation_timeout_ms", 100)
+    page = RoutePage()
+    page.url = "https://www.tutu.ru/poezda/search/"
+    page.body_text = "На выбранную дату нет поездов"
+    diagnostics = {"before_submit_url": "https://www.tutu.ru/poezda/"}
+    result = await service_module.wait_for_tutu_search_result(page, time.monotonic() + 2, diagnostics)
+    assert result["status"] == "empty"
+    assert "empty_state" in result["matched_signals"]
+
+@pytest.mark.asyncio
+async def test_post_submit_no_navigation_structured_timeout(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "navigation_timeout_ms", 50)
+    monkeypatch.setattr(service_module.settings, "results_container_timeout_ms", 50)
+    monkeypatch.setattr(service_module.settings, "train_cards_timeout_ms", 50)
+    monkeypatch.setattr(service_module.settings, "availability_timeout_ms", 50)
+    page = RoutePage()
+    diagnostics = {"before_submit_url": page.url}
+    result = await service_module.wait_for_tutu_search_result(page, time.monotonic() + 1, diagnostics)
+    assert result["status"] == "navigation_timeout"
+    assert any(step["status"] == "timeout" for step in diagnostics["post_submit_steps"])
