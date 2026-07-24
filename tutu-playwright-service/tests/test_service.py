@@ -146,12 +146,15 @@ class MockLocator:
 
 
 class MockPage:
-    def __init__(self, options):
+    def __init__(self, options, hidden_after_click=True):
         self.options = options
         self.autocomplete_open = False
         self.textbox = MockKeyboardTextbox(self)
         self.keyboard = MockKeyboard(self)
         self.screenshots = []
+        self.hidden_after_click = hidden_after_click
+        self.hidden_ids = {"origin": "", "destination": ""}
+        self.clicked_candidates = []
 
     def get_by_role(self, role):
         if role in {"listbox", "option"}:
@@ -167,9 +170,76 @@ class MockPage:
     async def content(self):
         return "<html><body>No suggestions</body></html>"
 
+    async def click_candidate(self, candidate):
+        self.clicked_candidates.append(candidate)
+        self.textbox.value = candidate["text"]
+        self.autocomplete_open = False
+        if self.hidden_after_click:
+            self.hidden_ids["origin"] = "mock-origin-id"
+            self.hidden_ids["destination"] = "mock-destination-id"
+
 
 @pytest.mark.asyncio
 async def test_select_location_exact_city():
+    from app.service import select_location
+
+    page = MockPage(["Рязань"])
+    value = await select_location(page, page.textbox, "Рязань", "origin")
+
+    assert value == "Рязань"
+
+
+@pytest.mark.asyncio
+async def test_select_location_prefers_exact_ryazan_over_station_suffixes():
+    from app.service import select_location
+
+    diagnostics = {}
+    page = MockPage(["Рязань-2 (Моск.)", "Рязань", "Рязань-1 (Моск.)"])
+    value = await select_location(page, page.textbox, "Рязань", "origin", diagnostics=diagnostics)
+
+    assert value == "Рязань"
+    assert page.clicked_candidates[0]["text"] == "Рязань"
+    assert diagnostics["origin_station_selection"]["selected_candidate"]["match_type"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_select_location_span_text_clicks_parent_candidate():
+    from app.service import _click_autocomplete_candidate
+
+    page = MockPage([])
+    await _click_autocomplete_candidate(page, {"text": "Рязань", "candidate_id": "li-parent"})
+
+    assert page.clicked_candidates == [{"text": "Рязань", "candidate_id": "li-parent"}]
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_polling_finds_delayed_popup():
+    from app.service import _poll_autocomplete_candidates
+
+    page = MockPage(["Рязань"])
+    async def open_later():
+        await asyncio.sleep(0.7)
+        page.autocomplete_open = True
+    task = asyncio.create_task(open_later())
+    candidates = await _poll_autocomplete_candidates(page, page.textbox, "Рязань", timeout_seconds=2.0)
+    await task
+
+    assert candidates[0]["text"] == "Рязань"
+
+
+@pytest.mark.asyncio
+async def test_select_location_scopes_to_active_input_near_popup():
+    from app.service import select_location
+
+    page = MockPage(["Москва", "Рязань"])
+    value = await select_location(page, page.textbox, "Рязань", "destination")
+
+    assert value == "Рязань"
+    assert page.clicked_candidates[0]["text"] == "Рязань"
+
+
+@pytest.mark.asyncio
+async def test_select_location_finds_visible_li_without_role_option():
     from app.service import select_location
 
     page = MockPage(["Рязань"])
@@ -205,7 +275,7 @@ async def test_select_location_mismatch_fails_without_arrow_fallback(tmp_path, m
     monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
     page = MockPage(["Тула"])
 
-    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+    with pytest.raises(ValueError, match="autocomplete_exact_candidate_not_found"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin")
 
     assert "ArrowDown" not in page.textbox.pressed and "Enter" not in page.textbox.pressed
@@ -220,11 +290,21 @@ async def test_select_location_no_suggestion_saves_artifacts(tmp_path, monkeypat
     monkeypatch.setattr(service_module, "LOCATION_AUTOCOMPLETE_TIMEOUT_MS", 1)
     page = MockPage([])
 
-    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+    with pytest.raises(ValueError, match="autocomplete_popup_not_found"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin")
 
     assert page.screenshots
     assert (tmp_path / "artifacts" / "location_not_found.html").exists()
+
+
+@pytest.mark.asyncio
+async def test_select_location_requires_hidden_station_id_after_click():
+    from app import service as service_module
+
+    page = MockPage(["Рязань"], hidden_after_click=False)
+
+    with pytest.raises(ValueError, match="station_hidden_id_not_set"):
+        await service_module.select_location(page, page.textbox, "Рязань", "origin")
 
 @pytest.mark.asyncio
 async def test_debug_connectivity_endpoint_with_mocked_failures(monkeypatch):
@@ -514,10 +594,10 @@ async def test_select_location_autocomplete_not_opened_records_station_diagnosti
     diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
     page = MockPage([])
 
-    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+    with pytest.raises(ValueError, match="autocomplete_popup_not_found"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
 
-    assert diagnostics["station_steps"][0]["failure_reason"] == "autocomplete_not_opened"
+    assert diagnostics["station_steps"][0]["failure_reason"] == "autocomplete_popup_not_found"
     assert diagnostics["origin_station_selection"]["requested_city"] == "Рязань"
     assert "origin" in diagnostics["autocomplete_discovery"]
 
@@ -530,10 +610,10 @@ async def test_select_location_popup_without_match_records_candidates(tmp_path, 
     diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
     page = MockPage(["Тула"])
 
-    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+    with pytest.raises(ValueError, match="autocomplete_exact_candidate_not_found"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
 
-    assert diagnostics["station_steps"][0]["failure_reason"] == "matching_candidate_not_found"
+    assert diagnostics["station_steps"][0]["failure_reason"] == "autocomplete_exact_candidate_not_found"
     assert diagnostics["popup_candidates"]["origin"]
 
 
@@ -558,12 +638,12 @@ async def test_select_location_value_not_persisted_after_click_records_failure(t
 
     monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
     diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
-    page = MockStickyPage(["Рязань-1"])
+    page = MockStickyPage(["Рязань-1"], hidden_after_click=False)
 
-    with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
+    with pytest.raises(ValueError, match="station_hidden_id_not_set"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
 
-    assert diagnostics["station_steps"][0]["failure_reason"] == "selected_value_not_persisted"
+    assert diagnostics["station_steps"][0]["failure_reason"] == "station_hidden_id_not_set"
     assert diagnostics["origin_station_selection"]["clicked_candidate"] == "Рязань-1"
 
 
