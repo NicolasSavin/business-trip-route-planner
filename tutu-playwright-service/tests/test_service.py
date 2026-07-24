@@ -879,11 +879,12 @@ class RouteLocator:
 
     async def evaluate(self, script):
         element = self.elements[self.index or 0]
-        if "typeof el.click" in script:
+        if "requestSubmit" in script or "SubmitEvent" in script or "typeof el.click" in script:
             self.page.clicked.append(f"evaluate:{self.selector}")
             if element.get("changes_url", True):
                 self.page.url = self.page.url + "search/"
-            return "element_click"
+            strategy = element.get("submit_strategy") or ("primary_button_request_submit" if element.get("type") == "submit" else "form_request_submit")
+            return {"strategy": strategy, "action": element.get("form_action", "https://www.tutu.ru/poezda/search/")}
         if "closest('form')" in script or "el.form" in script:
             return {
                 "type": element.get("type"),
@@ -1002,7 +1003,8 @@ async def test_route_submit_uses_station_search_button_when_two_find_buttons(tmp
 
     await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
 
-    assert page.clicked == ["#idstationsearch_submit_button_input"]
+    assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
+    assert diagnostics["submit_strategy"] == "primary_button_request_submit"
     assert diagnostics["submit_selector"] == "#idstationsearch_submit_button_input"
 
 
@@ -1098,8 +1100,9 @@ async def test_route_submit_primary_one_fallback_zero_not_ambiguous(tmp_path, mo
 
     await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
 
-    assert page.clicked == ["#idstationsearch_submit_button_input"]
-    assert diagnostics["route_submit_button"]["selected_strategy"] == "primary_id"
+    assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
+    assert diagnostics["submit_strategy"] == "primary_button_request_submit"
+    assert diagnostics["submit_strategy"] == "primary_button_request_submit"
     assert diagnostics["route_submit_button"]["fallback_count"] is None
 
 
@@ -1116,8 +1119,8 @@ async def test_route_submit_fallback_used_when_primary_missing(tmp_path, monkeyp
 
     await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
 
-    assert page.clicked == [diagnostics["submit_selector"]]
-    assert diagnostics["route_submit_button"]["selected_strategy"] == "fallback_form"
+    assert page.clicked == [f"evaluate:{diagnostics["submit_selector"]}"]
+    assert diagnostics["submit_strategy"] == "primary_button_request_submit"
     assert diagnostics["route_submit_button"]["fallback_count"] == 1
 
 
@@ -1176,7 +1179,8 @@ async def test_route_submit_hidden_input_primary_is_valid_and_submits(tmp_path, 
     await service_module._click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []})
 
     assert diagnostics["route_submit_button"]["primary"]["class"] == "hidden_input"
-    assert page.clicked == ["#idstationsearch_submit_button_input"]
+    assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
+    assert diagnostics["submit_strategy"] == "primary_button_request_submit"
 
 
 @pytest.mark.asyncio
@@ -1210,7 +1214,7 @@ async def test_route_submit_evaluate_click_when_playwright_click_fails(tmp_path,
 
     assert result == "submitted"
     assert page.clicked == ["evaluate:#idstationsearch_submit_button_input"]
-    assert diagnostics["post_submit_steps"][-2]["details"]["click_strategy"] == "evaluate_click_or_request_submit"
+    assert diagnostics["post_submit_steps"][-2]["details"]["submit_strategy"] == "primary_button_request_submit"
 
 @pytest.mark.asyncio
 async def test_origin_guard_detects_destination_overwrite():
@@ -1272,3 +1276,44 @@ async def test_route_submit_uses_form_request_submit_when_button_absent(tmp_path
     await service_module._click_route_submit(page, {}, {"screenshots": [], "html_artifacts": []})
 
     assert page.clicked == ["evaluate:form:has(input[name='schedule_station_from']):has(input[name='schedule_station_to'])"]
+
+@pytest.mark.asyncio
+async def test_origin_snapshot_restore_uses_confirmed_snapshot_without_autocomplete():
+    from app import service as service_module
+
+    class RestorePage:
+        def __init__(self):
+            self.evaluate_calls = 0
+        async def evaluate(self, script, guard):
+            self.evaluate_calls += 1
+            assert "schedule_station_from" in script
+            assert "nnst1" in script
+            return {"ok": True, "visible_value": guard["visible_value"], "hidden_value": guard["hidden_value"]}
+
+    diagnostics = {"origin_recovery_count": 0}
+    result = await service_module._restore_origin_from_confirmed_snapshot(
+        RestorePage(), {"visible_value": "Рязань", "hidden_value": "2004000"}, diagnostics, time.monotonic() + 3
+    )
+
+    assert result["ok"] is True
+    assert diagnostics["origin_recovery_strategy"] == "restore_confirmed_snapshot"
+    assert diagnostics["origin_recovery_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_error_artifacts_skipped_when_budget_below_reserve():
+    from app import service as service_module
+
+    class NoArtifactPage:
+        async def screenshot(self, *args, **kwargs):
+            raise AssertionError("screenshot should be skipped")
+        async def content(self):
+            raise AssertionError("content should be skipped")
+
+    diagnostics = {}
+    await service_module._capture_error_artifacts_if_budget_allows(
+        NoArtifactPage(), {"screenshots": [], "html_artifacts": []}, diagnostics, time.monotonic() + 0.5
+    )
+
+    assert diagnostics["artifacts_capture_skipped"] is True
+    assert diagnostics["artifacts_capture_skip_reason"] == "error_artifact_capture_skipped_due_to_deadline"

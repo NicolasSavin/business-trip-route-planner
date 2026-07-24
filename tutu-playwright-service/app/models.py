@@ -51,6 +51,16 @@ class Diagnostics(BaseModel):
     timeout_stage: str | None = None
     route_field_invariants: dict[str, Any] = Field(default_factory=dict)
     sale_period_route_collision_detected: bool = False
+    elapsed_ms: int | None = None
+    destination_attempt_count: int | None = None
+    origin_recovery_count: int | None = None
+    origin_guard: dict[str, Any] = Field(default_factory=dict)
+    route_form_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    submit_strategy: str | None = None
+    artifacts_capture_skipped: bool | None = None
+    artifacts_capture_skip_reason: str | None = None
+    artifacts_capture_elapsed_ms: int | None = None
+    terminal_failure_reason: str | None = None
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
