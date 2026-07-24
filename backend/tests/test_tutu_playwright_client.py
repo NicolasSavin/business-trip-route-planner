@@ -45,3 +45,92 @@ async def test_provider_error_response_is_returned_as_safe_unconfirmed_result(mo
     assert res.metadata["provider_error"]["message"] == "Location suggestion not found: Рязань"
     assert res.metadata["provider_error"]["error_type"] == "TutuDiagnosticError"
     assert "X-Service-Token" not in str(res.metadata)
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_error_response_arrives_with_aligned_read_timeout(monkeypatch):
+    observed = {}
+    c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True, timeout=40)
+
+    original_init = httpx.AsyncClient.__init__
+
+    def capture_init(self, *args, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        original_init(self, *args, **kwargs)
+
+    async def fake_post(*args, **kwargs):
+        return httpx.Response(200, json={
+            "status":"provider_error",
+            "message":"Location suggestion not found: Рязань",
+            "error_type":"TutuDiagnosticError",
+            "diagnostics":{
+                "station_steps":[{"requested_city":"Рязань", "failure_reason":"matching_candidate_not_found"}],
+                "origin_station_selection":{"requested_city":"Рязань"},
+                "destination_station_selection":{},
+                "popup_candidates":{"origin":[{"text":"Тула"}]},
+                "autocomplete_discovery":{"origin":{"options":[{"text":"Тула"}]}},
+                "selected_inputs":{"origin":{"role":"textbox"}},
+                "screenshots":["origin_after_waiting.png"],
+                "html_artifacts":["origin_after_waiting.html"],
+                "failure_reason":"matching_candidate_not_found",
+            },
+        })
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", capture_init)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    res=await c.check_segment(segment(), request())
+
+    assert observed["timeout"].connect == 5
+    assert observed["timeout"].read == 40
+    assert observed["timeout"].write == 10
+    assert observed["timeout"].pool == 5
+    assert res.metadata["provider_error"]["error_type"] == "TutuDiagnosticError"
+    assert res.metadata["provider_error"]["error_type"] != "ReadTimeout"
+    details = res.metadata["provider_error"]["details"]
+    assert details["station_steps"][0]["requested_city"] == "Рязань"
+    assert details["origin_station_selection"]["requested_city"] == "Рязань"
+    assert details["failure_reason"] == "matching_candidate_not_found"
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_marks_missing_diagnostic_response(monkeypatch):
+    c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True, timeout=40)
+
+    async def fake_post(*args, **kwargs):
+        raise httpx.ReadTimeout("read timeout")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    res=await c.check_segment(segment(), request())
+
+    error = res.metadata["provider_error"]
+    assert error["error_type"] == "ReadTimeout"
+    details = error["details"]
+    assert details["diagnostic_response_received"] is False
+    assert details["timeout_stage"] == "backend_http_read"
+    assert details["configured_read_timeout_seconds"] == 40
+    assert details["service_url"] == "http://tutu/api/v1/availability/check"
+    assert "station_steps" not in details
+    assert "selected_inputs" not in details
+    assert "popup_candidates" not in details
+
+
+@pytest.mark.asyncio
+async def test_station_steps_are_preserved_in_provider_error_details(monkeypatch):
+    c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True)
+
+    async def fake_post(*args, **kwargs):
+        return httpx.Response(200, json={"status":"provider_error", "message":"bad station", "error_type":"TutuDiagnosticError", "diagnostics":{"station_steps":[{"field_name":"origin", "failure_reason":"matching_candidate_not_found"}]}})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    res=await c.check_segment(segment(), request())
+
+    assert res.metadata["provider_error"]["details"]["station_steps"] == [{"field_name":"origin", "failure_reason":"matching_candidate_not_found"}]
+
+
+def test_default_enrichment_budget_exceeds_backend_http_timeout():
+    import app.services.multimodal_journey_planner as planner_module
+
+    c=TutuPlaywrightAvailabilityClient(base_url="http://tutu", enabled=True)
+
+    assert planner_module.TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS > c.timeout
