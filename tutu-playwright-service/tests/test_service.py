@@ -1608,3 +1608,91 @@ async def test_parallel_segments_return_before_backend_read_timeout(monkeypatch)
 
     assert time.monotonic() - start < 1
     assert all(result.status == service_module.AvailabilityStatus.PROVIDER_ERROR for result in results)
+
+
+def _autocomplete_request(query, *, matches=False, malformed=False, stage="keyboard.insert_text"):
+    return {
+        "autocomplete_query_value": query,
+        "autocomplete_query_matches_requested": matches,
+        "malformed_autocomplete_query": malformed,
+        "stage": stage,
+    }
+
+
+def test_autocomplete_diagnostics_recovers_after_later_matching_query():
+    from app.service import _autocomplete_query_diagnostics
+
+    result = _autocomplete_query_diagnostics([
+        _autocomplete_request("./?", malformed=True, stage="keyboard.insert_text"),
+        _autocomplete_request("Рязань", matches=True, stage="native_value_setter_input_event"),
+    ])
+
+    assert result["autocomplete_query_value"] == "Рязань"
+    assert result["autocomplete_query_matches_requested"] is True
+    assert result["malformed_autocomplete_query"] is False
+    assert result["recovered_from_malformed_query"] is True
+    assert result["ignored_malformed_requests"] == 1
+
+
+def test_autocomplete_diagnostics_keeps_single_malformed_query_error():
+    from app.service import _autocomplete_query_diagnostics
+
+    result = _autocomplete_query_diagnostics([_autocomplete_request("./?", malformed=True)])
+
+    assert result["autocomplete_query_value"] == "./?"
+    assert result["autocomplete_query_matches_requested"] is False
+    assert result["malformed_autocomplete_query"] is True
+    assert result["recovered_from_malformed_query"] is False
+
+
+def test_autocomplete_diagnostics_last_malformed_query_wins_after_match():
+    from app.service import _autocomplete_query_diagnostics
+
+    result = _autocomplete_query_diagnostics([
+        _autocomplete_request("Рязань", matches=True),
+        _autocomplete_request("./?", malformed=True),
+    ])
+
+    assert result["autocomplete_query_value"] == "./?"
+    assert result["autocomplete_query_matches_requested"] is False
+    assert result["malformed_autocomplete_query"] is True
+
+
+@pytest.mark.asyncio
+async def test_select_location_matching_query_with_candidate_selects_station(monkeypatch, tmp_path):
+    from app import service as service_module
+
+    async def fake_type_station_like_user(page, textbox, city_name, step, network_capture):
+        await textbox.fill(city_name)
+        step["typing_strategy"] = "native_value_setter_input_event"
+        step["unicode_input_strategy"] = "native_value_setter_input_event"
+        step["selected_unicode_input_strategy"] = "native_value_setter_input_event"
+        step["characters_typed"] = len(city_name)
+        network_capture.requests.append(_autocomplete_request(city_name, matches=True, stage="native_value_setter_input_event"))
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    monkeypatch.setattr(service_module, "_type_station_like_user", fake_type_station_like_user)
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockPage(["Рязань"])
+
+    value = await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    step = diagnostics["station_steps"][0]
+    assert value == "Рязань"
+    assert step["station_selected"] is True
+    assert step["autocomplete_query_matches_requested"] is True
+    assert step["malformed_autocomplete_query"] is False
+
+def test_autocomplete_diagnostics_ignores_old_malformed_from_other_strategy():
+    from app.service import _autocomplete_query_diagnostics
+
+    result = _autocomplete_query_diagnostics([
+        _autocomplete_request("./?", malformed=True, stage="keyboard.insert_text"),
+        _autocomplete_request("Рязань", matches=True, stage="native_value_setter_input_event"),
+    ], selected_strategy="native_value_setter_input_event")
+
+    assert result["autocomplete_query_value"] == "Рязань"
+    assert result["autocomplete_query_matches_requested"] is True
+    assert result["malformed_autocomplete_query"] is False
+    assert result["recovered_from_malformed_query"] is True
+    assert result["ignored_malformed_requests"] == 1

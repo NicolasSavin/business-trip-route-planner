@@ -526,7 +526,7 @@ class TutuAutocompleteNetworkCapture:
         raw_url = getattr(request,"url",None) or ""
         query_value = _autocomplete_query_value(raw_url)
         query_matches = _autocomplete_query_matches(self.requested_city, query_value)
-        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(raw_url), "endpoint": _endpoint(raw_url), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_body_sample(raw_url, post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(raw_url, post, city=self.requested_city), "autocomplete_query_value": query_value, "autocomplete_query_matches_requested": query_matches, "malformed_autocomplete_query": bool(query_value is not None and not query_matches), "diagnostics_redaction_applied": True}
+        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(raw_url), "endpoint": _endpoint(raw_url), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_body_sample(raw_url, post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "sequence": self._counter, "request_id": rid, "contains_requested_city": _network_contains_city(raw_url, post, city=self.requested_city), "autocomplete_query_value": query_value, "autocomplete_query_matches_requested": query_matches, "malformed_autocomplete_query": bool(query_value is not None and not query_matches), "diagnostics_redaction_applied": True}
         self.requests.append(item); logger.info("tutu_autocomplete_request", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": item["endpoint"], "status": None, "elapsed_ms": None, "response_item_count": None, "contains_requested_city": item["contains_requested_city"], "autocomplete_query_value": query_value, "query_matches_requested": query_matches, "probable_failure_reason": None})
         logger.info("tutu_autocomplete_query_observed", extra={"field_name": self.field_name, "requested_city": self.requested_city, "strategy": self.stage, "autocomplete_query_value": query_value, "query_matches_requested": query_matches, "response_item_count": None})
     async def _on_response(self, response):
@@ -576,6 +576,43 @@ def _autocomplete_query_matches(requested_city: str, query_value: str | None) ->
     requested = requested_city or ""
     return query_value == requested or (bool(query_value) and requested.startswith(query_value))
 
+
+
+def _autocomplete_query_diagnostics(requests: list[dict], selected_strategy: str | None = None) -> dict:
+    relevant = list(requests or [])
+    selected_requests = [r for r in relevant if selected_strategy and r.get("stage") == selected_strategy]
+    analyzed = selected_requests or relevant
+    last_matching_index = None
+    last_malformed_index = None
+    last_query_value = None
+    for index, request in enumerate(analyzed):
+        if request.get("autocomplete_query_value") is not None:
+            last_query_value = request.get("autocomplete_query_value")
+        if request.get("autocomplete_query_matches_requested"):
+            last_matching_index = index
+        if request.get("malformed_autocomplete_query"):
+            last_malformed_index = index
+    malformed = last_malformed_index is not None and (last_matching_index is None or last_malformed_index > last_matching_index)
+    matching = last_matching_index is not None and not malformed
+    accepted_index = last_matching_index if matching else last_malformed_index
+    if accepted_index is not None and 0 <= accepted_index < len(analyzed):
+        last_query_value = analyzed[accepted_index].get("autocomplete_query_value")
+    older_malformed = [
+        r for r in relevant
+        if r.get("malformed_autocomplete_query")
+        and (not selected_strategy or r.get("stage") != selected_strategy or matching)
+    ]
+    if not matching and last_malformed_index is not None and analyzed is relevant:
+        older_malformed = [r for i, r in enumerate(relevant) if r.get("malformed_autocomplete_query") and i != last_malformed_index]
+    return {
+        "autocomplete_query_value": last_query_value,
+        "autocomplete_query_matches_requested": matching,
+        "malformed_autocomplete_query": malformed,
+        "recovered_from_malformed_query": bool(matching and older_malformed),
+        "ignored_malformed_requests": len(older_malformed) if matching else 0,
+        "last_matching_index": last_matching_index,
+        "last_malformed_index": last_malformed_index,
+    }
 
 def _is_cyrillic_text(value: str) -> bool:
     return bool(re.search(r"[А-Яа-яЁё]", value or ""))
@@ -1824,19 +1861,21 @@ async def _type_station_like_user(page, textbox, city_name: str, step: dict, net
             step["characters_typed"] = len(city_name)
             await asyncio.sleep(0.35)
             new_requests = network_capture.requests[before_requests:]
-            malformed = next((r for r in new_requests if r.get("malformed_autocomplete_query")), None)
-            matching = next((r for r in new_requests if r.get("autocomplete_query_matches_requested")), None)
-            if malformed:
+            query_state = _autocomplete_query_diagnostics(new_requests)
+            matching = next((r for r in reversed(new_requests) if r.get("autocomplete_query_matches_requested")), None)
+            malformed = next((r for r in reversed(new_requests) if r.get("malformed_autocomplete_query")), None)
+            if query_state["autocomplete_query_matches_requested"] or not new_requests:
+                logger.info("tutu_unicode_input_strategy_succeeded", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": (matching or {}).get("autocomplete_query_value"), "query_matches_requested": bool(matching), "response_item_count": None})
+                step["unicode_input_strategy_failures"] = failures
+                step["selected_unicode_input_strategy"] = strategy
+                break
+            if query_state["malformed_autocomplete_query"]:
                 logger.info("tutu_autocomplete_query_malformed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": malformed.get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
                 failures.append({"strategy": strategy, "failure_reason": "malformed_autocomplete_query", "autocomplete_query_value": malformed.get("autocomplete_query_value")})
                 logger.info("tutu_unicode_input_strategy_failed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": malformed.get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
                 await _clear_station_input(page, textbox)
                 await asyncio.sleep(0.1)
                 continue
-            if matching or not new_requests:
-                logger.info("tutu_unicode_input_strategy_succeeded", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": (matching or {}).get("autocomplete_query_value"), "query_matches_requested": bool(matching), "response_item_count": None})
-                step["unicode_input_strategy_failures"] = failures
-                break
         except Exception as exc:
             failures.append({"strategy": strategy, "failure_reason": type(exc).__name__})
             logger.info("tutu_unicode_input_strategy_failed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "strategy": strategy, "autocomplete_query_value": None, "query_matches_requested": None, "response_item_count": None})
@@ -1945,16 +1984,13 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     network_payload = network_capture.diagnostics(popup_rendered=bool(count or candidates or (discovery.get("options") or [])))
     step.update(network_payload)
     step["autocomplete_request_triggered"] = bool((network_payload.get("network_summary") or {}).get("relevant_requests"))
-    observed_queries = [r.get("autocomplete_query_value") for r in network_payload.get("autocomplete_requests", []) if r.get("autocomplete_query_value") is not None]
-    matching_queries = [r for r in network_payload.get("autocomplete_requests", []) if r.get("autocomplete_query_matches_requested")]
-    malformed_queries = [r for r in network_payload.get("autocomplete_requests", []) if r.get("malformed_autocomplete_query")]
+    query_diagnostics = _autocomplete_query_diagnostics(network_payload.get("autocomplete_requests", []), step.get("selected_unicode_input_strategy"))
     step["requested_city"] = city_name
     step["textbox_value"] = step.get("value_after_waiting_for_autocomplete") or step.get("textbox_value_after_typing")
-    step["autocomplete_query_value"] = (matching_queries[-1].get("autocomplete_query_value") if matching_queries else (observed_queries[-1] if observed_queries else None))
-    step["autocomplete_query_matches_requested"] = bool(matching_queries)
-    step["malformed_autocomplete_query"] = bool(malformed_queries)
+    step.update(query_diagnostics)
+    step["selected_unicode_input_strategy"] = step.get("selected_unicode_input_strategy") or step.get("unicode_input_strategy")
     if step["malformed_autocomplete_query"]:
-        logger.info("tutu_autocomplete_query_malformed", extra={"field_name": field_name, "requested_city": city_name, "strategy": step.get("unicode_input_strategy"), "autocomplete_query_value": (malformed_queries[-1] or {}).get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
+        logger.info("tutu_autocomplete_query_malformed", extra={"field_name": field_name, "requested_city": city_name, "strategy": step.get("selected_unicode_input_strategy"), "autocomplete_query_value": step.get("autocomplete_query_value"), "query_matches_requested": False, "response_item_count": None})
     if step["autocomplete_request_triggered"]:
         logger.info("tutu_autocomplete_request_triggered", extra={"field_name": field_name, "requested_city": city_name})
     else:
@@ -1966,7 +2002,7 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         diagnostics["autocomplete_request_failures"][field_name] = _limit_diagnostic(network_payload["autocomplete_request_failures"])
         diagnostics["network_summary"][field_name] = _limit_diagnostic(network_payload["network_summary"])
 
-    if step.get("malformed_autocomplete_query") or (_popular_city_response_without_requested(network_payload.get("autocomplete_responses", []), city_name) and not step.get("autocomplete_query_matches_requested")):
+    if (step.get("malformed_autocomplete_query") and not step.get("autocomplete_query_matches_requested")) or (_popular_city_response_without_requested(network_payload.get("autocomplete_responses", []), city_name) and not step.get("autocomplete_query_matches_requested")):
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "malformed_autocomplete_query")
 
     if not count and not candidates:
