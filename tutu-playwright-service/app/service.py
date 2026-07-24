@@ -25,6 +25,162 @@ ANALYTICS_ENDPOINT_RE = re.compile(r"(api-x\.tutu\.ru/v2/data|targetads|uxfeedba
 AUTOCOMPLETE_ENDPOINT_RE = re.compile(r"(suggest|autocomplete|station|city)", re.I)
 SECRET_KEY_RE = re.compile(r"(cookie|session|sessionid|token|auth|authorization|uid|sid|need_propagation|secret)", re.I)
 
+POST_SUBMIT_KEYWORDS_RE = re.compile(r"(route|poezda|train|availability|offers|sale|places|tickets|search)", re.I)
+RESULTS_CONTAINER_SELECTOR = "main, [class*='search' i], [class*='result' i], [class*='schedule' i], [data-testid*='result' i]"
+TRAIN_CARD_SELECTOR = "[class*='train' i], [data-testid*='train' i], [class*='card' i]"
+AVAILABILITY_SELECTOR = "text=/места|билеты|купе|плацкарт/i"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _remaining_ms(deadline: float | None) -> int:
+    if deadline is None:
+        return settings.operation_timeout_seconds * 1000
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def _bounded_timeout_ms(deadline: float | None, desired_ms: int) -> int:
+    return max(1, min(desired_ms, _remaining_ms(deadline)))
+
+
+def _new_step(name: str, deadline: float | None = None, details: dict | None = None) -> dict:
+    return {"name": name, "started_at": _now_iso(), "completed_at": None, "elapsed_ms": None, "status": "started", "remaining_budget_ms": _remaining_ms(deadline), "details": details or {}}
+
+
+def _finish_step(step: dict, status: str = "completed", details: dict | None = None) -> dict:
+    step["completed_at"] = _now_iso()
+    try:
+        started = datetime.fromisoformat(step["started_at"])
+        completed = datetime.fromisoformat(step["completed_at"])
+        step["elapsed_ms"] = int((completed - started).total_seconds() * 1000)
+    except Exception:
+        step["elapsed_ms"] = None
+    step["status"] = status
+    if details:
+        step.setdefault("details", {}).update(details)
+    return step
+
+
+def _record_step(diagnostic_payload: dict, name: str, deadline: float | None = None, status: str = "completed", details: dict | None = None) -> dict:
+    step = _finish_step(_new_step(name, deadline, details), status, details)
+    diagnostic_payload.setdefault("post_submit_steps", []).append(step)
+    return step
+
+
+def _log_post_submit(event: str, req=None, stage: str | None = None, page_url: str | None = None, elapsed_ms: int | None = None, deadline: float | None = None, **extra):
+    logger.info(event, extra={"origin": getattr(req, "origin", None), "destination": getattr(req, "destination", None), "train_number": getattr(req, "train_number", None), "stage": stage, "elapsed_ms": elapsed_ms, "remaining_budget_ms": _remaining_ms(deadline), "page_url": page_url, **extra})
+
+
+async def _safe_capture_step_artifact(page, step: str, artifacts: dict[str, list[str]], deadline: float | None, diagnostic_payload: dict) -> None:
+    if _remaining_ms(deadline) < 1500:
+        diagnostic_payload.setdefault("skipped_artifacts", []).append({"step": step, "reason": "deadline_budget_low"})
+        return
+    start=time.monotonic()
+    await _save_step_artifact(page, step, artifacts)
+    diagnostic_payload.setdefault("artifact_timings", []).append({"step": step, "elapsed_ms": int((time.monotonic()-start)*1000)})
+
+
+async def _selector_count(page, selector: str, timeout_ms: int = 1000) -> int:
+    try:
+        loc = page.locator(selector)
+        await loc.first.wait_for(timeout=timeout_ms)
+        return await loc.count()
+    except Exception:
+        try:
+            return await page.locator(selector).count()
+        except Exception:
+            return 0
+
+
+async def _body_text_sample(page, limit: int = 3000) -> str:
+    try:
+        return _safe_text(await page.locator("body").inner_text(timeout=1000), limit) or ""
+    except Exception:
+        return ""
+
+
+class PostSubmitNetworkCapture:
+    def __init__(self, page, deadline: float | None):
+        self.page=page; self.deadline=deadline; self.events=[]; self._started={}; self._attached=False
+    def attach(self):
+        if hasattr(self.page, "on"):
+            self.page.on("request", self._on_request); self.page.on("response", self._on_response); self.page.on("requestfailed", self._on_failed); self._attached=True
+        return self
+    def detach(self):
+        if not self._attached: return
+        for event, cb in (("request", self._on_request),("response", self._on_response),("requestfailed", self._on_failed)):
+            try: self.page.remove_listener(event, cb)
+            except Exception:
+                try: self.page.off(event, cb)
+                except Exception: pass
+        self._attached=False
+    def _relevant(self, url): return bool(POST_SUBMIT_KEYWORDS_RE.search(url or "")) and not _looks_autocomplete_related(url or "") and not _is_analytics_endpoint(url or "")
+    def _on_request(self, request):
+        url=getattr(request,"url","")
+        if len(self.events) >= 40 or not self._relevant(url): return
+        self._started[request]=time.monotonic()
+        self.events.append({"type":"request","method":getattr(request,"method",None),"endpoint":_endpoint(url),"url":_safe_url(url),"status":None,"elapsed_ms":None,"failed_reason":None})
+    async def _on_response(self, response):
+        req=getattr(response,"request",None); url=getattr(response,"url","") or getattr(req,"url","")
+        if len(self.events) >= 40 or not self._relevant(url): return
+        start=time.monotonic(); body_sample=None; size=None; err=None
+        try:
+            if _remaining_ms(self.deadline) > 1500:
+                text=await asyncio.wait_for(response.text(), timeout=min(1.0, _remaining_ms(self.deadline)/1000)); size=len(text.encode()); body_sample=_safe_text(text,1000)
+        except Exception as exc: err=type(exc).__name__
+        self.events.append({"type":"response","method":getattr(req,"method",None),"endpoint":_endpoint(url),"url":_safe_url(url),"status":getattr(response,"status",None),"elapsed_ms":int((time.monotonic()-self._started.get(req,start))*1000),"failed_reason":err,"body_sample":body_sample,"response_size":size,"body_read_elapsed_ms":int((time.monotonic()-start)*1000)})
+    def _on_failed(self, request):
+        url=getattr(request,"url","")
+        if len(self.events) >= 40 or not self._relevant(url): return
+        failure=getattr(request,"failure",None)
+        self.events.append({"type":"failed","method":getattr(request,"method",None),"endpoint":_endpoint(url),"url":_safe_url(url),"status":None,"elapsed_ms":int((time.monotonic()-self._started.get(request,time.monotonic()))*1000),"failed_reason":str(failure)})
+    def summary(self):
+        return {"total":len(self.events),"responses":sum(1 for e in self.events if e.get("type")=="response"),"failures":sum(1 for e in self.events if e.get("type")=="failed"),"statuses":{str(e.get("status")):sum(1 for x in self.events if x.get("status")==e.get("status")) for e in self.events if e.get("status")}}
+
+
+async def wait_for_tutu_search_result(page, deadline, diagnostic_payload=None, req=None):
+    diagnostic_payload = diagnostic_payload if diagnostic_payload is not None else {}
+    start=time.monotonic(); before=diagnostic_payload.get("before_submit_url") or page.url; matched=[]; navigation_observed=False
+    result={"status":"unknown","url_before":before,"url_after":page.url,"url_changed":False,"navigation_observed":False,"results_container_found":False,"train_card_count":0,"matched_signals":matched,"elapsed_ms":0}
+    async def observe(name, delay):
+        try:
+            if delay: await asyncio.sleep(min(delay, _remaining_ms(deadline)/1000))
+            diagnostic_payload.setdefault("url_observations", {})[name]=page.url
+            _log_post_submit("tutu_post_submit_url_observed", req, name, page.url, int((time.monotonic()-start)*1000), deadline)
+        except Exception: pass
+    await observe("immediately_after_click",0)
+    for name, desired, selector in (("navigation_wait_completed", settings.navigation_timeout_ms, None),("url_change_wait", settings.navigation_timeout_ms, None),("results_container_wait", settings.results_container_timeout_ms, RESULTS_CONTAINER_SELECTOR),("train_cards_wait", settings.train_cards_timeout_ms, TRAIN_CARD_SELECTOR),("availability_elements_wait", settings.availability_timeout_ms, AVAILABILITY_SELECTOR)):
+        if _remaining_ms(deadline) <= 0: _record_step(diagnostic_payload,name,deadline,"timeout",{"reason":"post_submit_deadline_exceeded"}); break
+        st=_new_step(name,deadline); diagnostic_payload.setdefault("post_submit_steps",[]).append(st)
+        try:
+            if selector:
+                await page.locator(selector).first.wait_for(timeout=_bounded_timeout_ms(deadline, desired))
+            else:
+                await page.wait_for_url(lambda url: url != before, timeout=_bounded_timeout_ms(deadline, desired))
+                navigation_observed=True
+            _finish_step(st,"completed",{"url":page.url})
+        except Exception:
+            _finish_step(st,"timeout",{"url":page.url})
+            _log_post_submit("tutu_post_submit_stage_timeout", req, name, page.url, st.get("elapsed_ms"), deadline)
+        text=await _body_text_sample(page, 3000)
+        url=page.url; result["url_after"]=url; result["url_changed"]=(url != before); result["navigation_observed"]=navigation_observed or result["url_changed"]
+        checks=[("url_changed", result["url_changed"]),("result_url", bool(re.search(r"route|search|results|train", url, re.I))),("route_heading", bool(getattr(req,"origin","") and getattr(req,"destination","") and req.origin in text and req.destination in text)),("train_number", bool(getattr(req,"train_number",None) and req.train_number in text)),("availability_text", bool(re.search(r"места|билеты|купе|плацкарт", text, re.I))),("empty_state", bool(re.search(r"нет\s+поездов|ничего\s+не\s+найдено|мест\s+нет", text, re.I))),("validation_error", bool(re.search(r"заполните|ошибка|укажите", text, re.I)))]
+        for sig, ok in checks:
+            if ok and sig not in matched: matched.append(sig)
+        result["results_container_found"] = result["results_container_found"] or await _selector_count(page, RESULTS_CONTAINER_SELECTOR, 500) > 0
+        result["train_card_count"] = max(result["train_card_count"], await _selector_count(page, TRAIN_CARD_SELECTOR, 500))
+        if result["train_card_count"]: _log_post_submit("tutu_train_cards_detected", req, name, url, int((time.monotonic()-start)*1000), deadline, train_card_count=result["train_card_count"])
+        if "validation_error" in matched: result["status"]="validation_error"; break
+        if "empty_state" in matched: result["status"]="empty"; break
+        if result["train_card_count"] or "train_number" in matched or "availability_text" in matched or (result["url_changed"] and result["results_container_found"]): result["status"]="results"; _log_post_submit("tutu_results_signal_detected", req, name, url, int((time.monotonic()-start)*1000), deadline, matched_signals=matched); break
+    await observe("plus_1_second",1); await observe("plus_3_seconds",2); await observe("after_result_wait",0)
+    result["elapsed_ms"]=int((time.monotonic()-start)*1000)
+    if result["status"] == "unknown": result["status"] = "navigation_timeout" if not result["url_changed"] else "unknown"
+    return result
+
+
 
 def _safe_url(url: str) -> str:
     from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -467,6 +623,14 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         autocomplete_responses=diagnostic_payload.get("autocomplete_responses", {}),
         autocomplete_request_failures=diagnostic_payload.get("autocomplete_request_failures", {}),
         network_summary=diagnostic_payload.get("network_summary", {}),
+        post_submit_steps=diagnostic_payload.get("post_submit_steps", []),
+        post_submit_result=diagnostic_payload.get("post_submit_result", {}),
+        post_submit_network_events=diagnostic_payload.get("post_submit_network_events", []),
+        post_submit_network_summary=diagnostic_payload.get("post_submit_network_summary", {}),
+        url_observations=diagnostic_payload.get("url_observations", {}),
+        remaining_budget_ms=diagnostic_payload.get("remaining_budget_ms"),
+        deadline_exceeded=diagnostic_payload.get("deadline_exceeded", False),
+        timeout_stage=diagnostic_payload.get("timeout_stage"),
     )
 
 
@@ -574,32 +738,59 @@ async def _detect_route_submit_button(page, diagnostic_payload: dict):
     return fallback, fallback_selector
 
 
-async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[str, list[str]]):
-    submit, selector = await _detect_route_submit_button(page, diagnostic_payload)
-    await _save_step_artifact(page, "before_submit", artifacts)
-    before_url = page.url
-    diagnostic_payload["before_submit_url"] = before_url
+async def _capture_before_submit_details(page, selector: str, diagnostic_payload: dict) -> None:
+    diagnostic_payload["before_submit_url"] = page.url
     diagnostic_payload["submit_selector"] = selector
     try:
-        await submit.wait_for(state="visible", timeout=5000)
+        diagnostic_payload["before_submit_form"] = await page.locator(selector).evaluate(
+            """
+            el => {
+                const form = el.closest('form');
+                const value = name => form && form.querySelector(`[name="${name}"]`) ? form.querySelector(`[name="${name}"]`).value : null;
+                return {
+                    action: form ? form.action : null,
+                    method: form ? (form.method || 'get').toLowerCase() : null,
+                    origin_visible_value: value('schedule_station_from'),
+                    destination_visible_value: value('schedule_station_to'),
+                    nnst1: value('nnst1'),
+                    nnst2: value('nnst2'),
+                    date_field_value: value('date') || value('departure_date') || value('when') || value('date_forward')
+                };
+            }
+            """
+        )
     except Exception:
-        if not await submit.is_visible(timeout=5000):
-            raise
-    if not await submit.is_enabled(timeout=5000):
-        raise ValueError("route_submit_button_disabled")
-    await submit.click()
-    logger.info("route_submit_clicked", extra={"selector": selector, "url_before": before_url})
-    navigation_result = "not_observed"
+        diagnostic_payload["before_submit_form"] = {"capture_error": True}
+
+
+async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[str, list[str]], deadline: float | None = None, req=None):
+    submit, selector = await _detect_route_submit_button(page, diagnostic_payload)
+    await _capture_before_submit_details(page, selector, diagnostic_payload)
+    await _safe_capture_step_artifact(page, "before_submit", artifacts, deadline, diagnostic_payload)
+    before_url = page.url
+    _record_step(diagnostic_payload, "before_submit", deadline, "completed", {"url": before_url, "selector": selector, **(diagnostic_payload.get("before_submit_form") or {})})
     try:
-        await page.wait_for_url(lambda url: url != before_url, timeout=15000)
-        navigation_result = "url_changed"
-        logger.info("route_navigation_completed", extra={"navigation_result": navigation_result, "url_before": before_url, "url_after": page.url})
+        await submit.wait_for(state="visible", timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms))
     except Exception:
-        logger.info("route_navigation_failed", extra={"navigation_result": navigation_result, "url_before": before_url, "url_after": page.url})
-    diagnostic_payload["after_submit_url"] = page.url
-    diagnostic_payload["navigation_result"] = navigation_result
-    await _save_step_artifact(page, "after_submit", artifacts)
-    return navigation_result
+        if not await submit.is_visible(timeout=_bounded_timeout_ms(deadline, 1000)):
+            diagnostic_payload["timeout_stage"] = "submit_click_timeout"
+            raise
+    if not await submit.is_enabled(timeout=_bounded_timeout_ms(deadline, 1000)):
+        raise ValueError("route_submit_button_disabled")
+    st=_new_step("submit_click_started", deadline, {"selector": selector}); diagnostic_payload.setdefault("post_submit_steps", []).append(st)
+    _log_post_submit("tutu_route_submit_started", req, "submit_click", before_url, None, deadline)
+    try:
+        await asyncio.wait_for(submit.click(), timeout=_bounded_timeout_ms(deadline, settings.submit_click_timeout_ms)/1000)
+        _finish_step(st, "completed", {"url_after_click": page.url})
+        _record_step(diagnostic_payload, "submit_click_completed", deadline, "completed", {"url": page.url})
+        _log_post_submit("tutu_route_submit_completed", req, "submit_click", page.url, st.get("elapsed_ms"), deadline)
+    except Exception:
+        _finish_step(st, "timeout", {"url_after_click": page.url})
+        diagnostic_payload["timeout_stage"] = "submit_click_timeout"
+        _log_post_submit("tutu_post_submit_stage_timeout", req, "submit_click_timeout", page.url, st.get("elapsed_ms"), deadline)
+        raise ValueError("submit_click_timeout")
+    _record_step(diagnostic_payload, "navigation_wait_started", deadline, "completed", {"url": page.url})
+    return "submitted"
 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
@@ -1327,6 +1518,8 @@ class TutuAvailabilityService:
     async def restart(self):
         if self._browser: await self._browser.close(); self._browser=None
     async def _playwright(self, req):
+        request_deadline = time.monotonic() + settings.operation_timeout_seconds
+        post_submit_deadline = None
         browser=await self._browser_instance(); context=await browser.new_context(locale="ru-RU"); page=await context.new_page(); logger.info("page opened", extra={"locale": "ru-RU"}); page.set_default_timeout(settings.operation_timeout_seconds*1000)
         shots=[]; htmls=[]; diagnostic_payload={"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}, "network_events": {}, "autocomplete_requests": {}, "autocomplete_responses": {}, "autocomplete_request_failures": {}, "network_summary": {}}
         try:
@@ -1343,7 +1536,7 @@ class TutuAvailabilityService:
             origin_meta["dom_identity"] = await _element_identity(origin_input)
             diagnostic_payload["selected_inputs"]["origin"] = origin_meta
             await select_location(page, origin_input, req.origin, "origin", {"screenshots": shots, "html_artifacts": htmls}, diagnostic_payload)
-            await page.wait_for_timeout(500)
+            await asyncio.sleep(0.5)
 
             destination_input, destination_meta, _ = await detect_station_input(page, "destination")
             diagnostic_payload["form_reacquired_after_origin"] = True
@@ -1362,15 +1555,41 @@ class TutuAvailabilityService:
                 raise
             await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
-            await _click_route_submit(page, diagnostic_payload, {"screenshots": shots, "html_artifacts": htmls})
-            logger.info("search submitted")
-            await page.get_by_text(req.train_number or "", exact=False).first.wait_for(timeout=15000)
-            logger.info("search results received", extra={"page_url": page.url})
-            text=await page.locator("body").inner_text()
+            post_submit_deadline = min(request_deadline, time.monotonic() + settings.post_submit_deadline_seconds)
+            capture = PostSubmitNetworkCapture(page, post_submit_deadline).attach()
+            try:
+                await _click_route_submit(page, diagnostic_payload, {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, req)
+                logger.info("search submitted")
+                post_result = await wait_for_tutu_search_result(page, post_submit_deadline, diagnostic_payload, req)
+            finally:
+                capture.detach()
+            diagnostic_payload["post_submit_network_events"] = capture.events
+            diagnostic_payload["post_submit_network_summary"] = capture.summary()
+            diagnostic_payload["post_submit_result"] = post_result
+            diagnostic_payload["after_submit_url"] = page.url
+            diagnostic_payload["remaining_budget_ms"] = _remaining_ms(post_submit_deadline)
+            diagnostic_payload["deadline_exceeded"] = _remaining_ms(post_submit_deadline) <= 0
+            await _safe_capture_step_artifact(page, "after_submit", {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, diagnostic_payload)
+            if post_result["status"] == "empty":
+                logger.info("tutu_post_submit_diagnostic_returned", extra={"status": "empty", "page_url": page.url})
+                return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=False, train_number=req.train_number, message="Tutu returned an empty-state for this search", warnings=["availability_status_unconfirmed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+            if post_result["status"] in {"navigation_timeout", "unknown"} or diagnostic_payload.get("deadline_exceeded"):
+                diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded" if diagnostic_payload.get("deadline_exceeded") else "navigation_timeout"
+                logger.info("tutu_post_submit_diagnostic_returned", extra={"status": post_result["status"], "timeout_stage": diagnostic_payload["timeout_stage"], "page_url": page.url})
+                raise ValueError(diagnostic_payload["timeout_stage"])
+            _record_step(diagnostic_payload, "result_parsing_started", post_submit_deadline, "completed", {"url": page.url})
+            logger.info("tutu_results_parsing_started", extra={"page_url": page.url, "train_card_count": post_result.get("train_card_count")})
+            text=await _body_text_sample(page, 5000)
             matched=bool(req.train_number and req.train_number in text)
-            logger.info("journey matched", extra={"matched_train": matched, "train_number": req.train_number})
-            logger.info("seat availability extraction started")
-            logger.info("seat availability extracted", extra={"available_seats": None})
+            if post_result.get("train_card_count", 0) and not matched:
+                diagnostic_payload["failure_reason"] = "results_page_parsing_failed"
+                diagnostic_payload["body_text_sample"] = text
+                await _safe_capture_step_artifact(page, "results_page_parsing_failed", {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, diagnostic_payload)
+                _record_step(diagnostic_payload, "result_parsing_completed", post_submit_deadline, "failed", {"failure_reason": "results_page_parsing_failed"})
+                logger.info("tutu_results_parsing_completed", extra={"status": "failed", "failure_reason": "results_page_parsing_failed", "page_url": page.url})
+                return AvailabilityCheckResponse(status=AvailabilityStatus.PROVIDER_ERROR, matched_train=False, train_number=req.train_number, message="Tutu results page loaded, but parsing failed", warnings=["results_page_parsing_failed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
+            _record_step(diagnostic_payload, "result_parsing_completed", post_submit_deadline, "completed", {"matched_train": matched})
+            logger.info("tutu_results_parsing_completed", extra={"status": "completed", "matched_train": matched, "page_url": page.url})
             return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=matched, train_number=req.train_number, message="Tutu UI parsed; detailed seat extraction requires current markup", warnings=["Tutu diagnostic metadata includes selected route inputs and autocomplete candidates"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls, "train_number" if matched else None)))
         except Exception as exc:
             stamp=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")

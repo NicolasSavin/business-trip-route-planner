@@ -30,6 +30,25 @@ class Diagnostics(BaseModel):
     form_reacquired_after_origin: bool | None = None
     final_origin_value: str | None = None
     final_destination_value: str | None = None
+    route_fields_verification: dict[str, Any] = Field(default_factory=dict)
+    route_submit_button: dict[str, Any] = Field(default_factory=dict)
+    before_submit_url: str | None = None
+    after_submit_url: str | None = None
+    submit_selector: str | None = None
+    navigation_result: str | None = None
+    network_events: dict[str, Any] = Field(default_factory=dict)
+    autocomplete_requests: dict[str, Any] = Field(default_factory=dict)
+    autocomplete_responses: dict[str, Any] = Field(default_factory=dict)
+    autocomplete_request_failures: dict[str, Any] = Field(default_factory=dict)
+    network_summary: dict[str, Any] = Field(default_factory=dict)
+    post_submit_steps: list[dict[str, Any]] = Field(default_factory=list)
+    post_submit_result: dict[str, Any] = Field(default_factory=dict)
+    post_submit_network_events: list[dict[str, Any]] = Field(default_factory=list)
+    post_submit_network_summary: dict[str, Any] = Field(default_factory=dict)
+    url_observations: dict[str, str] = Field(default_factory=dict)
+    remaining_budget_ms: int | None = None
+    deadline_exceeded: bool = False
+    timeout_stage: str | None = None
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
