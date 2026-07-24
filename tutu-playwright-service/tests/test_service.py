@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 import time
 from datetime import date
 from httpx import ASGITransport, AsyncClient
@@ -1400,3 +1401,79 @@ async def test_open_results_falls_back_to_direct_get_from_actual_fields(monkeypa
     assert "schedule_station_from=" in page.goto_calls[0]
     assert "nnst1=2000000" in page.goto_calls[0]
     assert diagnostics["direct_route_navigation"]["supported"] is True
+
+class InitialNavigationPage(RoutePage):
+    def __init__(self, delay=0, fail_timeout=False, route_inputs=True):
+        super().__init__()
+        self.delay = delay
+        self.fail_timeout = fail_timeout
+        self.goto_args = []
+        if not route_inputs:
+            self.values = {}
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_args.append({"url": url, "wait_until": wait_until, "timeout": timeout})
+        self.url = url
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.fail_timeout:
+            from app import service as service_module
+            raise service_module.PlaywrightTimeoutError("timeout")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_initial_navigation_continues_when_domcontentloaded_never_arrives_but_inputs_exist():
+    from app import service as service_module
+    page = InitialNavigationPage(fail_timeout=True, route_inputs=True)
+    diagnostics = {}
+
+    await service_module._initial_tutu_navigation(page, time.monotonic() + 12, diagnostics)
+
+    assert page.goto_args[0]["wait_until"] == "commit"
+    assert diagnostics["initial_navigation"]["continued_after_timeout"] is True
+    assert diagnostics["initial_navigation"]["route_inputs_found"] is True
+
+
+@pytest.mark.asyncio
+async def test_initial_navigation_allows_eight_second_commit(monkeypatch):
+    from app import service as service_module
+    page = InitialNavigationPage(delay=0.01, route_inputs=True)
+    diagnostics = {}
+
+    await service_module._initial_tutu_navigation(page, time.monotonic() + 12, diagnostics)
+
+    assert page.goto_args[0]["wait_until"] == "commit"
+    assert 10_000 <= page.goto_args[0]["timeout"] <= 12_000
+    assert diagnostics["initial_navigation"]["goto_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_post_submit_deadline_returns_without_long_observations(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "navigation_timeout_ms", 20)
+    monkeypatch.setattr(service_module.settings, "results_container_timeout_ms", 20)
+    monkeypatch.setattr(service_module.settings, "train_cards_timeout_ms", 20)
+    monkeypatch.setattr(service_module.settings, "availability_timeout_ms", 20)
+    page = RoutePage()
+    diagnostics = {"before_submit_url": page.url}
+    start = time.monotonic()
+
+    result = await service_module.wait_for_tutu_search_result(page, time.monotonic() + 0.05, diagnostics)
+
+    assert time.monotonic() - start < 1
+    assert result["status"] == "navigation_timeout"
+    assert diagnostics["terminal_failure_reason"] == "post_submit_deadline_exceeded"
+    assert diagnostics["deadline_exceeded"] is True
+
+
+def test_timeout_settings_are_capped_below_backend_read_timeout(monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "timeout_seconds", 40)
+    monkeypatch.setattr(service_module.settings, "operation_timeout_seconds", 40)
+    monkeypatch.setattr(service_module.settings, "route_open_deadline_seconds", 40)
+
+    assert min(service_module.settings.timeout_seconds, 32) == 32
+    assert min(service_module.settings.operation_timeout_seconds, 28) == 28
+    assert min(service_module.settings.route_open_deadline_seconds, 8) == 8

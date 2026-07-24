@@ -66,6 +66,7 @@ class Diagnostics(BaseModel):
     artifacts_capture_skip_reason: str | None = None
     artifacts_capture_elapsed_ms: int | None = None
     terminal_failure_reason: str | None = None
+    diagnostic_response_received: bool = True
 
 class AvailabilityCheckResponse(BaseModel):
     status: AvailabilityStatus; matched_train: bool = False; train_number: str | None = None; available_seats: int | None = None
