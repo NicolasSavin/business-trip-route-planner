@@ -164,7 +164,7 @@ async def test_select_location_mismatch_fails_without_arrow_fallback(tmp_path, m
     with pytest.raises(ValueError, match="Location suggestion not found: Рязань"):
         await service_module.select_location(page, page.textbox, "Рязань", "origin")
 
-    assert page.textbox.pressed == []
+    assert "ArrowDown" not in page.textbox.pressed and "Enter" not in page.textbox.pressed
     assert (tmp_path / "artifacts" / "location_not_found.html").exists()
 
 
@@ -736,3 +736,38 @@ async def test_final_route_values_are_distinct_and_correct(monkeypatch):
     assert await origin.input_value() == "Москва"
     assert await destination.input_value() == "Рязань"
     assert not await service_module._same_element(origin, destination)
+
+@pytest.mark.asyncio
+async def test_keyboard_typing_diagnostics_records_strategy(tmp_path, monkeypatch):
+    from app import service as service_module
+
+    monkeypatch.setattr(service_module.settings, "artifact_dir", str(tmp_path))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {}, "destination_station_selection": {}, "popup_candidates": {}, "autocomplete_discovery": {}}
+    page = MockPage(["Рязань"])
+
+    await service_module.select_location(page, page.textbox, "Рязань", "origin", {"screenshots": [], "html_artifacts": []}, diagnostics)
+
+    step = diagnostics["station_steps"][0]
+    assert step["typing_strategy"] in {"press_sequentially", "keyboard_insert_text_with_keyup_fallback"}
+    assert step["characters_typed"] == len("Рязань")
+    assert step["station_selected"] is True
+
+
+def test_network_summary_analytics_only_is_not_autocomplete():
+    from app.service import _looks_autocomplete_related, _network_summary
+
+    assert not _looks_autocomplete_related("https://api-x.tutu.ru/v2/data", '{"eventType":"input","SESSIONID":"secret"}', "Рязань")
+    summary = _network_summary([], [], [])
+    assert summary["probable_failure_reason"] == "autocomplete_request_not_triggered"
+    assert summary["request_with_city_found"] is False
+
+
+def test_redacts_cookie_session_and_analytics_payload():
+    from app.service import _safe_body_sample, _safe_url
+
+    body = '{"cookie":"a=b","SESSIONID":"abc","sessionId":"def","token":"ghi","nested":{"authorization":"Bearer secret"}}'
+    redacted = _safe_body_sample("https://example.test/suggest/station", body)
+    assert "abc" not in redacted and "def" not in redacted and "ghi" not in redacted and "Bearer secret" not in redacted
+    assert "[redacted]" in redacted
+    assert _safe_body_sample("https://api-x.tutu.ru/v2/data", body) == "[redacted analytics payload]"
+    assert "secret" not in _safe_url("https://example.test/path?sessionId=secret&uid=42")

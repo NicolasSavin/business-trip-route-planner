@@ -19,7 +19,10 @@ MAX_DIAGNOSTIC_STRING = 500
 AUTOCOMPLETE_NETWORK_KEYWORDS = ("suggest", "autocomplete", "station", "city", "route", "search", "railway", "poezda")
 AUTOCOMPLETE_BODY_SAMPLE_LIMIT = 16 * 1024
 SAFE_HEADER_DENY_RE = re.compile(r"(cookie|authorization|token|session|secret|set-cookie)", re.I)
-SAFE_QUERY_DENY_RE = re.compile(r"(token|session|sid|auth|cookie|key|secret|email|phone|user)", re.I)
+SAFE_QUERY_DENY_RE = re.compile(r"(token|session|sessionid|sid|uid|auth|authorization|cookie|key|secret|email|phone|user|need_propagation)", re.I)
+ANALYTICS_ENDPOINT_RE = re.compile(r"(api-x\.tutu\.ru/v2/data|targetads|uxfeedback|metrics.*/collect|collect/event|advertising)", re.I)
+AUTOCOMPLETE_ENDPOINT_RE = re.compile(r"(suggest|autocomplete|station|city)", re.I)
+SECRET_KEY_RE = re.compile(r"(cookie|session|sessionid|token|auth|authorization|uid|sid|need_propagation|secret)", re.I)
 
 
 def _safe_url(url: str) -> str:
@@ -63,9 +66,39 @@ def _network_contains_city(*values, city: str | None = None) -> bool:
     return any(city_norm in normalize_location_text(str(value or "")) for value in values)
 
 
+def _is_analytics_endpoint(url: str) -> bool:
+    return bool(ANALYTICS_ENDPOINT_RE.search(url or ""))
+
+
 def _looks_autocomplete_related(url: str, post_data: str | None = None, city: str | None = None) -> bool:
-    haystack = f"{url or ''} {post_data or ''}".lower()
-    return any(k in haystack for k in AUTOCOMPLETE_NETWORK_KEYWORDS) or _network_contains_city(url, post_data, city=city)
+    if _is_analytics_endpoint(url):
+        return False
+    haystack = f"{url or ''} {post_data or ''}"
+    return bool(AUTOCOMPLETE_ENDPOINT_RE.search(haystack)) or _network_contains_city(url, post_data, city=city)
+
+
+def _redact_sensitive(value):
+    if isinstance(value, dict):
+        return {str(k)[:80]: ("[redacted]" if SECRET_KEY_RE.search(str(k)) else _redact_sensitive(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_sensitive(v) for v in value]
+    if isinstance(value, str):
+        text = re.sub(r"(?i)(cookie|sessionid|sessionId|uid|token|authorization|auth|need_propagation)([\s:=\"]+)([^&;\s,}]+)", r"\1\2[redacted]", value)
+        text = re.sub(r"(?i)(Cookie|Authorization):\s*[^\r\n]+", r"\1: [redacted]", text)
+        return text
+    return value
+
+
+def _safe_body_sample(url: str, post_data: str | None, limit: int = 2000) -> str | None:
+    if post_data is None:
+        return None
+    if _is_analytics_endpoint(url):
+        return "[redacted analytics payload]"
+    try:
+        data = json.loads(post_data)
+        return _safe_text(json.dumps(_redact_sensitive(data), ensure_ascii=False), limit)
+    except Exception:
+        return _safe_text(_redact_sensitive(post_data), limit)
 
 
 def _json_probe(text: str | None, requested_city: str | None) -> dict:
@@ -116,7 +149,7 @@ def _network_summary(requests: list[dict], responses: list[dict], failures: list
     response_with_options = any((r.get("json_probe") or {}).get("contains_requested_city") and ((r.get("json_probe") or {}).get("item_count") or 0) > 0 for r in responses)
     reason = "unknown"
     if not requests:
-        reason = "no_request_sent"
+        reason = "autocomplete_request_not_triggered"
     elif failures:
         reason = "request_failed"
     elif any(400 <= (r.get("status") or 0) < 500 for r in responses):
@@ -169,7 +202,8 @@ class TutuAutocompleteNetworkCapture:
         post = self._request_payload(request)
         if not self._request_relevant(request, post): return
         rid = self._rid(request); self._started[rid]=time.monotonic()
-        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(getattr(request,"url",None) or ""), "endpoint": _endpoint(getattr(request,"url",None) or ""), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_text(post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(getattr(request,"url",None), post, city=self.requested_city)}
+        raw_url = getattr(request,"url",None) or ""
+        item={"timestamp": datetime.now(timezone.utc).isoformat(), "field_name": self.field_name, "requested_city": self.requested_city, "method": getattr(request,"method",None), "url": _safe_url(raw_url), "endpoint": _endpoint(raw_url), "resource_type": getattr(request,"resource_type",None), "post_data_sample": _safe_body_sample(raw_url, post, 2000), "request_headers_safe": _safe_headers(getattr(request,"headers",{}) or {}), "stage": self.stage, "request_id": rid, "contains_requested_city": _network_contains_city(raw_url, post, city=self.requested_city), "diagnostics_redaction_applied": True}
         self.requests.append(item); logger.info("tutu_autocomplete_request", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": item["method"], "endpoint": item["endpoint"], "status": None, "elapsed_ms": None, "response_item_count": None, "contains_requested_city": item["contains_requested_city"], "probable_failure_reason": None})
     async def _on_response(self, response):
         request = response.request; rid = self._rid(request)
@@ -178,11 +212,11 @@ class TutuAutocompleteNetworkCapture:
         body_sample=None; body_size=None; body_read_error=None
         if not re.search(r"(image|font|octet-stream|zip|pdf|protobuf)", ctype, re.I):
             try:
-                body = await response.text(); body_size=len(body.encode("utf-8")); body_sample=body[:AUTOCOMPLETE_BODY_SAMPLE_LIMIT]
+                body = await response.text(); body_size=len(body.encode("utf-8")); body_sample=_safe_body_sample(getattr(response,"url",None) or "", body, AUTOCOMPLETE_BODY_SAMPLE_LIMIT)
             except Exception as exc: body_read_error=type(exc).__name__
         probe = _json_probe(body_sample, self.requested_city)
         elapsed = int((time.monotonic()-self._started.get(rid, time.monotonic()))*1000)
-        item={"request_id": rid, "status": getattr(response,"status",None), "status_text": getattr(response,"status_text",None), "url": _safe_url(getattr(response,"url",None) or ""), "content_type": ctype, "response_headers_safe": _safe_headers(headers), "elapsed_ms": elapsed, "body_sample": body_sample, "body_size": body_size, "body_read_error": body_read_error, "json_probe": probe}
+        item={"request_id": rid, "status": getattr(response,"status",None), "status_text": getattr(response,"status_text",None), "url": _safe_url(getattr(response,"url",None) or ""), "content_type": ctype, "response_headers_safe": _safe_headers(headers), "elapsed_ms": elapsed, "body_sample": body_sample, "body_size": body_size, "body_read_error": body_read_error, "json_probe": probe, "diagnostics_redaction_applied": True}
         self.responses.append(item); logger.info("tutu_autocomplete_response", extra={"field_name": self.field_name, "requested_city": self.requested_city, "method": None, "endpoint": _endpoint(item["url"]), "status": item["status"], "elapsed_ms": elapsed, "response_item_count": probe.get("item_count"), "contains_requested_city": probe.get("contains_requested_city"), "probable_failure_reason": None})
     def _on_request_failed(self, request):
         post = self._request_payload(request)
@@ -236,6 +270,7 @@ def _ensure_station_diagnostics(diagnostics: dict | None):
     diagnostics.setdefault("autocomplete_responses", {})
     diagnostics.setdefault("autocomplete_request_failures", {})
     diagnostics.setdefault("network_summary", {})
+    diagnostics["diagnostics_redaction_applied"] = True
     return diagnostics
 
 
@@ -725,6 +760,108 @@ async def _fail_location_not_found_with_step(page, field_name: str, city_name: s
     await _fail_location_not_found(page, field_name, city_name)
 
 
+
+async def _active_element_snapshot(page) -> dict | None:
+    try:
+        return await page.evaluate("""() => { const el = document.activeElement; return el ? {tag_name: el.tagName.toLowerCase(), name: el.getAttribute('name'), id: el.id || null, class: el.getAttribute('class'), value: el.value || el.textContent || ''} : null; }""")
+    except Exception:
+        return None
+
+
+async def _service_fields_snapshot(textbox, field_name: str) -> dict:
+    class_hint = "from" if field_name == "origin" else "to"
+    script = """
+    (el, classHint) => {
+        const safe = value => (value || '').toString().slice(0, 300);
+        const root = el.closest('form') || el.closest('[class*=station]') || el.parentElement || document;
+        const wanted = /(station.*(from|to)|schedule_station|data-station-id|station_id|station_code)/i;
+        const nodes = Array.from(root.querySelectorAll('input[type=hidden], input[name], [data-station-id], [data-station-code]')).filter(node => {
+            const attrs = [node.name, node.id, node.className, node.getAttribute('data-station-id'), node.getAttribute('data-station-code')].join(' ');
+            return wanted.test(attrs) && (!/(from|to)/i.test(attrs) || new RegExp(classHint, 'i').test(attrs));
+        }).slice(0, 20);
+        return nodes.map((node, index) => ({index, name: safe(node.name), id: safe(node.id), class: safe(node.className), type: safe(node.type), value: safe(node.value), data_station_id: safe(node.getAttribute('data-station-id')), data_station_code: safe(node.getAttribute('data-station-code'))}));
+    }
+    """
+    try:
+        return {"fields": await textbox.evaluate(script, class_hint)}
+    except Exception:
+        return {"fields": []}
+
+
+def _service_fields_changed(before: dict | None, after: dict | None) -> bool:
+    return json.dumps(before or {}, sort_keys=True, ensure_ascii=False) != json.dumps(after or {}, sort_keys=True, ensure_ascii=False) and bool((after or {}).get("fields"))
+
+
+async def _install_keyboard_event_counters(textbox) -> dict:
+    try:
+        return await textbox.evaluate("""el => {
+            el.__tutuPwKeyboardCounters = {keydown:0, keyup:0, input:0, change:0};
+            ['keydown','keyup','input','change'].forEach(type => el.addEventListener(type, () => { el.__tutuPwKeyboardCounters[type] += 1; }));
+            return el.__tutuPwKeyboardCounters;
+        }""")
+    except Exception:
+        return {"keydown": 0, "keyup": 0, "input": 0, "change": 0}
+
+
+async def _keyboard_event_counters(textbox) -> dict:
+    try:
+        return await textbox.evaluate("el => el.__tutuPwKeyboardCounters || {keydown:0, keyup:0, input:0, change:0}")
+    except Exception:
+        return {"keydown": 0, "keyup": 0, "input": 0, "change": 0}
+
+
+async def _type_station_like_user(page, textbox, city_name: str, step: dict, network_capture: TutuAutocompleteNetworkCapture):
+    await _install_keyboard_event_counters(textbox)
+    step["active_element_before_typing"] = await _active_element_snapshot(page)
+    logger.info("tutu_station_typing_started", extra={"field_name": step.get("field_name"), "requested_city": city_name})
+    try:
+        if hasattr(textbox, "click"):
+            await textbox.click(timeout=3000)
+        elif hasattr(textbox, "focus"):
+            await textbox.focus()
+    except Exception:
+        pass
+    try: await textbox.press("Control+A")
+    except Exception: pass
+    try: await textbox.press("Backspace")
+    except Exception: pass
+    network_capture.stage = "after_keyboard_typing"
+    step["typing_strategy"] = "press_sequentially"
+    try:
+        if hasattr(textbox, "press_sequentially"):
+            await textbox.press_sequentially(city_name, delay=80)
+        elif hasattr(textbox, "type"):
+            await textbox.type(city_name, delay=80)
+        else:
+            raise AttributeError("no keyboard typing API")
+        step["characters_typed"] = len(city_name)
+    except Exception:
+        step["typing_strategy"] = "keyboard_insert_text_with_keyup_fallback"
+        try:
+            await page.keyboard.insert_text(city_name)
+        except Exception:
+            if hasattr(textbox, "press"):
+                if hasattr(textbox, "value"):
+                    textbox.value = ""
+                for ch in city_name:
+                    await textbox.press(ch)
+                    if hasattr(textbox, "value"):
+                        textbox.value += ch
+                    if hasattr(page, "autocomplete_open"):
+                        page.autocomplete_open = True
+            else:
+                await textbox.evaluate("el => { el.value = ''; }")
+                for ch in city_name:
+                    await textbox.evaluate("(el, ch) => { el.value += ch; el.dispatchEvent(new InputEvent('input', {bubbles:true, data: ch, inputType:'insertText'})); }", ch)
+        try: await textbox.dispatch_event("keyup")
+        except Exception: pass
+        step["characters_typed"] = len(city_name)
+    for ch in city_name:
+        logger.info("tutu_station_character_typed", extra={"field_name": step.get("field_name"), "requested_city": city_name, "character": ch})
+    counters = await _keyboard_event_counters(textbox)
+    step["keydown_count"] = counters.get("keydown", 0); step["keyup_count"] = counters.get("keyup", 0); step["input_event_count"] = counters.get("input", 0); step["change_event_count"] = counters.get("change", 0)
+    step["active_element_after_typing"] = await _active_element_snapshot(page)
+
 async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None):
     diagnostics = _ensure_station_diagnostics(diagnostics)
     step = {
@@ -737,6 +874,19 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         "value_after_blur": None,
         "station_selected": False,
         "failure_reason": None,
+        "typing_strategy": None,
+        "characters_typed": 0,
+        "keydown_count": 0,
+        "keyup_count": 0,
+        "input_event_count": 0,
+        "change_event_count": 0,
+        "active_element_before_typing": None,
+        "active_element_after_typing": None,
+        "autocomplete_request_triggered": False,
+        "service_fields_before_typing": None,
+        "service_fields_after_typing": None,
+        "service_fields_after_selection": None,
+        "diagnostics_redaction_applied": True,
         "clicked_candidate": None,
         "textbox_ref": textbox,
         "artifacts_ref": artifacts,
@@ -752,13 +902,10 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     step["textbox_value_before_typing"] = await _textbox_value(textbox)
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_before_typing"]})
 
-    network_capture.stage = "after_typing"
-    await textbox.fill(city_name)
-    try:
-        await textbox.evaluate("""(el, value) => { el.value = value; el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value})); el.dispatchEvent(new Event('change', {bubbles: true})); }""", city_name)
-    except Exception:
-        pass
+    step["service_fields_before_typing"] = await _service_fields_snapshot(textbox, field_name)
+    await _type_station_like_user(page, textbox, city_name, step, network_capture)
     step["textbox_value_after_typing"] = await _textbox_value(textbox)
+    step["service_fields_after_typing"] = await _service_fields_snapshot(textbox, field_name)
     await _save_step_artifact(page, f"{field_name}_after_typing", artifacts)
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_after_typing"]})
 
@@ -770,6 +917,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
         options = await _candidate_options_for_input(page, textbox, field_name)
         count = await _visible_locator_count(options)
         if count:
+            break
+        if network_capture.requests or _service_fields_changed(step.get("service_fields_before_typing"), await _service_fields_snapshot(textbox, field_name)):
             break
         await asyncio.sleep(0.2)
     step["value_after_waiting_for_autocomplete"] = await _textbox_value(textbox)
@@ -803,6 +952,11 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": candidate_texts})
     network_payload = network_capture.diagnostics(popup_rendered=bool(count or candidates or (discovery.get("options") or [])))
     step.update(network_payload)
+    step["autocomplete_request_triggered"] = bool((network_payload.get("network_summary") or {}).get("relevant_requests"))
+    if step["autocomplete_request_triggered"]:
+        logger.info("tutu_autocomplete_request_triggered", extra={"field_name": field_name, "requested_city": city_name})
+    else:
+        logger.info("tutu_autocomplete_not_triggered", extra={"field_name": field_name, "requested_city": city_name})
     if diagnostics is not None:
         diagnostics["network_events"][field_name] = _limit_diagnostic(network_payload["network_events"])
         diagnostics["autocomplete_requests"][field_name] = _limit_diagnostic(network_payload["autocomplete_requests"])
@@ -817,12 +971,14 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     if matches:
         rank, _index, text, option, _matched = matches[0]
         step["clicked_candidate"] = text
+        logger.info("tutu_station_option_found", extra={"field_name": field_name, "requested_city": city_name, "selected_candidate": text})
         network_capture.stage = "before_click"
         await _save_step_artifact(page, f"{field_name}_before_click", artifacts)
         await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
         network_capture.stage = "after_click"
         logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
         step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
+        step["service_fields_after_selection"] = await _service_fields_snapshot(textbox, field_name)
         await _save_step_artifact(page, f"{field_name}_after_click", artifacts)
     else:
         network_capture.stage = "before_click"
@@ -847,17 +1003,18 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     if not clicked_persisted or not city_persisted:
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "selected_value_not_persisted")
     closed = await _autocomplete_is_closed(page)
-    stable = final_value == await _textbox_value(textbox)
-    if not closed and not stable:
+    service_changed = _service_fields_changed(step.get("service_fields_before_typing"), step.get("service_fields_after_selection"))
+    option_clicked = bool(step.get("clicked_candidate"))
+    if not (option_clicked or service_changed):
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "selection_not_confirmed")
-    step["selection_confirmation"] = "autocomplete_closed" if closed else "stable_value_after_blur"
+    step["selection_confirmation"] = "option_clicked_and_popup_closed" if option_clicked and closed else ("hidden_station_field_changed" if service_changed else "option_clicked")
     step["station_selected"] = True
     step.pop("textbox_ref", None)
     step.pop("artifacts_ref", None)
     step.pop("network_capture_ref", None)
     network_capture.detach()
     await _finish_station_step(diagnostics, field_name, step)
-    _station_log("station_selection_verified", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
+    _station_log("tutu_station_selection_verified", {**step, "current_textbox_value": final_value}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
     return final_value
 
 class TTLCache:
