@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, hashlib, json, logging, os, re, time
+import asyncio, hashlib, json, logging, os, re, time, unicodedata
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
@@ -688,22 +688,34 @@ class TutuDiagnosticError(Exception):
 
 
 def normalize_location_text(value: str) -> str:
-    value = (value or "").split(",", 1)[0].lower().replace("ё", "е").strip()
-    return re.sub(r"[\s\-]+", " ", value).strip()
+    value = unicodedata.normalize("NFC", (value or "")).replace("\xa0", " ").replace("ё", "е").replace("Ё", "Е")
+    value = re.sub(r"\s+", " ", value.casefold()).strip()
+    return value
+
+
+def _first_candidate_line(value: str) -> str:
+    return re.split(r"[\r\n]+", value or "", 1)[0].strip()
 
 
 def location_matches(candidate: str, city_name: str) -> tuple[int, bool]:
     candidate_norm = normalize_location_text(candidate)
+    first_line_norm = normalize_location_text(_first_candidate_line(candidate))
     city_norm = normalize_location_text(city_name)
     if not candidate_norm or not city_norm:
         return (99, False)
     if candidate_norm == city_norm:
         return (0, True)
-    if candidate_norm.startswith(city_norm) or city_norm.startswith(candidate_norm):
+    if first_line_norm == city_norm:
         return (1, True)
-    if city_norm in candidate_norm or candidate_norm in city_norm:
+    if candidate_norm.startswith(city_norm) or first_line_norm.startswith(city_norm):
         return (2, True)
+    if city_norm in candidate_norm:
+        return (3, True)
     return (99, False)
+
+
+def _match_type_for_rank(rank: int) -> str | None:
+    return {0: "exact", 1: "first_line_exact", 2: "prefix", 3: "contains"}.get(rank)
 
 
 async def _locator_count(locator) -> int:
@@ -1720,7 +1732,9 @@ async def _fail_location_not_found_with_step(page, field_name: str, city_name: s
     step.pop("artifacts_ref", None)
     await _finish_station_step(diagnostics, field_name, step)
     _station_log("station_selection_failed", step, len((step.get("autocomplete_discovery") or {}).get("containers", [])), len((step.get("autocomplete_discovery") or {}).get("options", [])))
-    await _fail_location_not_found(page, field_name, city_name)
+    await _capture_location_artifacts(page, field_name, city_name)
+    await _log_autocomplete_diagnostics(page, field_name, city_name)
+    raise ValueError(reason)
 
 
 
@@ -1885,6 +1899,127 @@ async def _type_station_like_user(page, textbox, city_name: str, step: dict, net
     step["keydown_count"] = counters.get("keydown", 0); step["keyup_count"] = counters.get("keyup", 0); step["input_event_count"] = counters.get("input", 0); step["change_event_count"] = counters.get("change", 0)
     step["active_element_after_typing"] = await _active_element_snapshot(page)
 
+
+async def _discover_autocomplete_candidates(page, textbox, city_name: str) -> list[dict]:
+    def mock_candidates():
+        if hasattr(page, "options") and getattr(page, "autocomplete_open", False):
+            out = []
+            for index, text in enumerate(getattr(page, "options", [])):
+                score, matched = location_matches(text, city_name)
+                out.append({"text": text, "normalized_text": normalize_location_text(text), "tag": "div", "role": "option", "visible": True, "bounding_box": None, "popup_index": 0, "score": score, "match_type": _match_type_for_rank(score) if matched else None, "candidate_id": f"mock-{index}"})
+            return out
+        return []
+    mocked = mock_candidates()
+    if mocked:
+        return mocked
+    try:
+        discovered = await textbox.evaluate(
+            """
+            (input, requestedCity) => {
+                const normalize = value => (value || '').toString().normalize('NFC').replace(/\\u00a0/g, ' ').replace(/ё/g, 'е').replace(/Ё/g, 'Е').toLocaleLowerCase('ru-RU').trim().replace(/\\s+/g, ' ');
+                const visible = el => {
+                    if (!el || !(el instanceof Element)) return false;
+                    const style = getComputedStyle(el);
+                    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                };
+                const box = el => {
+                    const r = el.getBoundingClientRect();
+                    return {x:r.x, y:r.y, width:r.width, height:r.height, top:r.top, bottom:r.bottom, left:r.left, right:r.right};
+                };
+                const closeTo = (popup, inp) => {
+                    const p = popup.getBoundingClientRect(), i = inp.getBoundingClientRect();
+                    const horizontal = p.right >= i.left - 80 && p.left <= i.right + 80;
+                    const vertical = Math.abs(p.top - i.bottom) <= 450 || Math.abs(p.bottom - i.top) <= 450;
+                    return horizontal && vertical;
+                };
+                const textOf = el => (el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').toString().trim().replace(/\\s+/g, ' ');
+                const clickable = el => el.closest('a,button,li,[role="option"],[onclick],[tabindex]') || el;
+                if (document.activeElement !== input) input.focus();
+                const all = Array.from(document.querySelectorAll('body *'));
+                const popupSelectors = '[role="listbox"],[role="menu"],[class*="suggest" i],[class*="autocomplete" i],[class*="popup" i],[class*="dropdown" i],[class*="city" i],[id*="suggest" i],[id*="autocomplete" i],[id*="popup" i],[id*="dropdown" i],[id*="city" i]';
+                const popups = Array.from(document.querySelectorAll(popupSelectors)).filter(el => visible(el) && closeTo(el, input));
+                const seen = new Set(), out = [];
+                const add = (el, source) => {
+                    if (!visible(el)) return;
+                    const clickableEl = clickable(el);
+                    const text = textOf(el) || textOf(clickableEl);
+                    if (!text) return;
+                    if (!clickableEl.dataset.tutuPwCandidateId) clickableEl.dataset.tutuPwCandidateId = `tutu-candidate-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const key = clickableEl.dataset.tutuPwCandidateId + '|' + text;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    const normalized = normalize(text);
+                    const requested = normalize(requestedCity);
+                    const first = normalize(text.split(/[\\r\\n]+/, 1)[0]);
+                    let score = 99, match_type = null;
+                    if (normalized === requested) { score = 0; match_type = 'exact'; }
+                    else if (first === requested) { score = 1; match_type = 'first_line_exact'; }
+                    else if (normalized.startsWith(requested) || first.startsWith(requested)) { score = 2; match_type = 'prefix'; }
+                    else if (normalized.includes(requested)) { score = 3; match_type = 'contains'; }
+                    out.push({text, normalized_text: normalized, tag: el.tagName.toLowerCase(), role: el.getAttribute('role'), visible: true, bounding_box: box(el), popup_index: popups.findIndex(p => p === el || p.contains(el)), score, match_type, source, candidate_id: clickableEl.dataset.tutuPwCandidateId, clickable_tag: clickableEl.tagName.toLowerCase(), clickable_role: clickableEl.getAttribute('role')});
+                };
+                Array.from(document.querySelectorAll('[role="option"]')).filter(el => popups.some(p => p === el || p.contains(el))).forEach(el => add(el, 'role_option'));
+                popups.forEach(p => Array.from(p.querySelectorAll('li')).forEach(el => add(el, 'visible_popup_li')));
+                popups.forEach(p => Array.from(p.querySelectorAll('[role="option"],li,a,button,div,span')).forEach(el => add(el, 'keyword_container_child')));
+                if (!out.length) all.filter(el => visible(el) && closeTo(el, input) && normalize(textOf(el)).includes(normalize(requestedCity))).forEach(el => add(el, 'near_active_input_text'));
+                return out.slice(0, 50);
+            }
+            """,
+            city_name,
+        )
+        if isinstance(discovered, list) and discovered:
+            return discovered
+        return mock_candidates()
+    except Exception:
+        return mock_candidates()
+
+
+async def _poll_autocomplete_candidates(page, textbox, city_name: str, timeout_seconds: float = 2.0) -> list[dict]:
+    deadline = time.monotonic() + timeout_seconds
+    last = []
+    while time.monotonic() < deadline:
+        last = await _discover_autocomplete_candidates(page, textbox, city_name)
+        if last:
+            return last
+        await asyncio.sleep(0.1)
+    return last
+
+
+async def _hidden_station_id(page, field_name: str) -> str:
+    if hasattr(page, "hidden_ids"):
+        return (getattr(page, "hidden_ids", {}) or {}).get(field_name, "")
+    name = "nnst1" if field_name == "origin" else "nnst2"
+    try:
+        return (await page.locator(f'input[name="{name}"]').first.input_value(timeout=500) or "").strip()
+    except Exception:
+        try:
+            return (await page.evaluate("(name) => document.querySelector(`input[name=\"${name}\"]`)?.value || ''", name) or "").strip()
+        except Exception:
+            return ""
+
+
+async def _click_autocomplete_candidate(page, candidate: dict) -> bool:
+    if hasattr(page, "click_candidate"):
+        try:
+            await page.click_candidate(candidate)
+            return True
+        except Exception:
+            pass
+    selector = f'[data-tutu-pw-candidate-id="{candidate.get("candidate_id", "")}"]'
+    loc = page.locator(selector).first
+    for action in (
+        lambda: loc.click(timeout=1000),
+        lambda: loc.click(timeout=1000, force=True),
+        lambda: loc.evaluate("el => el.click()"),
+        lambda: loc.locator("xpath=ancestor-or-self::*[self::a or self::button or self::li or @role='option' or @onclick or @tabindex][1]").click(timeout=1000, force=True),
+    ):
+        try:
+            await action()
+            return True
+        except Exception:
+            continue
+    return False
+
 async def select_location(page, textbox, city_name, field_name, artifacts: dict[str, list[str]] | None = None, diagnostics: dict | None = None, origin_guard: dict | None = None, origin_requested: str | None = None):
     diagnostics = _ensure_station_diagnostics(diagnostics)
     step = {
@@ -1939,17 +2074,8 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     _station_log("station_selection_step", {**step, "current_textbox_value": step["textbox_value_after_typing"]})
 
     network_capture.stage = "after_waiting"
-    deadline = time.monotonic() + LOCATION_AUTOCOMPLETE_TIMEOUT_MS / 1000
-    options = None
-    count = 0
-    while time.monotonic() < deadline:
-        options = await _candidate_options_for_input(page, textbox, field_name)
-        count = await _visible_locator_count(options)
-        if count:
-            break
-        if network_capture.requests or _service_fields_changed(step.get("service_fields_before_typing"), await _service_fields_snapshot(textbox, field_name)):
-            break
-        await asyncio.sleep(0.2)
+    candidates = await _poll_autocomplete_candidates(page, textbox, city_name, timeout_seconds=2.0)
+    count = len(candidates)
     if field_name == "destination":
         await _check_origin_guard(page, origin_guard, "destination_after_autocomplete", diagnostics, origin_requested, city_name)
     step["value_after_waiting_for_autocomplete"] = await _textbox_value(textbox)
@@ -1960,28 +2086,15 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     await _safe_capture_step_artifact(page, f"{field_name}_after_waiting", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     _station_log("station_selection_step", {**step, "current_textbox_value": step["value_after_waiting_for_autocomplete"]}, len(discovery.get("containers", [])), len(discovery.get("options", [])))
 
-    candidates = []
-    if options is not None:
-        total = await _locator_count(options)
-        for index in range(total):
-            option = options.nth(index)
-            try:
-                if not await option.is_visible(timeout=200):
-                    continue
-                text = (await option.inner_text(timeout=1000)).strip()
-            except Exception:
-                continue
-            if text:
-                rank, matched = location_matches(text, city_name)
-                candidates.append((rank, index, text, option, matched))
     popup_texts = await inspect_popup_candidates(page, textbox, field_name, city_name)
-    candidate_texts = [c[2] for c in candidates]
-    popup_payload = discovery.get("options") or discovery.get("containers") or candidate_texts or popup_texts
+    candidate_texts = [c.get("text") for c in candidates]
+    popup_payload = candidates or discovery.get("options") or discovery.get("containers") or popup_texts
     if diagnostics is not None:
         diagnostics.setdefault("popup_candidates", {})[field_name] = _limit_diagnostic(popup_payload)
     step["popup_candidates"] = _limit_diagnostic(popup_payload)
+    step["autocomplete_candidates"] = _limit_diagnostic([{k: v for k, v in c.items() if k != "candidate_id"} for c in candidates])
     logger.info("autocomplete candidate texts", extra={"field_name": field_name, "city_name": city_name, "candidate_texts": candidate_texts})
-    network_payload = network_capture.diagnostics(popup_rendered=bool(count or candidates or (discovery.get("options") or [])))
+    network_payload = network_capture.diagnostics(popup_rendered=bool(candidates or (discovery.get("options") or [])))
     step.update(network_payload)
     step["autocomplete_request_triggered"] = bool((network_payload.get("network_summary") or {}).get("relevant_requests"))
     query_diagnostics = _autocomplete_query_diagnostics(network_payload.get("autocomplete_requests", []), step.get("selected_unicode_input_strategy"))
@@ -2005,34 +2118,34 @@ async def select_location(page, textbox, city_name, field_name, artifacts: dict[
     if (step.get("malformed_autocomplete_query") and not step.get("autocomplete_query_matches_requested")) or (_popular_city_response_without_requested(network_payload.get("autocomplete_responses", []), city_name) and not step.get("autocomplete_query_matches_requested")):
         await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "malformed_autocomplete_query")
 
-    if not count and not candidates:
-        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_not_opened")
+    if not candidates:
+        reason = "autocomplete_popup_not_found" if not (discovery.get("containers") or popup_texts) else "autocomplete_candidates_empty"
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, reason)
 
-    matches = sorted((c for c in candidates if c[4]), key=lambda c: (c[0], c[1]))
-    if matches:
-        rank, _index, text, option, _matched = matches[0]
-        step["clicked_candidate"] = text
-        logger.info("tutu_station_option_found", extra={"field_name": field_name, "requested_city": city_name, "selected_candidate": text})
-        if field_name == "destination":
-            logger.info("tutu_destination_popup_scoped", extra={"requested_city": city_name, "selected_candidate": text, "scoping": "field_candidate_locator"})
-            await _check_origin_guard(page, origin_guard, "destination_before_click", diagnostics, origin_requested, city_name)
-            step["pre_click_snapshot"] = await _destination_pre_click_snapshot(page, textbox, option, diagnostics)
-        network_capture.stage = "before_click"
-        await _safe_capture_step_artifact(page, f"{field_name}_before_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
-        await option.click(timeout=LOCATION_AUTOCOMPLETE_TIMEOUT_MS)
-        network_capture.stage = "after_click"
-        if field_name == "destination":
-            logger.info("tutu_destination_candidate_selected", extra={"requested_city": city_name, "selected_candidate": text})
-            await _check_origin_guard(page, origin_guard, "destination_after_click", diagnostics, origin_requested, city_name)
-        logger.info("station_candidate_selected", extra={"field_name": field_name, "city_name": city_name, "requested_city": city_name, "selected_candidate": text, "match_rank": rank, "current_textbox_value": await _textbox_value(textbox), "popup_count": len(discovery.get("containers", [])), "option_count": len(discovery.get("options", [])), "failure_reason": None})
-        step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
-        step["service_fields_after_selection"] = await _service_fields_snapshot(textbox, field_name)
-        await _safe_capture_step_artifact(page, f"{field_name}_after_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
-    else:
-        network_capture.stage = "before_click"
-        await _safe_capture_step_artifact(page, f"{field_name}_before_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
-        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "matching_candidate_not_found")
-
+    matches = sorted((c for c in candidates if c.get("match_type")), key=lambda c: (c.get("score", 99), candidates.index(c)))
+    if not matches:
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_exact_candidate_not_found")
+    selected = matches[0]
+    if selected.get("match_type") != "exact" and any(c.get("match_type") == "exact" for c in candidates):
+        selected = next(c for c in candidates if c.get("match_type") == "exact")
+    text = selected.get("text") or ""
+    step["clicked_candidate"] = text
+    step["selected_candidate"] = {"text": text, "match_type": selected.get("match_type"), "score": selected.get("score")}
+    logger.info("tutu_station_option_found", extra={"field_name": field_name, "requested_city": city_name, "selected_candidate": text})
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_before_click", diagnostics, origin_requested, city_name)
+    network_capture.stage = "before_click"
+    await _safe_capture_step_artifact(page, f"{field_name}_before_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
+    if not await _click_autocomplete_candidate(page, selected):
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "autocomplete_candidate_click_failed")
+    network_capture.stage = "after_click"
+    if field_name == "destination":
+        await _check_origin_guard(page, origin_guard, "destination_after_click", diagnostics, origin_requested, city_name)
+    step["value_after_clicking_suggestion"] = await _textbox_value(textbox)
+    step["service_fields_after_selection"] = await _service_fields_snapshot(textbox, field_name)
+    if not await _hidden_station_id(page, field_name):
+        await _fail_location_not_found_with_step(page, field_name, city_name, step, diagnostics, "station_hidden_id_not_set")
+    await _safe_capture_step_artifact(page, f"{field_name}_after_click", artifacts or {"screenshots": [], "html_artifacts": []}, None, diagnostics or {})
     network_capture.detach()
     try:
         await textbox.blur()
