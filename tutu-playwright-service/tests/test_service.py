@@ -1,8 +1,10 @@
 import pytest
 import time
+from datetime import date
 from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.service import service
+from app.models import AvailabilityCheckRequest
 
 @pytest.mark.asyncio
 async def test_health():
@@ -1317,3 +1319,84 @@ async def test_error_artifacts_skipped_when_budget_below_reserve():
 
     assert diagnostics["artifacts_capture_skipped"] is True
     assert diagnostics["artifacts_capture_skip_reason"] == "error_artifact_capture_skipped_due_to_deadline"
+
+class ContractRoutePage(RoutePage):
+    def __init__(self, method="get", request_submit_changes=True, body_text="места билеты"):
+        super().__init__(submit_buttons={"#idstationsearch_submit_button_input": [], "fallback": []})
+        self.method = method
+        self.request_submit_changes = request_submit_changes
+        self.body_text = body_text
+        self.goto_calls = []
+        self.evaluate_calls = []
+
+    async def evaluate(self, script, *args):
+        self.evaluate_calls.append(script)
+        if "document.forms).map" in script:
+            return {
+                "page_url": self.url,
+                "forms": [{"index": 0, "id": "route", "name": "route", "action": "https://www.tutu.ru/poezda/search/", "method": self.method, "input_names": ["schedule_station_from", "schedule_station_to", "nnst1", "nnst2", "date"], "submit_controls": []}],
+                "route_inputs": [{"name": "schedule_station_from"}, {"name": "schedule_station_to"}],
+                "hidden_station_fields": [{"name": "nnst1"}, {"name": "nnst2"}],
+                "candidate_route_forms": [0],
+            }
+        if "const form = Array.from(document.forms).find" in script and "fields =" in script:
+            return {
+                "found": True,
+                "action": "https://www.tutu.ru/poezda/search/",
+                "method": self.method,
+                "fields": [
+                    {"name": "schedule_station_from", "value": "Москва"},
+                    {"name": "schedule_station_to", "value": "Рязань"},
+                    {"name": "nnst1", "value": "2000000"},
+                    {"name": "nnst2", "value": "2000125"},
+                    {"name": "date", "value": "01.08.2026"},
+                ],
+                "required_fields_present": True,
+                "station_ids": {"origin": "2000000", "destination": "2000125"},
+                "page_url": self.url,
+            }
+        if "form.requestSubmit" in script:
+            if self.request_submit_changes:
+                self.url = "https://www.tutu.ru/poezda/search/?submitted=1"
+            return {"ok": True, "method": self.method}
+        return None
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_calls.append(url)
+        self.url = url
+        self.body_text = "места билеты"
+        return None
+
+
+@pytest.mark.asyncio
+async def test_open_results_uses_request_submit_without_submit_button(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "route_open_deadline_seconds", 2)
+    page = ContractRoutePage(method="post", request_submit_changes=True)
+    req = AvailabilityCheckRequest(origin="Москва", destination="Рязань", departure_date=date(2026, 8, 1))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}, "popup_candidates": {}, "autocomplete_discovery": {}}
+
+    result = await service_module.open_tutu_results_page(page, req, diagnostics, time.monotonic() + 3)
+
+    assert result["status"] == "results"
+    assert result["strategy"] == "form_request_submit"
+    assert diagnostics["route_open_attempts"][0]["strategy"] == "form_request_submit"
+    assert page.clicked == []
+    assert not any("route_submit_button_not_found" in str(a) for a in diagnostics["route_open_attempts"])
+
+
+@pytest.mark.asyncio
+async def test_open_results_falls_back_to_direct_get_from_actual_fields(monkeypatch):
+    from app import service as service_module
+    monkeypatch.setattr(service_module.settings, "route_open_deadline_seconds", 5)
+    page = ContractRoutePage(method="get", request_submit_changes=False, body_text="")
+    req = AvailabilityCheckRequest(origin="Москва", destination="Рязань", departure_date=date(2026, 8, 1))
+    diagnostics = {"selected_inputs": {}, "station_steps": [], "origin_station_selection": {"station_selected": True}, "destination_station_selection": {"station_selected": True}, "popup_candidates": {}, "autocomplete_discovery": {}}
+
+    result = await service_module.open_tutu_results_page(page, req, diagnostics, time.monotonic() + 7)
+
+    assert result["status"] == "results"
+    assert result["strategy"] == "direct_get"
+    assert "schedule_station_from=" in page.goto_calls[0]
+    assert "nnst1=2000000" in page.goto_calls[0]
+    assert diagnostics["direct_route_navigation"]["supported"] is True

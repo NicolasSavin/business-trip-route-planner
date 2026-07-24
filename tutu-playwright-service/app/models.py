@@ -56,6 +56,11 @@ class Diagnostics(BaseModel):
     origin_recovery_count: int | None = None
     origin_guard: dict[str, Any] = Field(default_factory=dict)
     route_form_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    route_form_contract: dict[str, Any] = Field(default_factory=dict)
+    direct_route_navigation: dict[str, Any] = Field(default_factory=dict)
+    route_open_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    tutu_dom_contract: dict[str, Any] = Field(default_factory=dict)
+    tutu_dom_contract_hash: str | None = None
     submit_strategy: str | None = None
     artifacts_capture_skipped: bool | None = None
     artifacts_capture_skip_reason: str | None = None

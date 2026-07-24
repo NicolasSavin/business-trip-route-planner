@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio, hashlib, json, logging, os, re, time
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -71,6 +71,85 @@ def _record_step(diagnostic_payload: dict, name: str, deadline: float | None = N
 
 def _log_post_submit(event: str, req=None, stage: str | None = None, page_url: str | None = None, elapsed_ms: int | None = None, deadline: float | None = None, **extra):
     logger.info(event, extra={"origin": getattr(req, "origin", None), "destination": getattr(req, "destination", None), "train_number": getattr(req, "train_number", None), "stage": stage, "elapsed_ms": elapsed_ms, "remaining_budget_ms": _remaining_ms(deadline), "page_url": page_url, **extra})
+
+
+async def collect_tutu_dom_contract(page, diagnostic_payload: dict | None = None) -> dict:
+    try:
+        snapshot = await page.evaluate(
+            """
+            () => {
+                const safe = v => (v == null ? null : String(v).trim().replace(/\\s+/g, ' ').slice(0, 300));
+                const attrs = el => ({id: safe(el.id), name: safe(el.getAttribute('name')), type: safe(el.getAttribute('type')), value: safe(el.value), tag: el.tagName.toLowerCase()});
+                const forms = Array.from(document.forms).map((form, index) => {
+                    const controls = Array.from(form.querySelectorAll('input,select,textarea,button')).map(attrs);
+                    const submit_controls = controls.filter(c => c.tag === 'button' || c.type === 'submit' || c.type === 'image');
+                    return {
+                        index,
+                        id: safe(form.id),
+                        name: safe(form.getAttribute('name')),
+                        action: safe(form.action || form.getAttribute('action') || location.href),
+                        method: safe((form.method || form.getAttribute('method') || 'get').toLowerCase()),
+                        enctype: safe(form.enctype || form.getAttribute('enctype')),
+                        target: safe(form.target || form.getAttribute('target')),
+                        input_names: controls.map(c => c.name).filter(Boolean),
+                        submit_controls,
+                    };
+                });
+                const routeInputs = Array.from(document.querySelectorAll('input[name="schedule_station_from"],input[name="schedule_station_to"]')).map(attrs);
+                const hiddenStationFields = Array.from(document.querySelectorAll('input[name="nnst1"],input[name="nnst2"]')).map(attrs);
+                const candidate_route_forms = forms.filter(f => ['schedule_station_from','schedule_station_to','nnst1','nnst2'].every(n => f.input_names.includes(n))).map(f => f.index);
+                return {page_url: safe(location.href), forms, route_inputs: routeInputs, hidden_station_fields: hiddenStationFields, candidate_route_forms};
+            }
+            """
+        )
+    except Exception as exc:
+        snapshot = {"page_url": getattr(page, "url", None), "forms": [], "route_inputs": [], "hidden_station_fields": [], "candidate_route_forms": [], "capture_error": type(exc).__name__}
+    hash_payload = json.dumps({"forms":[{"action":f.get("action"),"method":f.get("method"),"input_names":sorted(set(f.get("input_names") or [])),"submit_controls":[{"id":c.get("id"),"type":c.get("type")} for c in f.get("submit_controls") or []]} for f in snapshot.get("forms",[])],"route_input_names":sorted({i.get("name") for i in snapshot.get("route_inputs",[]) if i.get("name")}),"hidden_field_names":sorted({i.get("name") for i in snapshot.get("hidden_station_fields",[]) if i.get("name")})}, sort_keys=True, ensure_ascii=False)
+    snapshot["contract_version_hash"] = hashlib.sha256(hash_payload.encode()).hexdigest()[:16]
+    if diagnostic_payload is not None:
+        previous = diagnostic_payload.get("tutu_dom_contract_hash")
+        diagnostic_payload["tutu_dom_contract"] = _limit_diagnostic(snapshot)
+        diagnostic_payload["tutu_dom_contract_hash"] = snapshot["contract_version_hash"]
+        if previous and previous != snapshot["contract_version_hash"]:
+            diagnostic_payload["terminal_failure_reason"] = "tutu_dom_contract_changed"
+            logger.info("tutu_dom_contract_changed", extra={"old_hash": previous, "new_hash": snapshot["contract_version_hash"]})
+    return snapshot
+
+
+async def detect_route_form_contract(page, diagnostic_payload: dict, origin_id: str | None = None, destination_id: str | None = None) -> dict:
+    contract = await page.evaluate(
+        """
+        () => {
+            const safe = v => (v == null ? null : String(v).trim().replace(/\\s+/g, ' ').slice(0, 500));
+            const form = Array.from(document.forms).find(f => ['schedule_station_from','schedule_station_to','nnst1','nnst2'].every(n => f.querySelector(`[name="${n}"]`)));
+            if (!form) return {found:false, required_fields_present:false, fields:[], station_ids:{origin:null,destination:null}, page_url: location.href};
+            const fields = Array.from(form.querySelectorAll('input,select,textarea,button')).map(el => ({name:safe(el.getAttribute('name')), id:safe(el.id), type:safe(el.getAttribute('type')), tag:el.tagName.toLowerCase(), value:safe(el.value)}));
+            const val = n => { const el = form.querySelector(`[name="${n}"]`); return el ? safe(el.value) : null; };
+            return {found:true, action:safe(form.action || form.getAttribute('action') || location.href), method:safe((form.method || form.getAttribute('method') || 'get').toLowerCase()), enctype:safe(form.enctype || form.getAttribute('enctype')), target:safe(form.target || form.getAttribute('target')), id:safe(form.id), name:safe(form.getAttribute('name')), page_url:location.href, fields, schedule_station_from:val('schedule_station_from'), schedule_station_to:val('schedule_station_to'), nnst1:val('nnst1'), nnst2:val('nnst2'), date_field:(fields.find(f => /date|when/i.test(f.name || '')) || {}).value || null, required_fields_present:['schedule_station_from','schedule_station_to','nnst1','nnst2'].every(n => !!val(n)), station_ids:{origin:val('nnst1'), destination:val('nnst2')}};
+        }
+        """
+    )
+    if origin_id: contract.setdefault("station_ids", {})["origin"] = contract.get("station_ids", {}).get("origin") or origin_id
+    if destination_id: contract.setdefault("station_ids", {})["destination"] = contract.get("station_ids", {}).get("destination") or destination_id
+    diagnostic_payload["route_form_contract"] = _limit_diagnostic(contract)
+    if contract.get("found"):
+        logger.info("tutu_route_form_contract_detected", extra={"method": contract.get("method"), "action": contract.get("action")})
+    else:
+        logger.info("tutu_route_form_contract_missing", extra={"page_url": getattr(page, "url", None)})
+    return contract
+
+
+def _direct_navigation_from_contract(contract: dict) -> dict:
+    method = (contract.get("method") or "get").lower()
+    if not contract.get("found"):
+        return {"supported": False, "method": method, "url": None, "reason": "route_form_contract_not_found"}
+    if method != "get":
+        return {"supported": False, "method": method, "url": None, "reason": "form_method_not_get"}
+    pairs = [(f.get("name"), f.get("value") or "") for f in contract.get("fields", []) if f.get("name")]
+    base = urljoin(contract.get("page_url") or "", contract.get("action") or "")
+    parts = urlsplit(base)
+    query = urlencode(parse_qsl(parts.query, keep_blank_values=True) + pairs, doseq=True)
+    return {"supported": True, "method": method, "url": urlunsplit((parts.scheme, parts.netloc, parts.path, query, "")), "reason": None}
 
 
 async def _safe_capture_step_artifact(page, step: str, artifacts: dict[str, list[str]], deadline: float | None, diagnostic_payload: dict) -> None:
@@ -650,6 +729,11 @@ def _diagnostics_model_kwargs(diagnostic_payload: dict, page_url: str | None = N
         origin_recovery_count=diagnostic_payload.get("origin_recovery_count"),
         origin_guard=diagnostic_payload.get("origin_guard", {}),
         route_form_diagnostics=diagnostic_payload.get("route_form_diagnostics", {}),
+        route_form_contract=diagnostic_payload.get("route_form_contract", {}),
+        direct_route_navigation=diagnostic_payload.get("direct_route_navigation", {}),
+        route_open_attempts=diagnostic_payload.get("route_open_attempts", []),
+        tutu_dom_contract=diagnostic_payload.get("tutu_dom_contract", {}),
+        tutu_dom_contract_hash=diagnostic_payload.get("tutu_dom_contract_hash"),
         submit_strategy=diagnostic_payload.get("submit_strategy"),
         artifacts_capture_skipped=diagnostic_payload.get("artifacts_capture_skipped"),
         artifacts_capture_skip_reason=diagnostic_payload.get("artifacts_capture_skip_reason"),
@@ -1044,6 +1128,94 @@ async def _click_route_submit(page, diagnostic_payload: dict, artifacts: dict[st
         raise ValueError("route_form_submit_failed") from exc
     _record_step(diagnostic_payload, "navigation_wait_started", deadline, "completed", {"url": page.url})
     return "submitted"
+
+
+async def _request_submit_route_form(page, diagnostic_payload: dict, deadline: float | None) -> dict:
+    before = page.url
+    logger.info("tutu_route_form_request_submit_started", extra={"page_url": before})
+    start = time.monotonic()
+    try:
+        result = await asyncio.wait_for(page.evaluate(
+            """
+            () => {
+                const form = Array.from(document.forms).find(f => ['schedule_station_from','schedule_station_to','nnst1','nnst2'].every(n => f.querySelector(`[name="${n}"]`) && f.querySelector(`[name="${n}"]`).value));
+                if (!form) throw new Error('route_form_contract_not_found');
+                if (typeof form.requestSubmit !== 'function') throw new Error('request_submit_not_supported');
+                form.requestSubmit();
+                return {ok:true, action:form.action, method:(form.method || 'get').toLowerCase()};
+            }
+            """), timeout=_bounded_timeout_ms(deadline, 1500)/1000)
+        return {"strategy":"form_request_submit","status":"success","elapsed_ms":int((time.monotonic()-start)*1000),"url_before":before,"url_after":page.url,"error":None,"result":result}
+    except Exception as exc:
+        return {"strategy":"form_request_submit","status":"failed","elapsed_ms":int((time.monotonic()-start)*1000),"url_before":before,"url_after":page.url,"error":str(exc)[:200]}
+    finally:
+        logger.info("tutu_route_form_request_submit_completed", extra={"page_url": page.url, "elapsed_ms": int((time.monotonic()-start)*1000)})
+
+
+async def open_tutu_results_page(page, req, diagnostics: dict, deadline: float | None) -> dict:
+    start = time.monotonic()
+    local_deadline = min(deadline or (time.monotonic() + settings.route_open_deadline_seconds), time.monotonic() + settings.route_open_deadline_seconds)
+    diagnostics.setdefault("route_open_attempts", [])
+    await collect_tutu_dom_contract(page, diagnostics)
+    contract = await detect_route_form_contract(page, diagnostics)
+    direct = _direct_navigation_from_contract(contract)
+    diagnostics["direct_route_navigation"] = direct
+    before = page.url
+    if not contract.get("found") or not contract.get("required_fields_present"):
+        diagnostics["terminal_failure_reason"] = "route_form_contract_not_found"
+        await collect_tutu_dom_contract(page, diagnostics)
+    else:
+        verification = await _verify_route_fields(page, req.origin, req.destination, diagnostics)
+        if normalize_location_text(req.origin) != normalize_location_text(req.destination) and verification["origin"].get("hidden_value") == verification["destination"].get("hidden_value"):
+            diagnostics["terminal_failure_reason"] = "route_field_collision"
+            raise ValueError("route_field_collision")
+        attempt = await _request_submit_route_form(page, diagnostics, local_deadline)
+        diagnostics["route_open_attempts"].append(attempt)
+        diagnostics["submit_strategy"] = "form_request_submit"
+        if attempt["status"] == "success":
+            result = await wait_for_tutu_search_result(page, min(local_deadline, time.monotonic()+3), diagnostics, req)
+            if result["status"] in {"results", "empty", "validation_error"}:
+                outcome = {**result, "strategy":"form_request_submit", "elapsed_ms":int((time.monotonic()-start)*1000)}
+                diagnostics["post_submit_result"] = outcome
+                logger.info("tutu_results_page_opened", extra={"strategy":"form_request_submit", "status":outcome["status"], "page_url":page.url})
+                return outcome
+            diagnostics["terminal_failure_reason"] = "route_form_request_submit_failed"
+    if direct.get("supported") and _remaining_ms(local_deadline) > 1000:
+        logger.info("tutu_direct_route_navigation_started", extra={"url": _safe_url(direct.get("url") or "")})
+        astart=time.monotonic(); ub=page.url
+        try:
+            await page.goto(direct["url"], wait_until="domcontentloaded", timeout=_bounded_timeout_ms(local_deadline, 3000))
+            attempt={"strategy":"direct_get","status":"success","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":None}
+        except Exception as exc:
+            attempt={"strategy":"direct_get","status":"failed","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":str(exc)[:200]}
+        diagnostics["route_open_attempts"].append(attempt)
+        logger.info("tutu_direct_route_navigation_completed", extra=attempt)
+        if attempt["status"] == "success":
+            result = await wait_for_tutu_search_result(page, min(local_deadline, time.monotonic()+3), diagnostics, req)
+            if result["status"] in {"results", "empty", "validation_error"}:
+                outcome={**result,"strategy":"direct_get","elapsed_ms":int((time.monotonic()-start)*1000)}; diagnostics["post_submit_result"]=outcome; logger.info("tutu_results_page_opened", extra={"strategy":"direct_get","status":outcome["status"],"page_url":page.url}); return outcome
+        diagnostics["terminal_failure_reason"] = "direct_route_navigation_failed"
+    if _remaining_ms(local_deadline) > 1000:
+        logger.info("tutu_ui_submit_fallback_started", extra={"page_url": page.url})
+        astart=time.monotonic(); ub=page.url
+        try:
+            await _click_route_submit(page, diagnostics, {"screenshots": [], "html_artifacts": []}, local_deadline, req)
+            attempt={"strategy":"ui_fallback","status":"success","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":None}
+        except Exception as exc:
+            attempt={"strategy":"ui_fallback","status":"failed","elapsed_ms":int((time.monotonic()-astart)*1000),"url_before":ub,"url_after":page.url,"error":str(exc)[:200]}
+        diagnostics["route_open_attempts"].append(attempt)
+        if attempt["status"] == "success":
+            result=await wait_for_tutu_search_result(page, local_deadline, diagnostics, req)
+            if result["status"] in {"results", "empty", "validation_error"}:
+                outcome={**result,"strategy":"ui_fallback","elapsed_ms":int((time.monotonic()-start)*1000)}; diagnostics["post_submit_result"]=outcome; logger.info("tutu_results_page_opened", extra={"strategy":"ui_fallback","status":outcome["status"],"page_url":page.url}); return outcome
+    diagnostics["terminal_failure_reason"] = diagnostics.get("terminal_failure_reason") or "route_results_not_detected"
+    logger.info("tutu_route_open_failed", extra={"terminal_failure_reason": diagnostics["terminal_failure_reason"], "page_url": page.url})
+    return {"status":"failed","strategy":None,"url_before":before,"url_after":page.url,"url_changed":page.url != before,"matched_signals":[],"elapsed_ms":int((time.monotonic()-start)*1000)}
+
+
+async def open_results_with_station_ids(page, req, diagnostics: dict, deadline: float | None, origin_id: str, destination_id: str, origin_name: str, destination_name: str, date) -> dict:
+    diagnostics["known_station_ids"] = {"origin": origin_id, "destination": destination_id, "origin_name": origin_name, "destination_name": destination_name, "date": str(date)}
+    return await open_tutu_results_page(page, req, diagnostics, deadline)
 
 
 async def _capture_location_artifacts(page, field_name: str, city_name: str) -> None:
@@ -1799,6 +1971,7 @@ class TutuAvailabilityService:
         try:
             logger.info("navigating to tutu.ru", extra={"url": "https://www.tutu.ru/poezda/"})
             await page.goto("https://www.tutu.ru/poezda/", wait_until="domcontentloaded", timeout=_bounded_timeout_ms(request_deadline, 6000))
+            await collect_tutu_dom_contract(page, diagnostic_payload)
             frame_infos = [{"url": frame.url, "name": frame.name} for frame in page.frames]
             logger.info("tutu frame inventory", extra={"frame_count": len(frame_infos), "frames": frame_infos})
             if len(page.frames) > 1:
@@ -1858,12 +2031,13 @@ class TutuAvailabilityService:
                     raise
             await _verify_route_fields(page, req.origin, req.destination, diagnostic_payload)
             logger.info("search form filled", extra={"origin": req.origin, "destination": req.destination, "departure_date": req.departure_date.isoformat()})
-            post_submit_deadline = min(request_deadline, time.monotonic() + settings.post_submit_deadline_seconds)
+            post_submit_deadline = min(request_deadline, time.monotonic() + settings.route_open_deadline_seconds)
             capture = PostSubmitNetworkCapture(page, post_submit_deadline).attach()
             try:
-                await _click_route_submit(page, diagnostic_payload, {"screenshots": shots, "html_artifacts": htmls}, post_submit_deadline, req)
+                origin_id = diagnostic_payload.get("route_fields_verification", {}).get("origin", {}).get("hidden_value")
+                destination_id = diagnostic_payload.get("route_fields_verification", {}).get("destination", {}).get("hidden_value")
+                post_result = await open_results_with_station_ids(page, req, diagnostic_payload, post_submit_deadline, origin_id, destination_id, req.origin, req.destination, req.departure_date)
                 logger.info("search submitted")
-                post_result = await wait_for_tutu_search_result(page, post_submit_deadline, diagnostic_payload, req)
             finally:
                 capture.detach()
             _classify_sale_period_collisions(capture.events, req.origin, req.destination, diagnostic_payload)
@@ -1877,7 +2051,7 @@ class TutuAvailabilityService:
             if post_result["status"] == "empty":
                 logger.info("tutu_post_submit_diagnostic_returned", extra={"status": "empty", "page_url": page.url})
                 return AvailabilityCheckResponse(status=AvailabilityStatus.UNKNOWN, matched_train=False, train_number=req.train_number, message="Tutu returned an empty-state for this search", warnings=["availability_status_unconfirmed"], diagnostics=Diagnostics(**_diagnostics_model_kwargs(diagnostic_payload, page.url, shots, htmls)))
-            if post_result["status"] in {"navigation_timeout", "unknown"} or diagnostic_payload.get("deadline_exceeded"):
+            if post_result["status"] in {"navigation_timeout", "unknown", "failed"} or diagnostic_payload.get("deadline_exceeded"):
                 diagnostic_payload["timeout_stage"] = "post_submit_deadline_exceeded" if diagnostic_payload.get("deadline_exceeded") else "navigation_timeout"
                 logger.info("tutu_post_submit_diagnostic_returned", extra={"status": post_result["status"], "timeout_stage": diagnostic_payload["timeout_stage"], "page_url": page.url})
                 raise ValueError(diagnostic_payload["timeout_stage"])
