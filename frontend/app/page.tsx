@@ -43,7 +43,7 @@ import {
   apiBaseUrl,
 } from "@/lib/api";
 import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, RouteSearchResponse, SavedSearch, TransportType } from "@/lib/types";
-import { hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "@/lib/routePresentation";
+import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "@/lib/routePresentation";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -115,7 +115,7 @@ function routeLabel(route: RouteOption, index: number) {
 }
 
 function minSeats(route: RouteOption) {
-  const knownSeats = route.segments.map((segment) => segment.available_seats).filter((value): value is number => value !== null);
+  const knownSeats = route.segments.map((segment) => availableSeatsForSegment(route, segment)).filter((value): value is number => value !== null);
   return knownSeats.length ? Math.min(...knownSeats) : null;
 }
 
@@ -124,7 +124,7 @@ function seatCountLabel(value: number | null) {
 }
 
 function totalSeats(route: RouteOption) {
-  const knownSeats = route.segments.map((segment) => segment.available_seats).filter((value): value is number => value !== null);
+  const knownSeats = route.segments.map((segment) => availableSeatsForSegment(route, segment)).filter((value): value is number => value !== null);
   return knownSeats.length ? knownSeats.reduce((sum, value) => sum + value, 0) : null;
 }
 
@@ -838,6 +838,7 @@ export default function Home() {
                         seatCountLabel(totalSeats(route)),
                       ],
                       [BadgeCheck, "Минимум мест", seatCountLabel(minSeats(route))],
+                      [BadgeCheck, "Цена", route.total_price == null ? "не указана" : `от ${new Intl.NumberFormat("ru-RU").format(route.total_price)} ₽`],
                       [
                         CalendarDays,
                         "Пересадка",
@@ -912,7 +913,7 @@ export default function Home() {
                                 {segment.destination_station || "Станция не указана"} · {dateTime(segment.arrival_time)} · {minutesLabel(Math.round((new Date(segment.arrival_time).getTime() - new Date(segment.departure_time).getTime()) / 60000))}
                               </p>
                               <p className="mt-1 text-xs font-medium text-aqua">
-                                {segment.availability_message || (segment.available_seats === null ? "Наличие мест не подтверждено" : `${segment.available_seats} мест`)}
+                                {segment.availability_message || (availableSeatsForSegment(route, segment) === null ? "Наличие мест не подтверждено" : `${availableSeatsForSegment(route, segment)} мест`)}
                                 {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-1 text-[11px] font-semibold">

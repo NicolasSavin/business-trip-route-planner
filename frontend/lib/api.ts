@@ -42,6 +42,10 @@ export class ApiError extends Error {
 }
 
 export function apiBaseUrl() {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  if (baseUrl) return baseUrl.replace(/\/+$/, "");
+
+  // Keep the former Render hostname setting as a backwards-compatible fallback.
   const hostname = process.env.NEXT_PUBLIC_API_HOSTNAME;
   return hostname ? `https://${hostname}` : "http://localhost:8000";
 }

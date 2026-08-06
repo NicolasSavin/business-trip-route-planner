@@ -25,6 +25,13 @@ export type RouteSegment = {
   selected_carriages?: string[];
   selected_compartments?: string[];
   availability_message?: string | null;
+  carriages?: CarriageAvailability[];
+};
+export type CarriageAvailability = {
+  car_type?: string | null;
+  min_price?: number | null;
+  available_places?: number | null;
+  [key: string]: unknown;
 };
 export type RouteOption = {
   id: string;
@@ -47,6 +54,7 @@ export type SegmentAvailability = {
   available_seats: number | null;
   availability_status?: string | null;
   availability_message?: string | null;
+  carriages?: CarriageAvailability[];
 };
 export type RouteAvailability = {
   is_available: boolean | null;

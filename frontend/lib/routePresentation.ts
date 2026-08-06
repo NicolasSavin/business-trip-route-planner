@@ -1,4 +1,21 @@
-import type { RouteOption, RouteSearchResponse } from "./types";
+import type { CarriageAvailability, RouteOption, RouteSearchResponse, RouteSegment } from "./types";
+
+function placesInCarriages(carriages: CarriageAvailability[] | undefined): number | null {
+  if (!carriages?.length) return null;
+  const counts = carriages
+    .map((carriage) => carriage.available_places)
+    .filter((count): count is number => typeof count === "number");
+  return counts.length ? counts.reduce((total, count) => total + count, 0) : null;
+}
+
+export function availableSeatsForSegment(route: RouteOption, segment: RouteSegment): number | null {
+  const availability = route.availability?.segment_results.find((item) => item.segment_id === segment.id);
+  const carriageCount = placesInCarriages(segment.carriages) ?? placesInCarriages(availability?.carriages);
+  const confirmedCount = availability?.available_seats;
+  const candidates = [segment.available_seats, confirmedCount, carriageCount]
+    .filter((count): count is number => typeof count === "number");
+  return candidates.length ? Math.max(...candidates) : null;
+}
 
 export function routesVisibleForStrictState(data: RouteSearchResponse, strictAvailability: boolean): RouteOption[] {
   if (!strictAvailability && data.routes.length === 0 && (data.partially_confirmed_routes?.length ?? 0) > 0) {

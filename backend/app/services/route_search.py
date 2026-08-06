@@ -93,6 +93,7 @@ class RouteSearchService:
                             transport_class=None,
                             checked_at=result.checked_at,
                             source=result.provider,
+                            carriages=list(result.metadata.get("carriages") or []),
                             reason=", ".join(result.reasons) or None,
                             warnings=list(dict.fromkeys(result.warnings)),
                             is_stale=result.is_stale,
@@ -149,6 +150,7 @@ class RouteSearchService:
                 item.selected_places = list(result.selected_places)
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
+                item.carriages = list(result.metadata.get("carriages") or [])
                 item.availability_message = {
                     AvailabilityStatus.CONFIRMED: "Все места подтверждены",
                     AvailabilityStatus.PARTIALLY_CONFIRMED: "Часть наличия не проверена",
