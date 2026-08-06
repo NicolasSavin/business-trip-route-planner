@@ -6,9 +6,9 @@ from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from rzd_api.exceptions import RzdError
+from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient
 from app.providers.rzd_availability.exceptions import RZDAvailabilityError
@@ -39,8 +39,8 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-@router.post("/search")
-async def search_rzd(payload: RZDDebugSearchRequest) -> dict[str, Any] | JSONResponse:
+@router.post("/search", response_model=None)
+async def search_rzd(payload: RZDDebugSearchRequest) -> Response:
     if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
         raise HTTPException(status_code=404, detail="Not found")
     started = time.monotonic()
@@ -62,8 +62,13 @@ async def search_rzd(payload: RZDDebugSearchRequest) -> dict[str, Any] | JSONRes
                 },
             },
         )
-    return {
-        "raw": _serialize(result.raw),
-        "normalized": _serialize(result),
-        "timings": {"total_ms": round((time.monotonic() - started) * 1000, 2)},
-    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "raw": _serialize(result.raw),
+            "normalized": _serialize(result),
+            "timings": {
+                "total_ms": round((time.monotonic() - started) * 1000, 2)
+            },
+        },
+    )
