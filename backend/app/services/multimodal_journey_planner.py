@@ -16,6 +16,7 @@ from app.models.routes import RouteSearchRequest, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.segment_enrichment import SegmentEnrichmentService
 from app.providers.tutu_playwright import TutuPlaywrightAvailabilityClient
+from app.providers.rzd_availability import RZDAvailabilityProvider
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class MultimodalJourneyPlanner:
         self.seat_allocator = SeatAllocationService()
         self.enrichment = SegmentEnrichmentService()
         self.tutu_playwright = TutuPlaywrightAvailabilityClient()
+        self.rzd_availability = RZDAvailabilityProvider()
         self.cache = SegmentAvailabilityCache()
         self.concurrency = max(1, concurrency)
         self.last_summary = SearchSummary()
@@ -99,6 +101,8 @@ class MultimodalJourneyPlanner:
         warnings = list(dict.fromkeys(provider_diagnostics.get("warnings", [])))
         if "tutu_playwright" in enrichment_errors:
             warnings.append("Расписание найдено, но проверить наличие мест через Туту не удалось.")
+        if "rzd" in enrichment_errors:
+            warnings.append("Расписание найдено, но проверить наличие мест через РЖД не удалось.")
         if self.route_engine.last_segments_count == 0 and provider_diagnostics.get("provider_errors"):
             warnings.append("Источники расписаний не вернули сегменты; подробности в provider_errors")
         summary = SearchSummary(
@@ -149,15 +153,16 @@ class MultimodalJourneyPlanner:
                 if key not in local_cache:
                     local_cache[key] = self._check_segment_base(segment, request)
 
-        tutu_available = self.tutu_playwright.available() if hasattr(self.tutu_playwright, "available") else True
-        if unique_segments and tutu_available:
+        availability_provider = self.rzd_availability if self.rzd_availability.available() else self.tutu_playwright
+        provider_available = availability_provider.available() if hasattr(availability_provider, "available") else True
+        if unique_segments and provider_available:
             sem = asyncio.Semaphore(max(1, TUTU_ENRICHMENT_CONCURRENCY))
 
             async def enrich_one(key: str, segment: TransportSegment) -> tuple[str, SegmentAvailabilityResult | None]:
                 async with sem:
                     logger.info("enrichment task started", extra={"segment_id": segment.id})
                     try:
-                        result = await self.tutu_playwright.check_segment(segment, request)
+                        result = await availability_provider.check_segment(segment, request)
                         logger.info("enrichment task completed", extra={"segment_id": segment.id, "status": getattr(getattr(result, "status", None), "value", None)})
                         return key, result
                     except asyncio.CancelledError:
@@ -182,7 +187,8 @@ class MultimodalJourneyPlanner:
                 logger.info("tasks cancelled", extra={"cancelled_tasks": len(pending)})
                 for key in unique_segments:
                     if key not in {task.result()[0] for task in done if not task.cancelled() and task.exception() is None}:
-                        local_cache[key] = self._tutu_timeout_result(unique_segments[key])
+                        provider_name = "rzd" if availability_provider is self.rzd_availability else "tutu_playwright"
+                        local_cache[key] = self._provider_timeout_result(unique_segments[key], provider_name)
 
         enriched: list[DomainRouteOption] = []
         for option in options:
@@ -194,29 +200,29 @@ class MultimodalJourneyPlanner:
         return enriched
 
     def _collect_enrichment_errors(self, options: list[DomainRouteOption]) -> dict[str, dict]:
-        errors: list[dict] = []
+        errors_by_provider: dict[str, list[dict]] = {}
         for option in options:
             if not option.availability:
                 continue
             for result in option.availability.segment_results:
                 error = result.metadata.get("provider_error") if result.metadata else None
                 if isinstance(error, dict):
-                    errors.append(error)
-        if not errors:
+                    errors_by_provider.setdefault(result.provider, []).append(error)
+        if not errors_by_provider:
             return {}
-        deduped = []
-        seen = set()
-        for error in errors:
-            details = error.get("details") if isinstance(error.get("details"), dict) else {}
-            key = (details.get("segment_id"), error.get("code"), error.get("error_type"), error.get("message"))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(error)
-        logger.info("tutu_playwright.enrichment provider_error", extra={"errors_count": len(errors), "deduped_errors_count": len(deduped)})
-        first = deduped[0]
-        public_message = self._public_provider_error_message(first)
-        return {"tutu_playwright": {"code": "availability_enrichment_failed", "message": public_message, "error_type": first.get("error_type", "ProviderError"), "errors": deduped[:10]}}
+        output = {}
+        for provider, errors in errors_by_provider.items():
+            deduped, seen = [], set()
+            for error in errors:
+                details = error.get("details") if isinstance(error.get("details"), dict) else {}
+                key = (details.get("segment_id"), error.get("code"), error.get("error_type"), error.get("message"))
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(error)
+            first = deduped[0]
+            output[provider] = {"code": "availability_enrichment_failed", "message": self._public_provider_error_message(first), "error_type": first.get("error_type", "ProviderError"), "errors": deduped[:10]}
+            logger.info("availability.enrichment provider_error", extra={"provider": provider, "errors_count": len(errors), "deduped_errors_count": len(deduped)})
+        return output
 
     def _public_provider_error_message(self, error: dict) -> str:
         message = str(error.get("message") or "")
@@ -249,7 +255,11 @@ class MultimodalJourneyPlanner:
         return result
 
     def _tutu_timeout_result(self, segment: TransportSegment) -> SegmentAvailabilityResult:
-        return SegmentAvailabilityResult(segment_id=segment.id, provider="tutu_playwright", status=AvailabilityStatus.UNCONFIRMED, schedule_confirmed=True, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=("Расписание найдено, проверка мест через Туту не выполнена",), warnings=("Расписание найдено, проверка мест через Туту не выполнена",), metadata={"provider_error": {"code": "availability_enrichment_failed", "message": "Tutu enrichment total timeout exceeded", "error_type": "TimeoutError", "details": {"segment_id": segment.id}}})
+        return self._provider_timeout_result(segment, "tutu_playwright")
+
+    def _provider_timeout_result(self, segment: TransportSegment, provider: str) -> SegmentAvailabilityResult:
+        label = "РЖД" if provider == "rzd" else "Туту"
+        return SegmentAvailabilityResult(segment_id=segment.id, provider=provider, status=AvailabilityStatus.UNCONFIRMED, schedule_confirmed=True, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=(f"Расписание найдено, проверка мест через {label} не выполнена",), warnings=(f"Расписание найдено, проверка мест через {label} не выполнена",), metadata={"provider_error": {"code": "availability_enrichment_failed", "message": f"{provider} enrichment total timeout exceeded", "error_type": "TimeoutError", "details": {"segment_id": segment.id}}})
 
     def _apply_railway_preferences(self, segment: TransportSegment, request: RouteSearchRequest, base: SegmentAvailabilityResult) -> SegmentAvailabilityResult:
         pref = request.seat_preferences

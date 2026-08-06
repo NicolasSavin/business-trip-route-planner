@@ -45,6 +45,7 @@ def _safe_details(data: dict[str, Any], segment: TransportSegment, status: str, 
     return _safe_value(details)
 
 class TutuPlaywrightAvailabilityClient:
+    """Deprecated browser-backed fallback; use RZDAvailabilityProvider for new deployments."""
     def __init__(self, base_url: str | None = None, token: str | None = None, enabled: bool | None = None, timeout: float | None = None):
         self.base_url=(base_url or os.getenv("TUTU_PLAYWRIGHT_SERVICE_URL", "")).rstrip("/")
         self.token=token if token is not None else os.getenv("TUTU_PLAYWRIGHT_SERVICE_TOKEN", "")
