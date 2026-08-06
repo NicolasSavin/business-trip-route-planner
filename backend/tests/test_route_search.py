@@ -76,6 +76,20 @@ def test_route_search_serializes_availability_block():
     assert payload["availability"]["segments"]
 
 
+def test_route_search_exposes_rzd_carriages_and_their_availability():
+    service = RouteSearchService(MockTransportProvider())
+    option = service.planner.search(make_request())[0][0]
+    result = option.availability.segment_results[0]
+    result.metadata["carriages"] = [
+        {"car_type": "coupe", "min_price": 4200, "available_places": 3}
+    ]
+
+    payload = service._to_api_route(option, 2).model_dump()
+
+    assert payload["segments"][0]["carriages"][0]["available_places"] == 3
+    assert payload["availability"]["segment_results"][0]["carriages"][0]["min_price"] == 4200
+
+
 DAY = date(2026, 8, 10)
 
 

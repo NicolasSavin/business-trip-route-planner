@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field, AliasChoices
 from app.domain import TransportClass, TransportType
 
@@ -63,6 +63,7 @@ class RouteSegment(BaseModel):
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
     availability_message: str | None = None
+    carriages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SegmentAvailability(BaseModel):
@@ -79,6 +80,7 @@ class SegmentAvailability(BaseModel):
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
     availability_message: str | None = None
+    carriages: list[dict[str, Any]] = Field(default_factory=list)
     requested_passengers: int
     transport_class: TransportClass | None
     checked_at: datetime

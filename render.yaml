@@ -50,10 +50,7 @@ services:
     startCommand: npm run start
     autoDeployTrigger: commit
     envVars:
-      - key: NEXT_PUBLIC_API_HOSTNAME
-        fromService:
-          type: web
-          name: business-trip-route-planner-backend
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://bba1p30liradr6hj8olf.containers.yandexcloud.net
       - key: NODE_VERSION
         value: 20

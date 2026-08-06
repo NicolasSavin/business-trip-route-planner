@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApiError, searchRoutes } from "./api";
+import { ApiError, apiBaseUrl, searchRoutes } from "./api";
 import type { RouteOption, RouteSearchPayload, RouteSearchResponse } from "./types";
 import { buildRouteSearchPayload, type RouteFormState } from "./locationPayload";
-import { hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "./routePresentation";
+import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "./routePresentation";
+
+const yandexBackend = "https://bba1p30liradr6hj8olf.containers.yandexcloud.net";
+
+test("api client uses NEXT_PUBLIC_API_BASE_URL without a trailing slash", () => {
+  const previous = process.env.NEXT_PUBLIC_API_BASE_URL;
+  process.env.NEXT_PUBLIC_API_BASE_URL = `${yandexBackend}/`;
+  try {
+    assert.equal(apiBaseUrl(), yandexBackend);
+  } finally {
+    if (previous === undefined) delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    else process.env.NEXT_PUBLIC_API_BASE_URL = previous;
+  }
+});
+
+test("route search posts the unchanged payload to the configured Yandex backend", async () => {
+  const previous = process.env.NEXT_PUBLIC_API_BASE_URL;
+  process.env.NEXT_PUBLIC_API_BASE_URL = yandexBackend;
+  const restore = mockFetch(async (url, init) => {
+    assert.equal(url, `${yandexBackend}/api/v1/routes/search`);
+    assert.equal(init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(init?.body)), payload);
+    return new Response(JSON.stringify({ routes: [] }), { status: 200 });
+  });
+  try {
+    await searchRoutes(payload);
+  } finally {
+    restore();
+    if (previous === undefined) delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    else process.env.NEXT_PUBLIC_API_BASE_URL = previous;
+  }
+});
 
 const payload: RouteSearchPayload = {
   origin: "Москва",
@@ -197,4 +228,31 @@ test("strict empty response with partial routes surfaces unconfirmed state inste
 test("turning strict availability off reuses already loaded partial routes", () => {
   const response: RouteSearchResponse = { routes: [], partially_confirmed_routes: [partialRoute] };
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
+});
+
+test("unconfirmed route remains visible when strict availability is off", () => {
+  const response: RouteSearchResponse = { routes: [partialRoute] };
+  assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
+});
+
+test("positive RZD carriage availability is not lost when legacy available_seats is zero", () => {
+  const route: RouteOption = {
+    ...partialRoute,
+    segments: [{ ...partialRoute.segments[0], available_seats: 0 }],
+    availability: {
+      is_available: true,
+      requested_passengers: 2,
+      minimum_available_seats: 7,
+      segment_results: [{
+        segment_id: "seg-partial",
+        is_available: true,
+        available_seats: 0,
+        carriages: [
+          { car_type: "Купе", min_price: 4200, available_places: 3 },
+          { car_type: "Плацкарт", min_price: 2800, available_places: 4 },
+        ],
+      }],
+    },
+  };
+  assert.equal(availableSeatsForSegment(route, route.segments[0]), 7);
 });
