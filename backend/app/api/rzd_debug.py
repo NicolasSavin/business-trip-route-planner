@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -21,6 +21,10 @@ class RZDDebugSearchRequest(BaseModel):
     destination: str = Field(min_length=1)
     date: date
     passengers: int = Field(default=1, ge=1, le=9)
+    stop_after_stage: (
+        Literal["origin_station_lookup", "destination_station_lookup", "ticket_search"]
+        | None
+    ) = None
 
 
 def _serialize(value: Any) -> Any:
@@ -45,30 +49,39 @@ async def search_rzd(payload: RZDDebugSearchRequest) -> Response:
         raise HTTPException(status_code=404, detail="Not found")
     started = time.monotonic()
     try:
-        result = await RZDClient().search(
-            payload.origin, payload.destination, payload.date, payload.passengers
-        )
+        args = (payload.origin, payload.destination, payload.date, payload.passengers)
+        if payload.stop_after_stage:
+            result = await RZDClient().search(
+                *args, stop_after_stage=payload.stop_after_stage
+            )
+        else:
+            result = await RZDClient().search(*args)
     except (RzdError, RZDAvailabilityError) as exc:
+        details = {
+            "origin": payload.origin,
+            "destination": payload.destination,
+            "date": payload.date.isoformat(),
+        }
+        if getattr(exc, "stage", None) is not None:
+            details["stage"] = exc.stage
+        if getattr(exc, "elapsed_ms", None) is not None:
+            details["elapsed_ms"] = exc.elapsed_ms
         return JSONResponse(
             status_code=502,
             content={
                 "code": "rzd_debug_failed",
                 "error_type": type(exc).__name__,
                 "message": str(exc) or type(exc).__name__,
-                "details": {
-                    "origin": payload.origin,
-                    "destination": payload.destination,
-                    "date": payload.date.isoformat(),
-                },
+                "details": details,
             },
         )
+    if payload.stop_after_stage:
+        return JSONResponse(status_code=200, content=_serialize(result))
     return JSONResponse(
         status_code=200,
         content={
             "raw": _serialize(result.raw),
             "normalized": _serialize(result),
-            "timings": {
-                "total_ms": round((time.monotonic() - started) * 1000, 2)
-            },
+            "timings": {"total_ms": round((time.monotonic() - started) * 1000, 2)},
         },
     )

@@ -12,6 +12,8 @@ def _boolean(name: str, default: bool = False) -> bool:
 class RZDAvailabilityConfig:
     enabled: bool = False
     timeout_seconds: float = 20.0
+    station_lookup_timeout_seconds: float = 8.0
+    ticket_search_timeout_seconds: float = 15.0
     retries: int = 2
     backoff_seconds: float = 0.25
     station_cache_ttl_seconds: int = 86_400
@@ -23,6 +25,12 @@ class RZDAvailabilityConfig:
         return cls(
             enabled=_boolean("RZD_AVAILABILITY_ENABLED"),
             timeout_seconds=float(os.getenv("RZD_AVAILABILITY_TIMEOUT_SECONDS", "20")),
+            station_lookup_timeout_seconds=float(
+                os.getenv("RZD_STATION_LOOKUP_TIMEOUT_SECONDS", "8")
+            ),
+            ticket_search_timeout_seconds=float(
+                os.getenv("RZD_TICKET_SEARCH_TIMEOUT_SECONDS", "15")
+            ),
             retries=int(os.getenv("RZD_AVAILABILITY_RETRIES", "2")),
             backoff_seconds=float(
                 os.getenv("RZD_AVAILABILITY_BACKOFF_SECONDS", "0.25")

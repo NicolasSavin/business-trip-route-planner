@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import time
 
 import pytest
 
@@ -12,6 +13,7 @@ from app.providers.rzd_availability import (
     RZDAvailabilityProvider,
     normalize_train_number,
 )
+from app.providers.rzd_availability.exceptions import RZDAvailabilityError
 
 
 @dataclass
@@ -68,6 +70,67 @@ async def test_client_looks_up_stations_carriages_and_caches_identical_searches(
     assert sdk.search_kwargs == {"adults": 2, "children": 0}
     assert sdk.station_calls == 2
     assert sdk.search_calls == 1
+
+
+class SlowRZD(FakeRZD):
+    def __init__(self, slow_stage):
+        super().__init__()
+        self.slow_stage = slow_stage
+
+    def find_stations(self, query):
+        stage = (
+            "origin_station_lookup"
+            if query == "Москва"
+            else "destination_station_lookup"
+        )
+        if self.slow_stage == stage:
+            time.sleep(0.05)
+        return super().find_stations(query)
+
+    def search_tickets(self, *args, **kwargs):
+        if self.slow_stage == "ticket_search":
+            time.sleep(0.05)
+        return super().search_tickets(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage",
+    ["origin_station_lookup", "destination_station_lookup", "ticket_search"],
+)
+async def test_client_timeout_identifies_sdk_stage(stage):
+    sdk = SlowRZD(stage)
+    client = RZDClient(
+        config(station_lookup_timeout_seconds=0.01, ticket_search_timeout_seconds=0.01),
+        sdk_factory=lambda _: sdk,
+    )
+
+    with pytest.raises(
+        RZDAvailabilityError, match=f"rzd_stage_timeout:{stage}"
+    ) as error:
+        await client.search("Москва", "Петербург", date(2026, 8, 10))
+
+    assert error.value.stage == stage
+    assert error.value.elapsed_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_stop_after_stage_returns_intermediate_result_without_later_calls():
+    sdk = FakeRZD()
+    client = RZDClient(config(), sdk_factory=lambda _: sdk)
+
+    result = await client.search(
+        "Москва",
+        "Петербург",
+        date(2026, 8, 10),
+        stop_after_stage="origin_station_lookup",
+    )
+
+    assert result["stage"] == "origin_station_lookup"
+    assert result["result"]["origin_station"].name == "Москва"
+    assert "origin_station_lookup" in result["timings"]
+    assert sdk.station_calls == 1
+    assert sdk.search_calls == 0
 
 
 @pytest.mark.parametrize(
