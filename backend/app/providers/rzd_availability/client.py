@@ -13,6 +13,7 @@ from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.rzd_availability.exceptions import (
     RZDAvailabilityError,
     RZDNoSeatsError,
+    RZDNoTrainError,
     RZDStationNotFound,
     SameStationCodeError,
 )
@@ -33,12 +34,14 @@ def rzd_error_code(exc: BaseException) -> int | None:
         for attribute in ("code", "error_code"):
             value = getattr(current, attribute, None)
             try:
-                if value is not None and int(value) == 311:
-                    return 311
+                if value is not None and int(value) in (310, 311):
+                    return int(value)
             except (TypeError, ValueError):
                 pass
-        if "error 311" in str(current).casefold():
-            return 311
+        message = str(current).casefold()
+        for code in (310, 311):
+            if f"error {code}" in message:
+                return code
         current = current.__cause__ or current.__context__
     return None
 
@@ -96,6 +99,8 @@ class RZDClient:
             except Exception as exc:
                 if rzd_error_code(exc) == 311:
                     raise RZDNoSeatsError(str(exc)) from exc
+                if rzd_error_code(exc) == 310:
+                    raise RZDNoTrainError(str(exc)) from exc
                 last = exc
                 if attempt < self.config.retries:
                     await asyncio.sleep(self.config.backoff_seconds * (2**attempt))

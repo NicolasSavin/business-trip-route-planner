@@ -213,6 +213,60 @@ class AsyncTutuClient:
             self.active -= 1
 
 
+class StubRZDClient:
+    def __init__(self, status):
+        self.status = status
+        self.calls = []
+    def available(self):
+        return True
+    async def check_segment(self, segment, request):
+        self.calls.append(segment.id)
+        return SegmentAvailabilityResult(
+            segment_id=segment.id, provider="rzd", status=self.status,
+            schedule_confirmed=True, seats_confirmed=self.status == AvailabilityStatus.CONFIRMED,
+            reasons=("РЖД не вернул поезд для данного участка и даты",) if self.status == AvailabilityStatus.UNKNOWN else (),
+            metadata={"rzd_error_code": 310} if self.status == AvailabilityStatus.UNKNOWN else {},
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_status", [AvailabilityStatus.CONFIRMED, AvailabilityStatus.UNAVAILABLE])
+async def test_conclusive_rzd_result_does_not_start_tutu_fallback(primary_status):
+    segment = seg("rail", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.rzd_availability = StubRZDClient(primary_status)
+    planner.tutu_playwright = AsyncTutuClient(statuses={"rail": AvailabilityStatus.CONFIRMED})
+    await planner._attach_journey_availability([option_with(segment)], req(strict_availability=False))
+    assert planner.tutu_playwright.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tutu_confirmed_replaces_rzd_error_310_unknown_and_maps_seats():
+    segment = seg("rail", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.rzd_availability = StubRZDClient(AvailabilityStatus.UNKNOWN)
+    planner.tutu_playwright = AsyncTutuClient(statuses={"rail": AvailabilityStatus.CONFIRMED})
+    checked = await planner._attach_journey_availability([option_with(segment)], req(strict_availability=False))
+    result = checked[0].availability.segment_results[0]
+    assert planner.tutu_playwright.calls == ["rail"]
+    assert result.provider == "tutu_playwright"
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.available_places_count == 2
+
+
+@pytest.mark.asyncio
+async def test_both_unknown_preserve_primary_and_fallback_reasons():
+    segment = seg("rail", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([]))
+    planner.rzd_availability = StubRZDClient(AvailabilityStatus.UNKNOWN)
+    planner.tutu_playwright = AsyncTutuClient()
+    checked = await planner._attach_journey_availability([option_with(segment)], req(strict_availability=False))
+    result = checked[0].availability.segment_results[0]
+    assert result.status == AvailabilityStatus.UNKNOWN
+    assert result.metadata["rzd_error_code"] == 310
+    assert result.metadata["fallback_provider_error"]["error_type"] == "TimeoutError"
+
+
 @pytest.mark.asyncio
 async def test_tutu_enrichment_budget_returns_unconfirmed_for_slow_segments(monkeypatch):
     import app.services.multimodal_journey_planner as module

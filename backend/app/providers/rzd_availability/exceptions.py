@@ -61,3 +61,15 @@ class RZDNoSeatsError(RZDAvailabilityError):
 
     def __init__(self, message: str):
         super().__init__(message, stage="ticket_search")
+
+
+class RZDNoTrainError(RZDAvailabilityError):
+    """RZD business response 310: no train returned for this date/route."""
+
+    error_code = 310
+
+    def __init__(self, message: str):
+        # Keep only the provider's human-readable business message.
+        if ":" in message:
+            message = message.split(":", 1)[1].strip()
+        super().__init__(message, stage="ticket_search")

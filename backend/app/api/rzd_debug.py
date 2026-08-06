@@ -14,9 +14,10 @@ from rzd_api.exceptions import RzdError
 from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient
+from app.providers.rzd_availability.client import rzd_error_code
 from app.providers.rzd_availability.exceptions import (
     RZDAvailabilityError,
-    RZDNoSeatsError,
+    RZDNoSeatsError, RZDNoTrainError,
     SameStationCodeError,
 )
 from app.providers.rzd_availability.exceptions import RZDTrainNotFound
@@ -314,7 +315,36 @@ async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
             "train_number": payload.train_number,
             "final_availability_status": "unavailable",
         })
+    except RZDNoTrainError as exc:
+        return JSONResponse(status_code=200, content={
+            "status": "not_found", "provider": "rzd", "stage": "ticket_search",
+            "error_code": 310, "message": str(exc),
+            "resolved_codes": {
+                "origin": origin_resolution.station.code,
+                "origin_source": origin_resolution.source,
+                "destination": destination_resolution.station.code,
+                "destination_source": destination_resolution.source,
+            },
+            "date": payload.departure_datetime.date().isoformat(),
+            "train_number": payload.train_number,
+            "final_availability_status": "unknown",
+        })
     except (RzdError, RZDAvailabilityError) as exc:
+        if rzd_error_code(exc) == 310:
+            message = str(exc).split(":", 1)[-1].strip()
+            return JSONResponse(status_code=200, content={
+                "status": "not_found", "provider": "rzd", "stage": "ticket_search",
+                "error_code": 310, "message": message,
+                "resolved_codes": {
+                    "origin": origin_resolution.station.code,
+                    "origin_source": origin_resolution.source,
+                    "destination": destination_resolution.station.code,
+                    "destination_source": destination_resolution.source,
+                },
+                "date": payload.departure_datetime.date().isoformat(),
+                "train_number": payload.train_number,
+                "final_availability_status": "unknown",
+            })
         return JSONResponse(status_code=502, content={
             "status": "error", "provider": "rzd",
             "stage": getattr(exc, "stage", None) or "ticket_search",
