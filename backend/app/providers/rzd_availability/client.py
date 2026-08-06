@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from importlib import import_module
+from dataclasses import asdict, is_dataclass
 import logging
 import time
 from datetime import date
 from typing import Any, Callable
+
+from rzd_api import Config, RzdClient
 
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.rzd_availability.exceptions import (
@@ -25,7 +26,7 @@ class RZDClient:
     def __init__(
         self,
         config: RZDAvailabilityConfig | None = None,
-        sdk_factory: Callable[..., Any] | None = None,
+        sdk_factory: Callable[[Config], RzdClient] | None = None,
     ):
         self.config = config or RZDAvailabilityConfig.from_env()
         self._sdk_factory = sdk_factory or self._default_sdk_factory
@@ -34,57 +35,33 @@ class RZDClient:
         self._searches: dict[tuple[Any, ...], tuple[float, RZDSearchResult]] = {}
 
     @staticmethod
-    def _default_sdk_factory(**kwargs: Any) -> Any:
-        module = import_module("rzd_api")
-        sdk_class = next(
-            (
-                getattr(module, name, None)
-                for name in ("RZD", "RzdApi", "RZDClient", "Client")
-                if getattr(module, name, None)
-            ),
-            None,
-        )
-        if sdk_class is None:
-            raise RZDAvailabilityError("Unsupported rzd-api package version")
-        return sdk_class(**kwargs)
+    def _default_sdk_factory(config: Config) -> RzdClient:
+        return RzdClient(config)
 
-    def _get_sdk(self) -> Any:
+    def _get_sdk(self) -> RzdClient:
         if self._sdk is None:
-            kwargs = {
-                "timeout": self.config.timeout_seconds,
-                "verify_ssl": self.config.verify_ssl,
-            }
-            try:
-                self._sdk = self._sdk_factory(**kwargs)
-            except TypeError:
-                self._sdk = self._sdk_factory()
+            sdk_config = Config(
+                connect_timeout=self.config.timeout_seconds,
+                read_timeout=self.config.timeout_seconds,
+                retry_total=self.config.retries,
+                retry_backoff=self.config.backoff_seconds,
+                station_cache_ttl=self.config.station_cache_ttl_seconds,
+            )
+            self._sdk = self._sdk_factory(sdk_config)
         return self._sdk
 
-    async def _invoke(self, names: tuple[str, ...], **kwargs: Any) -> Any:
-        sdk = self._get_sdk()
-        method = next(
-            (
-                getattr(sdk, name)
-                for name in names
-                if callable(getattr(sdk, name, None))
-            ),
-            None,
-        )
-        if method is None:
-            raise RZDAvailabilityError(
-                f"rzd-api does not expose any of: {', '.join(names)}"
-            )
-        if inspect.iscoroutinefunction(method):
-            return await asyncio.wait_for(method(**kwargs), self.config.timeout_seconds)
+    async def _call(self, method: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         return await asyncio.wait_for(
-            asyncio.to_thread(method, **kwargs), self.config.timeout_seconds
+            asyncio.to_thread(method, *args, **kwargs), self.config.timeout_seconds
         )
 
-    async def _retry(self, names: tuple[str, ...], **kwargs: Any) -> Any:
+    async def _retry(
+        self, method: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
         last: Exception | None = None
         for attempt in range(self.config.retries + 1):
             try:
-                return await self._invoke(names, **kwargs)
+                return await self._call(method, *args, **kwargs)
             except Exception as exc:
                 last = exc
                 if attempt < self.config.retries:
@@ -99,23 +76,11 @@ class RZDClient:
             and time.monotonic() - cached[0] < self.config.station_cache_ttl_seconds
         ):
             return cached[1]
-        raw = await self._retry(
-            ("suggest_stations", "search_stations", "stations"), query=query
-        )
-        candidates = (
-            raw
-            if isinstance(raw, list)
-            else raw.get("stations", raw.get("items", []))
-            if isinstance(raw, dict)
-            else []
-        )
+        candidates = await self._retry(self._get_sdk().find_stations, query)
         if not candidates:
             raise RZDStationNotFound(query)
         item = candidates[0]
-        station = RZDStation(
-            str(item.get("code") or item.get("expressCode") or item.get("id")),
-            str(item.get("name") or item.get("station")),
-        )
+        station = RZDStation(str(item.code), str(item.name))
         self._stations[key] = (time.monotonic(), station)
         return station
 
@@ -142,39 +107,30 @@ class RZDClient:
                 self.lookup_station(origin), self.lookup_station(destination)
             )
             raw = await self._retry(
-                ("search_trains", "trains", "search"),
-                origin=origin_station.code,
-                destination=destination_station.code,
-                date=departure_date,
-                passengers=passengers,
+                self._get_sdk().search_tickets,
+                origin,
+                destination,
+                departure_date,
+                adults=passengers,
+                children=0,
             )
-            items = (
-                raw
-                if isinstance(raw, list)
-                else raw.get("trains", raw.get("items", []))
-                if isinstance(raw, dict)
-                else []
-            )
+            items = raw if isinstance(raw, list) else raw.outbound
             trains = []
             for item in items:
-                details = item
-                reference = item.get("id") or item.get("trainId")
-                if reference:
-                    try:
-                        details = await self._retry(
-                            ("train_availability", "get_carriages", "carriages"),
-                            train_id=reference,
-                            origin=origin_station.code,
-                            destination=destination_station.code,
-                            date=departure_date,
-                        )
-                        if isinstance(details, list):
-                            details = {**item, "carriages": details}
-                        elif isinstance(details, dict):
-                            details = {**item, **details}
-                    except RZDAvailabilityError:
-                        details = item
-                trains.append(map_train(details))
+                # TrainRoute is a dataclass in 3.0.0. Keep its genuine fields and
+                # let the normalization boundary consume a plain snapshot.
+                snapshot = asdict(item) if is_dataclass(item) else dict(item.raw or {})
+                snapshot.update(
+                    number=item.number,
+                    departure_time=item.departure_time,
+                    arrival_time=item.arrival_time,
+                    min_price=item.min_price,
+                    carriages=[
+                        asdict(group) if is_dataclass(group) else group
+                        for group in item.car_groups
+                    ],
+                )
+                trains.append(map_train(snapshot))
             result = RZDSearchResult(
                 origin_station, destination_station, tuple(trains), raw
             )

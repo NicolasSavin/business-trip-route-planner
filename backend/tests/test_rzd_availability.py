@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 import pytest
@@ -13,30 +14,43 @@ from app.providers.rzd_availability import (
 )
 
 
+@dataclass
+class SDKStation:
+    code: str
+    name: str
+
+
+@dataclass
+class CarGroup:
+    type: str = "coupe"
+    place_quantity: int = 2
+
+
+@dataclass
+class TrainRoute:
+    number: str = "008С"
+    departure_time: datetime = datetime(2026, 8, 10, 8)
+    arrival_time: datetime = datetime(2026, 8, 10, 12)
+    min_price: float = 2500
+    car_groups: list[CarGroup] = field(default_factory=lambda: [CarGroup()])
+    raw: dict = field(default_factory=dict)
+
+
 class FakeRZD:
     def __init__(self):
         self.station_calls = 0
         self.search_calls = 0
 
-    def suggest_stations(self, query):
+        self.search_kwargs = None
+
+    def find_stations(self, query):
         self.station_calls += 1
-        return [{"code": "2000000" if query == "Москва" else "2004000", "name": query}]
+        return [SDKStation("2000000" if query == "Москва" else "2004000", query)]
 
-    def search_trains(self, **kwargs):
+    def search_tickets(self, origin, destination, departure_date, **kwargs):
         self.search_calls += 1
-        return [{"id": "train-8", "trainNumber": "008С"}]
-
-    def train_availability(self, **kwargs):
-        return {
-            "carriages": [
-                {
-                    "number": "01",
-                    "type": "coupe",
-                    "freeSeats": 2,
-                    "seats": [{"number": "1"}, {"number": "2"}],
-                }
-            ]
-        }
+        self.search_kwargs = kwargs
+        return [TrainRoute()]
 
 
 def config(**kwargs):
@@ -46,12 +60,12 @@ def config(**kwargs):
 @pytest.mark.asyncio
 async def test_client_looks_up_stations_carriages_and_caches_identical_searches():
     sdk = FakeRZD()
-    client = RZDClient(config(), sdk_factory=lambda **_: sdk)
+    client = RZDClient(config(), sdk_factory=lambda _: sdk)
     first = await client.search("Москва", "Петербург", date(2026, 8, 10), 2)
     second = await client.search("Москва", "Петербург", date(2026, 8, 10), 2)
     assert first is second
     assert first.trains[0].available_seats == 2
-    assert [seat.number for seat in first.trains[0].seats] == ["1", "2"]
+    assert sdk.search_kwargs == {"adults": 2, "children": 0}
     assert sdk.station_calls == 2
     assert sdk.search_calls == 1
 
@@ -86,7 +100,7 @@ def segment():
 
 @pytest.mark.asyncio
 async def test_provider_maps_sdk_result_to_existing_contract():
-    client = RZDClient(config(), sdk_factory=lambda **_: FakeRZD())
+    client = RZDClient(config(), sdk_factory=lambda _: FakeRZD())
     provider = RZDAvailabilityProvider(client, config())
     result = await provider.check_segment(
         segment(),

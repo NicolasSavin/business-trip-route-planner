@@ -1,5 +1,6 @@
 import logging
 import os
+from importlib.metadata import version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_routers
 from app.browser.runtime import browser_manager
 from app.providers.unified import registry as provider_registry
+from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.yandex.location_service import yandex_location_resolver
 from app.memory import log_memory
 
@@ -50,6 +52,14 @@ def log_transport_provider_startup_diagnostics() -> None:
 async def log_browser_startup_diagnostics() -> None:
     log_memory("before provider diagnostics")
     log_transport_provider_startup_diagnostics()
+    logger.info(
+        "rzd_availability.sdk_ready",
+        extra={
+            "sdk_class": "RzdClient",
+            "package_version": version("rzd-api"),
+            "enabled": RZDAvailabilityConfig.from_env().enabled,
+        },
+    )
     yandex_location_resolver.warm_from_existing_cache()
     log_memory("after Yandex directory metadata")
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())

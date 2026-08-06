@@ -6,9 +6,12 @@ from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from rzd_api.exceptions import RzdError
 
 from app.providers.rzd_availability import RZDClient
+from app.providers.rzd_availability.exceptions import RZDAvailabilityError
 
 router = APIRouter(prefix="/api/v1/debug/rzd", tags=["development"])
 
@@ -37,13 +40,28 @@ def _serialize(value: Any) -> Any:
 
 
 @router.post("/search")
-async def search_rzd(payload: RZDDebugSearchRequest) -> dict[str, Any]:
+async def search_rzd(payload: RZDDebugSearchRequest) -> dict[str, Any] | JSONResponse:
     if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
         raise HTTPException(status_code=404, detail="Not found")
     started = time.monotonic()
-    result = await RZDClient().search(
-        payload.origin, payload.destination, payload.date, payload.passengers
-    )
+    try:
+        result = await RZDClient().search(
+            payload.origin, payload.destination, payload.date, payload.passengers
+        )
+    except (RzdError, RZDAvailabilityError) as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "code": "rzd_debug_failed",
+                "error_type": type(exc).__name__,
+                "message": str(exc) or type(exc).__name__,
+                "details": {
+                    "origin": payload.origin,
+                    "destination": payload.destination,
+                    "date": payload.date.isoformat(),
+                },
+            },
+        )
     return {
         "raw": _serialize(result.raw),
         "normalized": _serialize(result),
