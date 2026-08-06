@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityResult
@@ -27,7 +28,9 @@ _CYRILLIC_TO_LATIN = str.maketrans(
 
 def normalize_train_number(value: str) -> str:
     compact = (
-        re.sub(r"[^0-9A-Za-zА-Яа-я]", "", value).upper().translate(_CYRILLIC_TO_LATIN)
+        re.sub(r"[^0-9A-Za-zА-Яа-я]", "", unicodedata.normalize("NFC", value).strip())
+        .upper()
+        .translate(_CYRILLIC_TO_LATIN)
     )
     match = re.fullmatch(r"0*(\d+)(.*)", compact)
     return f"{int(match.group(1))}{match.group(2)}" if match else compact
@@ -82,6 +85,8 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
         count = (
             carriage.get("freeSeats")
             or carriage.get("availableSeats")
+            or carriage.get("available_places")
+            or carriage.get("availablePlaces")
             or carriage.get("placeQuantity")
             or carriage.get("place_quantity")
         )
@@ -101,29 +106,62 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
         or raw.get("freeSeats")
         or total
     )
-    return RZDTrainAvailability(number, total, tuple(seats), tuple(carriages), raw)
+    price = raw.get("min_price") or raw.get("minPrice") or raw.get("minimum_price")
+    return RZDTrainAvailability(
+        number,
+        total,
+        tuple(seats),
+        tuple(carriages),
+        float(price) if price is not None else None,
+        raw,
+    )
+
+
+def train_number_match_type(expected: str, actual: str) -> str:
+    """Return a conservative diagnostic match classification."""
+    if unicodedata.normalize("NFC", expected).strip().upper() == unicodedata.normalize("NFC", actual).strip().upper():
+        return "exact"
+    expected_compact = re.sub(r"[^0-9A-Za-zА-Яа-я]", "", unicodedata.normalize("NFC", expected).upper()).translate(_CYRILLIC_TO_LATIN)
+    actual_compact = re.sub(r"[^0-9A-Za-zА-Яа-я]", "", unicodedata.normalize("NFC", actual).upper()).translate(_CYRILLIC_TO_LATIN)
+    if expected_compact == actual_compact:
+        return "normalized_exact"
+    expected_match = re.fullmatch(r"0*(\d+)([A-ZА-Я]*)", expected_compact)
+    actual_match = re.fullmatch(r"0*(\d+)([A-ZА-Я]*)", actual_compact)
+    if expected_match and actual_match and expected_match.groups() == actual_match.groups():
+        return "numeric_plus_suffix"
+    return "no_match"
 
 
 def to_segment_result(
-    segment: TransportSegment, train: RZDTrainAvailability, passengers: int
+    segment: TransportSegment,
+    train: RZDTrainAvailability,
+    passengers: int,
+    preferences_requested: bool = False,
 ) -> SegmentAvailabilityResult:
     confirmed = train.available_seats >= passengers
+    status = AvailabilityStatus.CONFIRMED if confirmed else AvailabilityStatus.UNAVAILABLE
+    warnings: tuple[str, ...] = ()
+    preference_status = status
+    if confirmed and preferences_requested and not train.seats:
+        status = AvailabilityStatus.PARTIALLY_CONFIRMED
+        preference_status = AvailabilityStatus.UNKNOWN
+        warnings = ("Места есть, но требования к расположению мест РЖД не подтвердил",)
     return SegmentAvailabilityResult(
         segment_id=segment.id,
         provider="rzd",
-        status=AvailabilityStatus.CONFIRMED
-        if confirmed
-        else AvailabilityStatus.UNAVAILABLE,
+        status=status,
         schedule_confirmed=True,
         seats_confirmed=confirmed,
         passengers_supported=confirmed,
         available_places_count=train.available_seats,
-        seat_preferences_status=AvailabilityStatus.CONFIRMED
-        if confirmed
-        else AvailabilityStatus.UNAVAILABLE,
+        seat_preferences_status=preference_status,
+        warnings=warnings,
         metadata={
             "matched_train": train.train_number,
             "places": [seat.__dict__ for seat in train.seats],
             "carriages": list(train.carriages),
+            "min_price": train.min_price,
+            "price_per_passenger": train.min_price,
+            "price_semantics": "per_passenger",
         },
     )

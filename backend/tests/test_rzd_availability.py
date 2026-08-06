@@ -14,6 +14,8 @@ from app.providers.rzd_availability import (
     normalize_train_number,
 )
 from app.providers.rzd_availability.exceptions import RZDAvailabilityError
+from app.providers.rzd_availability.mapper import map_train, train_number_match_type, to_segment_result
+from app.providers.rzd_availability.station_resolver import StationCodeResolver
 
 
 @dataclass
@@ -45,6 +47,7 @@ class FakeRZD:
 
         self.search_kwargs = None
         self.search_route = None
+        self.search_date = None
 
     def find_stations(self, query):
         self.station_calls += 1
@@ -53,6 +56,7 @@ class FakeRZD:
     def search_tickets(self, origin, destination, departure_date, **kwargs):
         self.search_calls += 1
         self.search_route = (origin, destination)
+        self.search_date = departure_date
         self.search_kwargs = kwargs
         return [TrainRoute()]
 
@@ -192,6 +196,37 @@ def test_train_number_normalization(value, expected):
     assert normalize_train_number(value) == expected
 
 
+def test_train_number_matching_is_homoglyph_and_zero_tolerant_but_suffix_safe():
+    assert train_number_match_type("020С", "020C") == "normalized_exact"
+    assert train_number_match_type("008С", "8С") == "numeric_plus_suffix"
+    assert train_number_match_type("008С", "008А") == "no_match"
+
+
+@pytest.mark.asyncio
+async def test_yandex_station_id_is_not_used_as_express_code():
+    resolver = StationCodeResolver()
+    resolution = await resolver.resolve("Рязань", provider_code="s9602494", allow_sdk_lookup=False)
+    assert resolution.station.code == "2000002"
+    assert resolution.source == "cache"
+
+
+def test_positive_carriage_places_and_min_price_are_mapped():
+    train = map_train({"number": "020С", "min_price": 1250, "carriages": [{"type": "coupe", "available_places": 3}]})
+    result = to_segment_result(segment(), train, 2)
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.available_places_count == 3
+    assert result.metadata["min_price"] == 1250
+    assert result.metadata["price_semantics"] == "per_passenger"
+
+
+def test_unverifiable_preferences_leave_basic_seats_partially_confirmed():
+    train = map_train({"number": "020С", "carriages": [{"availableSeats": 3}]})
+    result = to_segment_result(segment(), train, 2, preferences_requested=True)
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.seats_confirmed
+    assert result.seat_preferences_status == AvailabilityStatus.UNKNOWN
+
+
 def segment():
     origin = City("Москва")
     destination = City("Петербург")
@@ -229,6 +264,41 @@ async def test_provider_maps_sdk_result_to_existing_contract():
     assert result.status == AvailabilityStatus.CONFIRMED
     assert result.provider == "rzd"
     assert result.available_places_count == 2
+
+
+def route_segment(origin_name, destination_name, departure, number="008С"):
+    origin = City(origin_name)
+    destination = City(destination_name)
+    return TransportSegment(
+        f"{origin_name}-{destination_name}", "yandex", Carrier("rzd", "РЖД"),
+        TransportType.TRAIN, None, number, origin,
+        Station("s9602494", f"{origin_name} station", origin), destination,
+        Station("s9602495", f"{destination_name} station", destination), departure,
+        departure.replace(hour=(departure.hour + 2) % 24), 120, None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rail_segment", "expected_codes", "expected_date"),
+    [
+        (route_segment("Москва", "Рязань", datetime(2026, 8, 10, 18, 40), "020С"), ("2000000", "2000002"), date(2026, 8, 10)),
+        (route_segment("Рязань", "Санкт-Петербург", datetime(2026, 8, 11, 0, 6)), ("2000002", "2004000"), date(2026, 8, 11)),
+    ],
+)
+async def test_intermediate_segments_use_their_own_codes_and_departure_date(rail_segment, expected_codes, expected_date):
+    sdk = FakeRZD()
+    sdk.search_tickets = FakeRZD.search_tickets.__get__(sdk)
+    provider = RZDAvailabilityProvider(RZDClient(config(), sdk_factory=lambda _: sdk), config())
+    await provider.check_segment(
+        rail_segment,
+        RouteSearchRequest(
+            origin="Москва", destination="Санкт-Петербург", departure_date="2026-08-10",
+            passengers=2, origin_provider_code="2000000", destination_provider_code="2004000",
+        ),
+    )
+    assert sdk.search_route == expected_codes
+    assert sdk.search_date == expected_date
 
 
 class BrokenClient:

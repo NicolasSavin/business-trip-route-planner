@@ -25,6 +25,7 @@ class RZDTrainAvailability:
     available_seats: int
     seats: tuple[RZDSeat, ...] = ()
     carriages: tuple[dict[str, Any], ...] = ()
+    min_price: float | None = None
     raw: Any = field(default=None, repr=False, compare=False)
 
 
@@ -34,3 +35,5 @@ class RZDSearchResult:
     destination: RZDStation
     trains: tuple[RZDTrainAvailability, ...]
     raw: Any = field(default=None, repr=False, compare=False)
+    origin_code_source: str | None = None
+    destination_code_source: str | None = None

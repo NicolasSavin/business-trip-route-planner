@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import ssl
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 import httpx
@@ -14,6 +14,9 @@ from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient
 from app.providers.rzd_availability.exceptions import RZDAvailabilityError
+from app.providers.rzd_availability.exceptions import RZDTrainNotFound
+from app.providers.rzd_availability.mapper import train_number_match_type, to_segment_result
+from app.domain import Carrier, City, Station, TransportSegment, TransportType
 
 router = APIRouter(prefix="/api/v1/debug/rzd", tags=["development"])
 
@@ -40,6 +43,14 @@ class RZDDebugSearchRequest(BaseModel):
 class RZDStationCodeRequest(BaseModel):
     query: str = Field(min_length=1)
     provider_code: str | None = None
+
+
+class RZDSegmentDebugRequest(BaseModel):
+    origin: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+    departure_datetime: datetime
+    train_number: str = Field(min_length=1)
+    passengers: int = Field(default=1, ge=1, le=9)
 
 
 class RZDHTTPProbeRequest(BaseModel):
@@ -255,4 +266,73 @@ async def search_rzd(payload: RZDDebugSearchRequest) -> Response:
             "normalized": _serialize(result),
             "timings": {"total_ms": round((time.monotonic() - started) * 1000, 2)},
         },
+    )
+
+
+@router.post("/segment", response_model=None)
+async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
+    """Run the same code resolution, date and matching rules as route enrichment."""
+    if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    client = RZDClient()
+    origin_resolution = await client.resolve_station_code(payload.origin)
+    destination_resolution = await client.resolve_station_code(payload.destination)
+    search = await client.search(
+        payload.origin,
+        payload.destination,
+        payload.departure_datetime.date(),
+        payload.passengers,
+        origin_code=origin_resolution.station.code,
+        destination_code=destination_resolution.station.code,
+        skip_station_lookup=True,
+    )
+    match = next(
+        (
+            (train, train_number_match_type(payload.train_number, train.train_number))
+            for train in search.trains
+            if train_number_match_type(payload.train_number, train.train_number) != "no_match"
+        ),
+        None,
+    )
+    if match is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "provider": "rzd",
+                "stage": "train_match",
+                "error_type": RZDTrainNotFound.__name__,
+                "expected_train": payload.train_number,
+                "returned_train_numbers": [train.train_number for train in search.trains[:10]],
+            },
+        )
+    train, match_type = match
+    origin = City(payload.origin)
+    destination = City(payload.destination)
+    segment = TransportSegment(
+        "debug-rzd-segment", "rzd", Carrier("rzd", "РЖД"), TransportType.TRAIN,
+        None, payload.train_number, origin, Station("debug-origin", payload.origin, origin),
+        destination, Station("debug-destination", payload.destination, destination),
+        payload.departure_datetime, payload.departure_datetime, 0, None,
+    )
+    availability = to_segment_result(segment, train, payload.passengers)
+    return JSONResponse(
+        status_code=200,
+        content=_serialize(
+            {
+                "resolved_codes": {
+                    "origin": origin_resolution.station.code,
+                    "origin_source": origin_resolution.source,
+                    "destination": destination_resolution.station.code,
+                    "destination_source": destination_resolution.source,
+                },
+                "date": payload.departure_datetime.date(),
+                "returned_train_numbers": [item.train_number for item in search.trains],
+                "matched_train": train.train_number,
+                "match_type": match_type,
+                "carriages": train.carriages,
+                "available_places_count": availability.available_places_count,
+                "min_price": train.min_price,
+                "final_availability_status": availability.status.value,
+            }
+        ),
     )
