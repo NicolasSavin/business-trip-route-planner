@@ -59,7 +59,11 @@ class NoTrainSegmentClient(NoSeatsSegmentClient):
 
 class UnexpectedFailureSegmentClient:
     async def resolve_station_code(self, query, **kwargs):
-        raise RuntimeError("unexpected station lookup failure")
+        code = "2000000" if query == "Москва" else "2000002"
+        return StationCodeResolution(RZDStation(code, query), "cache")
+
+    async def search(self, *args, **kwargs):
+        raise RuntimeError("unexpected ticket search failure")
 
 
 def test_debug_segment_logs_and_returns_unexpected_exception(monkeypatch, caplog):
@@ -75,19 +79,28 @@ def test_debug_segment_logs_and_returns_unexpected_exception(monkeypatch, caplog
         )
 
     assert response.status_code == 500
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "status": "error",
         "provider": "rzd",
         "stage": "internal",
-        "error_type": "RuntimeError",
-        "message": "unexpected station lookup failure",
+        "exception_type": "RuntimeError",
+        "message": "unexpected ticket search failure",
+        "traceback": body["traceback"],
     }
+    assert "Traceback (most recent call last):" in body["traceback"]
+    assert "raise RuntimeError(\"unexpected ticket search failure\")" in body["traceback"]
+    assert body["traceback"].rstrip().endswith(
+        "RuntimeError: unexpected ticket search failure"
+    )
     record = next(
         record for record in caplog.records
         if record.message == "rzd_segment_debug.unexpected_exception"
     )
     assert record.exc_info is not None
     assert record.exc_info[0] is RuntimeError
+    assert "unexpected ticket search failure" in caplog.text
+    assert "Traceback (most recent call last):" in caplog.text
 
 
 def test_debug_segment_returns_structured_not_found_for_error_310(monkeypatch):
