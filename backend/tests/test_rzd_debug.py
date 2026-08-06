@@ -24,6 +24,15 @@ class FailingClient:
         raise RZDAvailabilityError("provider unavailable")
 
 
+class DiagnosticClient:
+    async def search(self, *args, stop_after_stage=None, **kwargs):
+        return {
+            "stage": stop_after_stage,
+            "result": {"origin_station": {"code": "2000000", "name": "Москва"}},
+            "timings": {"sdk_init": 0.1, "origin_station_lookup": 2.5},
+        }
+
+
 def test_application_import_creates_fastapi_app():
     assert isinstance(app, FastAPI)
 
@@ -71,6 +80,26 @@ def test_debug_search_provider_failure(monkeypatch):
             "date": "2026-08-10",
         },
     }
+
+
+def test_debug_search_stop_after_stage_returns_intermediate_result(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(rzd_debug, "RZDClient", DiagnosticClient)
+
+    response = TestClient(app).post(
+        "/api/v1/debug/rzd/search",
+        json={
+            "origin": "Москва",
+            "destination": "Санкт-Петербург",
+            "date": "2026-08-10",
+            "stop_after_stage": "origin_station_lookup",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stage"] == "origin_station_lookup"
+    assert response.json()["result"]["origin_station"]["code"] == "2000000"
+    assert "origin_station_lookup" in response.json()["timings"]
 
 
 def test_debug_search_is_hidden_in_production(monkeypatch):
