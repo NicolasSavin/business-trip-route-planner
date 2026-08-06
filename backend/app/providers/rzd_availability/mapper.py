@@ -83,6 +83,7 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
             carriage.get("freeSeats")
             or carriage.get("availableSeats")
             or carriage.get("placeQuantity")
+            or carriage.get("place_quantity")
         )
         total += int(
             count
