@@ -13,7 +13,10 @@ from app.providers.rzd_availability import (
     RZDAvailabilityProvider,
     normalize_train_number,
 )
-from app.providers.rzd_availability.exceptions import RZDAvailabilityError
+from app.providers.rzd_availability.exceptions import (
+    RZDAvailabilityError,
+    SameStationCodeError,
+)
 from app.providers.rzd_availability.mapper import map_train, train_number_match_type, to_segment_result
 from app.providers.rzd_availability.station_resolver import StationCodeResolver
 
@@ -210,6 +213,46 @@ async def test_yandex_station_id_is_not_used_as_express_code():
     assert resolution.source == "cache"
 
 
+@pytest.mark.asyncio
+async def test_core_city_cache_codes_are_distinct_and_override_stale_city_hint():
+    resolver = StationCodeResolver()
+    moscow = await resolver.resolve("Москва", allow_sdk_lookup=False)
+    ryazan = await resolver.resolve(
+        "Рязань", provider_code="2000000", allow_sdk_lookup=False
+    )
+    petersburg = await resolver.resolve("Санкт-Петербург", allow_sdk_lookup=False)
+
+    assert moscow.station.code == "2000000"
+    assert ryazan.station.code == "2000002"
+    assert petersburg.station.code == "2004000"
+    assert len({moscow.station.code, ryazan.station.code, petersburg.station.code}) == 3
+
+
+@pytest.mark.asyncio
+async def test_same_resolved_codes_are_rejected_before_sdk_initialization(tmp_path):
+    mapping = tmp_path / "stations.json"
+    mapping.write_text("[]", encoding="utf-8")
+    sdk_factory_called = False
+
+    def sdk_factory(_):
+        nonlocal sdk_factory_called
+        sdk_factory_called = True
+        return FakeRZD()
+
+    client = RZDClient(
+        config(), sdk_factory=sdk_factory, station_resolver=StationCodeResolver(mapping)
+    )
+    with pytest.raises(SameStationCodeError) as error:
+        await client.search(
+            "Москва", "Рязань", date(2026, 8, 10),
+            origin_code="2000000", destination_code="2000000",
+            skip_station_lookup=True,
+        )
+
+    assert error.value.diagnostic()["stage"] == "station_resolution"
+    assert not sdk_factory_called
+
+
 def test_positive_carriage_places_and_min_price_are_mapped():
     train = map_train({"number": "020С", "min_price": 1250, "carriages": [{"type": "coupe", "available_places": 3}]})
     result = to_segment_result(segment(), train, 2)
@@ -319,3 +362,24 @@ async def test_provider_failure_is_unconfirmed_and_never_escapes():
     )
     assert result.status == AvailabilityStatus.UNCONFIRMED
     assert result.metadata["provider_error"]["error_type"] == "TimeoutError"
+
+
+class NoSeatsClient:
+    async def search(self, *args, **kwargs):
+        raise RZDAvailabilityError(
+            "RZD API error 311: На заданном направлении (или поезде) мест нет"
+        )
+
+
+@pytest.mark.asyncio
+async def test_provider_maps_error_311_to_unavailable():
+    result = await RZDAvailabilityProvider(NoSeatsClient(), config()).check_segment(
+        segment(),
+        RouteSearchRequest(
+            origin="Москва", destination="Петербург",
+            departure_date="2026-08-10", passengers=1,
+        ),
+    )
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+    assert result.available_places_count == 0
+    assert result.metadata["rzd_error_code"] == 311
