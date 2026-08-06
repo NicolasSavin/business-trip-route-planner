@@ -48,6 +48,33 @@ class NoSeatsSegmentClient:
         raise RZDNoSeatsError("На заданном направлении (или поезде) мест нет")
 
 
+class NoTrainSegmentClient(NoSeatsSegmentClient):
+    async def resolve_station_code(self, query, **kwargs):
+        code = "2000002" if query == "Рязань" else "2004000"
+        return StationCodeResolution(RZDStation(code, query), "cache")
+
+    async def search(self, *args, **kwargs):
+        raise RZDAvailabilityError("RZD API error 310: В запрашиваемую дату поездов нет")
+
+
+def test_debug_segment_returns_structured_not_found_for_error_310(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(rzd_debug, "RZDClient", NoTrainSegmentClient)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/debug/rzd/segment",
+        json={"origin": "Рязань", "destination": "Санкт-Петербург",
+              "departure_datetime": "2026-08-10T23:06:00",
+              "train_number": "008С", "passengers": 2},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "not_found", "provider": "rzd", "stage": "ticket_search",
+        "error_code": 310, "message": "В запрашиваемую дату поездов нет",
+        "resolved_codes": {"origin": "2000002", "origin_source": "cache", "destination": "2004000", "destination_source": "cache"},
+        "date": "2026-08-10", "train_number": "008С", "final_availability_status": "unknown",
+    }
+
+
 def test_debug_segment_returns_structured_unavailable_for_error_311(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.setattr(rzd_debug, "RZDClient", NoSeatsSegmentClient)

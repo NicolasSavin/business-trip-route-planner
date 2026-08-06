@@ -383,3 +383,22 @@ async def test_provider_maps_error_311_to_unavailable():
     assert result.status == AvailabilityStatus.UNAVAILABLE
     assert result.available_places_count == 0
     assert result.metadata["rzd_error_code"] == 311
+
+
+class NoTrainClient:
+    async def search(self, *args, **kwargs):
+        raise RZDAvailabilityError("RZD API error 310: В запрашиваемую дату поездов нет")
+
+
+@pytest.mark.asyncio
+async def test_provider_maps_error_310_to_unknown_business_result():
+    result = await RZDAvailabilityProvider(NoTrainClient(), config()).check_segment(
+        segment(),
+        RouteSearchRequest(origin="Москва", destination="Петербург", departure_date="2026-08-10", passengers=1),
+    )
+    assert result.status == AvailabilityStatus.UNKNOWN
+    assert result.schedule_confirmed is True
+    assert result.seats_confirmed is False
+    assert result.available_places_count is None
+    assert result.metadata["rzd_error_code"] == 310
+    assert result.metadata["provider_error"]["code"] == 310

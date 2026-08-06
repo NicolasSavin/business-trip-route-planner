@@ -163,6 +163,35 @@ class MultimodalJourneyPlanner:
                     logger.info("enrichment task started", extra={"segment_id": segment.id})
                     try:
                         result = await availability_provider.check_segment(segment, request)
+                        if (
+                            availability_provider is self.rzd_availability
+                            and result is not None
+                            and result.status in {AvailabilityStatus.UNKNOWN, AvailabilityStatus.UNCONFIRMED, AvailabilityStatus.PROVIDER_ERROR}
+                            and self.tutu_playwright.available()
+                        ):
+                            fallback_started = monotonic()
+                            log_context = {
+                                "segment_id": segment.id, "primary_provider": "rzd",
+                                "primary_status": result.status.value,
+                                "fallback_provider": "tutu_playwright",
+                            }
+                            logger.info("availability_fallback.started", extra=log_context)
+                            try:
+                                fallback = await self.tutu_playwright.check_segment(segment, request)
+                                elapsed_ms = round((monotonic() - fallback_started) * 1000, 2)
+                                fallback_status = getattr(getattr(fallback, "status", None), "value", None)
+                                logger.info("availability_fallback.completed", extra={**log_context, "fallback_status": fallback_status, "elapsed_ms": elapsed_ms})
+                                if fallback and fallback.status in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED}:
+                                    result = fallback
+                                elif fallback:
+                                    # Preserve diagnostics from both attempts in the frontend-safe contract.
+                                    result = replace(result,
+                                        reasons=tuple(dict.fromkeys((*result.reasons, *fallback.reasons))),
+                                        warnings=tuple(dict.fromkeys((*result.warnings, *fallback.warnings))),
+                                        metadata={**result.metadata, "fallback_provider_error": fallback.metadata.get("provider_error"), "fallback_status": fallback.status.value},
+                                    )
+                            except Exception as exc:
+                                logger.warning("availability_fallback.failed", extra={**log_context, "fallback_status": "error", "elapsed_ms": round((monotonic() - fallback_started) * 1000, 2), "error_type": type(exc).__name__})
                         logger.info("enrichment task completed", extra={"segment_id": segment.id, "status": getattr(getattr(result, "status", None), "value", None)})
                         return key, result
                     except asyncio.CancelledError:

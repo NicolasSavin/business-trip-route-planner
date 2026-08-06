@@ -10,7 +10,7 @@ from app.domain import TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest
 from app.providers.rzd_availability.client import RZDClient, rzd_error_code
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
-from app.providers.rzd_availability.exceptions import RZDNoSeatsError, RZDTrainNotFound
+from app.providers.rzd_availability.exceptions import RZDNoSeatsError, RZDNoTrainError, RZDTrainNotFound
 from app.providers.rzd_availability.mapper import (
     normalize_train_number,
     train_number_match_type,
@@ -121,6 +121,8 @@ class RZDAvailabilityProvider:
                 warnings=(),
                 metadata={"rzd_error_code": 311, "stage": "ticket_search"},
             )
+        except RZDNoTrainError as exc:
+            return self._unknown_result(segment, exc, "ticket_search", 310)
         except Exception as exc:
             if rzd_error_code(exc) == 311:
                 logger.info(
@@ -136,6 +138,8 @@ class RZDAvailabilityProvider:
                     reasons=("На заданном направлении (или поезде) мест нет",),
                     warnings=(), metadata={"rzd_error_code": 311, "stage": "ticket_search"},
                 )
+            if rzd_error_code(exc) == 310:
+                return self._unknown_result(segment, exc, "ticket_search", 310)
             failure_stage = "train_match" if isinstance(exc, RZDTrainNotFound) else stage
             details = {
                 "segment_id": segment.id,
@@ -175,6 +179,7 @@ class RZDAvailabilityProvider:
 
     @staticmethod
     def _diagnostic_context(segment: TransportSegment) -> dict[str, object]:
+        departure = segment.departure_datetime
         return {
             "segment_id": segment.id,
             "origin_city": segment.origin_city.name,
@@ -185,9 +190,28 @@ class RZDAvailabilityProvider:
             "destination_station_name": segment.destination_station.name,
             "departure_datetime": segment.departure_datetime.isoformat(),
             "departure_date": segment.departure_datetime.date().isoformat(),
+            "local_departure_datetime": departure.isoformat(),
+            "timezone": departure.tzname() if departure.tzinfo else "naive/local schedule time",
+            "date_sent_to_rzd": departure.date().isoformat(),
+            "arrival_date": segment.arrival_datetime.date().isoformat(),
             "raw_train_number": segment.vehicle_number,
             "normalized_train_number": normalize_train_number(segment.vehicle_number),
         }
+
+    @staticmethod
+    def _unknown_result(segment: TransportSegment, exc: Exception, stage: str, code: int) -> SegmentAvailabilityResult:
+        reason = "РЖД не вернул поезд для данного участка и даты"
+        return SegmentAvailabilityResult(
+            segment_id=segment.id, provider="rzd", status=AvailabilityStatus.UNKNOWN,
+            schedule_confirmed=True, seats_confirmed=False, passengers_supported=False,
+            available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN,
+            reasons=(reason,), warnings=(reason,), metadata={
+                "rzd_error_code": code, "stage": stage,
+                "provider_error": {"code": code, "provider": "rzd", "stage": stage,
+                    "message": str(exc), "error_type": type(exc).__name__,
+                    "details": {"segment_id": segment.id, "train_number": segment.vehicle_number}},
+            },
+        )
 
     @staticmethod
     def _endpoint_value(
