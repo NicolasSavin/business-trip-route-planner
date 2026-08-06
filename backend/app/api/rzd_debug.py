@@ -279,6 +279,22 @@ async def search_rzd(payload: RZDDebugSearchRequest) -> Response:
 @router.post("/segment", response_model=None)
 async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
     """Run the same code resolution, date and matching rules as route enrichment."""
+    try:
+        return await _debug_rzd_segment(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("rzd_segment_debug.unexpected_exception")
+        return JSONResponse(status_code=500, content={
+            "status": "error",
+            "provider": "rzd",
+            "stage": "internal",
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        })
+
+
+async def _debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
     if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
         raise HTTPException(status_code=404, detail="Not found")
     client = RZDClient()
@@ -350,9 +366,6 @@ async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
             "stage": getattr(exc, "stage", None) or "ticket_search",
             "error_type": type(exc).__name__, "message": str(exc),
         })
-    except Exception:
-        logger.exception("rzd_segment_debug.unexpected_exception")
-        raise
     match = next(
         (
             (train, train_number_match_type(payload.train_number, train.train_number))

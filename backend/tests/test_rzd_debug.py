@@ -57,6 +57,39 @@ class NoTrainSegmentClient(NoSeatsSegmentClient):
         raise RZDAvailabilityError("RZD API error 310: В запрашиваемую дату поездов нет")
 
 
+class UnexpectedFailureSegmentClient:
+    async def resolve_station_code(self, query, **kwargs):
+        raise RuntimeError("unexpected station lookup failure")
+
+
+def test_debug_segment_logs_and_returns_unexpected_exception(monkeypatch, caplog):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(rzd_debug, "RZDClient", UnexpectedFailureSegmentClient)
+
+    with caplog.at_level("ERROR", logger=rzd_debug.__name__):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/debug/rzd/segment",
+            json={"origin": "Москва", "destination": "Рязань",
+                  "departure_datetime": "2026-08-10T18:40:00",
+                  "train_number": "020С", "passengers": 2},
+        )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": "error",
+        "provider": "rzd",
+        "stage": "internal",
+        "error_type": "RuntimeError",
+        "message": "unexpected station lookup failure",
+    }
+    record = next(
+        record for record in caplog.records
+        if record.message == "rzd_segment_debug.unexpected_exception"
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+
+
 def test_debug_segment_returns_structured_not_found_for_error_310(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.setattr(rzd_debug, "RZDClient", NoTrainSegmentClient)
