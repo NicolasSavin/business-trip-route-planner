@@ -6,6 +6,7 @@ from app.api.notifications import router as notifications_router
 from app.api.providers import router as providers_router
 from app.api.routes import router as routes_router
 from app.api.saved_searches import router as saved_searches_router
+from app.api.rzd_debug import router as rzd_debug_router
 
 api_routers = (
     routes_router,
@@ -16,4 +17,5 @@ api_routers = (
     providers_router,
     locations_router,
     browser_router,
+    rzd_debug_router,
 )
