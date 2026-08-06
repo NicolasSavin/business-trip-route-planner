@@ -90,6 +90,23 @@ def test_route_search_exposes_rzd_carriages_and_their_availability():
     assert payload["availability"]["segment_results"][0]["carriages"][0]["min_price"] == 4200
 
 
+def test_rzd_min_prices_are_exposed_and_unknown_price_is_not_zero():
+    service = RouteSearchService(MockTransportProvider())
+    option = service.planner.search(make_request())[0][0]
+    first = option.availability.segment_results[0]
+    first.metadata.update(min_price=1250.0, price_semantics="per_passenger")
+
+    payload = service._to_api_route(option, 2).model_dump()
+
+    assert payload["segments"][0]["min_price"] == 1250.0
+    assert payload["segments"][0]["price_semantics"] == "per_passenger"
+    if len(option.route.segments) > 1:
+        assert payload["total_price"] is None
+    else:
+        assert payload["total_price"] == 1250.0
+        assert payload["price_semantics"] == "per_passenger"
+
+
 DAY = date(2026, 8, 10)
 
 

@@ -3,7 +3,7 @@ import logging
 from app.domain import RouteOption as DomainRouteOption
 from app.engine import RouteEngine
 from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult
-from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability, SearchSummary
+from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability
 from app.providers.base import TransportProvider
 from app.services.multimodal_journey_planner import MultimodalJourneyPlanner
 
@@ -151,6 +151,8 @@ class RouteSearchService:
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
                 item.carriages = list(result.metadata.get("carriages") or [])
+                item.min_price = result.metadata.get("min_price")
+                item.price_semantics = result.metadata.get("price_semantics") if item.min_price is not None else None
                 item.availability_message = {
                     AvailabilityStatus.CONFIRMED: "Все места подтверждены",
                     AvailabilityStatus.PARTIALLY_CONFIRMED: "Часть наличия не проверена",
@@ -174,6 +176,13 @@ class RouteSearchService:
         else:
             is_available_for_group = all(segment.available_seats is not None and segment.available_seats >= passengers for segment in route.segments)
 
+        prices = []
+        for segment in route.segments:
+            result = segment_availability_by_id.get(segment.id)
+            enriched_price = result.metadata.get("min_price") if result else None
+            prices.append(enriched_price if enriched_price is not None else segment.price)
+        total_price = sum(prices) if prices and all(price is not None for price in prices) else None
+
         return RouteOption(
             id="route-" + "-".join(segment.id for segment in route.segments),
             provider=",".join(sorted({segment.provider for segment in route.segments})),
@@ -184,7 +193,8 @@ class RouteSearchService:
             transfer_duration_minutes=sum(transfer.duration_minutes for transfer in route.transfers) if route.transfers else None,
             transfers=[self._to_api_transfer(transfer) for transfer in route.transfers],
             total_wait_minutes=sum(transfer.duration_minutes for transfer in route.transfers),
-            total_price=sum((segment.price or 0) for segment in route.segments) or None,
+            total_price=total_price,
+            price_semantics="per_passenger" if total_price is not None else None,
             total_duration_minutes=route.total_duration_minutes,
             transfers_count=route.transfers_count,
             is_available_for_group=is_available_for_group,

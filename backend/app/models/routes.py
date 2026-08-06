@@ -64,6 +64,8 @@ class RouteSegment(BaseModel):
     selected_compartments: list[str] = Field(default_factory=list)
     availability_message: str | None = None
     carriages: list[dict[str, Any]] = Field(default_factory=list)
+    min_price: float | None = None
+    price_semantics: Literal["per_passenger"] | None = None
 
 
 class SegmentAvailability(BaseModel):
@@ -123,6 +125,7 @@ class RouteOption(BaseModel):
     transfers: list[dict] = Field(default_factory=list)
     total_wait_minutes: int = 0
     total_price: float | None = None
+    price_semantics: Literal["per_passenger"] | None = None
     total_duration_minutes: int
     transfers_count: int
     is_available_for_group: bool | None

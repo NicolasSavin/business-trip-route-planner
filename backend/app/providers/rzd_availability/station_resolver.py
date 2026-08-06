@@ -9,7 +9,6 @@ from typing import Awaitable, Callable
 from app.providers.rzd_availability.models import RZDStation
 
 _EXPRESS_CODE = re.compile(r"^\d{7}$")
-_YANDEX_STATION_CODE = re.compile(r"^s(\d{7})$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -24,8 +23,9 @@ class StationCodeResolver:
 
     The JSON directory is deliberately data, rather than Python conditionals, so it
     can be expanded or replaced by a generated cache. Yandex city codes (``c213``)
-    are never treated as Express-3 codes; only seven-digit station codes and the
-    equivalent Yandex ``s<digits>`` representation are format-compatible.
+    are never treated as Express-3 codes. Yandex station identifiers
+    (``s9602494``) are also not Express-3 codes and are never passed to RZD
+    merely because they contain seven digits.
     """
 
     def __init__(self, mapping_path: Path | None = None):
@@ -67,5 +67,4 @@ class StationCodeResolver:
         value = value.rsplit(":", 1)[-1].strip()
         if _EXPRESS_CODE.fullmatch(value):
             return value
-        matched = _YANDEX_STATION_CODE.fullmatch(value)
-        return matched.group(1) if matched else None
+        return None

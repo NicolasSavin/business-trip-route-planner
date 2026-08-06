@@ -328,7 +328,12 @@ class RZDClient:
                 mapping_started,
             )
             result = RZDSearchResult(
-                origin_station, destination_station, tuple(trains), raw
+                origin_station,
+                destination_station,
+                tuple(trains),
+                raw,
+                origin_resolution.source,
+                destination_resolution.source,
             )
             self._searches[key] = (time.monotonic(), result)
             return result
