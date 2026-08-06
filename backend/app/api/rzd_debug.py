@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import ssl
 import time
 from datetime import date
 from typing import Any, Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from rzd_api.exceptions import RzdError
@@ -38,6 +40,124 @@ class RZDDebugSearchRequest(BaseModel):
 class RZDStationCodeRequest(BaseModel):
     query: str = Field(min_length=1)
     provider_code: str | None = None
+
+
+class RZDHTTPProbeRequest(BaseModel):
+    origin_code: str = Field(min_length=1)
+    destination_code: str = Field(min_length=1)
+    date: date
+    passengers: int = Field(default=1, ge=1, le=9)
+
+
+def _probe_verify_ssl() -> bool:
+    return os.getenv("RZD_HTTP_PROBE_VERIFY_SSL", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _is_tls_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        message = str(current).lower()
+        if isinstance(current, ssl.SSLError) or "ssl" in message or "tls" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def _request_probe(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, str | int] | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+    except (httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+        return {
+            "status": "timeout",
+            "status_code": None,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+    except httpx.ConnectError as exc:
+        return {
+            "status": "tls_error" if _is_tls_error(exc) else "connect_error",
+            "status_code": None,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+    except httpx.HTTPStatusError as exc:
+        response = exc.response
+        return {
+            "status": "http_error",
+            "status_code": response.status_code,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "content_type": response.headers.get("content-type"),
+            "body_sample": response.text[:500],
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+    return {
+        "status": "ok",
+        "status_code": response.status_code,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "content_type": response.headers.get("content-type"),
+        "body_sample": response.text[:500],
+    }
+
+
+async def run_http_probes(
+    payload: RZDHTTPProbeRequest,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://ticket.rzd.ru/",
+    }
+    timeout = httpx.Timeout(connect=5, read=10, write=5, pool=5)
+    async with httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout,
+        verify=_probe_verify_ssl(),
+        transport=transport,
+    ) as client:
+        base_probe = await _request_probe(client, "https://ticket.rzd.ru/")
+        pricing_probe = await _request_probe(
+            client,
+            "https://ticket.rzd.ru/api/v1/railway-service/prices/train-pricing",
+            params={
+                "service_provider": "B2B_RZD",
+                "getByLocalTime": "true",
+                "carGrouping": "DontGroup",
+                "origin": payload.origin_code,
+                "destination": payload.destination_code,
+                "departureDate": f"{payload.date.isoformat()}T00:00:00",
+                "specialPlacesDemand": "StandardPlacesAndForDisabledPersons",
+                "carIssuingType": "Passenger",
+                "getTrainsFromSchedule": "true",
+                "adultPassengersQuantity": payload.passengers,
+                "childrenPassengersQuantity": 0,
+                "hasPlacesForLargeFamily": "false",
+            },
+        )
+    return {"base_probe": base_probe, "pricing_probe": pricing_probe}
+
+
+@router.post("/http-probe", response_model=None)
+async def http_probe_rzd(payload: RZDHTTPProbeRequest) -> Response:
+    if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    return JSONResponse(status_code=200, content=await run_http_probes(payload))
 
 
 @router.post("/station-code", response_model=None)
