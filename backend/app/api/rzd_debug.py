@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
 import logging
+import os
 import ssl
 import time
+import traceback
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -284,13 +285,20 @@ async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("rzd_segment_debug.unexpected_exception")
+        formatted_traceback = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+        logger.exception(
+            "rzd_segment_debug.unexpected_exception",
+            exc_info=True,
+        )
         return JSONResponse(status_code=500, content={
             "status": "error",
             "provider": "rzd",
             "stage": "internal",
-            "error_type": type(exc).__name__,
+            "exception_type": type(exc).__name__,
             "message": str(exc),
+            "traceback": formatted_traceback,
         })
 
 
