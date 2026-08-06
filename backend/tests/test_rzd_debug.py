@@ -1,5 +1,9 @@
+import asyncio
+import ssl
 from dataclasses import dataclass
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -156,6 +160,134 @@ def test_debug_search_is_hidden_in_production(monkeypatch):
             "origin": "Москва",
             "destination": "Санкт-Петербург",
             "date": "2026-08-10",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not found"}
+
+
+def _probe_payload() -> rzd_debug.RZDHTTPProbeRequest:
+    return rzd_debug.RZDHTTPProbeRequest(
+        origin_code="2000000",
+        destination_code="2004000",
+        date="2026-08-10",
+        passengers=2,
+    )
+
+
+def test_http_probe_base_and_pricing_success(monkeypatch):
+    monkeypatch.delenv("RZD_HTTP_PROBE_VERIFY_SSL", raising=False)
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/":
+            return httpx.Response(
+                200, text="base response", headers={"x-secret": "hidden"}
+            )
+        return httpx.Response(
+            200,
+            json={"trains": []},
+            headers={"content-type": "application/json", "set-cookie": "sid=secret"},
+        )
+
+    result = asyncio.run(
+        rzd_debug.run_http_probes(
+            _probe_payload(), transport=httpx.MockTransport(handler)
+        )
+    )
+
+    assert result["base_probe"]["status"] == "ok"
+    assert result["base_probe"]["status_code"] == 200
+    assert result["base_probe"]["body_sample"] == "base response"
+    assert result["pricing_probe"]["status"] == "ok"
+    assert result["pricing_probe"]["body_sample"] == '{"trains":[]}'
+    assert "headers" not in result["pricing_probe"]
+    assert "cookies" not in result["pricing_probe"]
+    pricing_request = requests[1]
+    assert pricing_request.url.params["origin"] == "2000000"
+    assert pricing_request.url.params["destination"] == "2004000"
+    assert pricing_request.url.params["departureDate"] == "2026-08-10T00:00:00"
+    assert pricing_request.url.params["adultPassengersQuantity"] == "2"
+    assert pricing_request.headers["user-agent"] == "Mozilla/5.0"
+
+
+@pytest.mark.parametrize(
+    ("exception", "error_type"),
+    [
+        (httpx.ConnectTimeout("connect timed out"), "ConnectTimeout"),
+        (httpx.ReadTimeout("read timed out"), "ReadTimeout"),
+    ],
+)
+def test_http_probe_reports_timeout_types(exception, error_type):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200)
+        raise exception
+
+    result = asyncio.run(
+        rzd_debug.run_http_probes(
+            _probe_payload(), transport=httpx.MockTransport(handler)
+        )
+    )
+
+    assert result["pricing_probe"]["status"] == "timeout"
+    assert result["pricing_probe"]["status_code"] is None
+    assert result["pricing_probe"]["error_type"] == error_type
+
+
+def test_http_probe_reports_connect_and_tls_errors():
+    for exception, expected_status in (
+        (httpx.ConnectError("connection refused"), "connect_error"),
+        (httpx.ConnectError("TLS failed", request=None), "tls_error"),
+        (httpx.ConnectError("handshake", request=None), "tls_error"),
+    ):
+        if expected_status == "tls_error" and str(exception) == "handshake":
+            exception.__cause__ = ssl.SSLError("certificate verify failed")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise exception
+
+        result = asyncio.run(
+            rzd_debug.run_http_probes(
+                _probe_payload(), transport=httpx.MockTransport(handler)
+            )
+        )
+        assert result["base_probe"]["status"] == expected_status
+        assert result["base_probe"]["error_type"] == "ConnectError"
+
+
+@pytest.mark.parametrize("status_code", [403, 429, 500])
+def test_http_probe_reports_http_errors(status_code):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, text="blocked")
+
+    result = asyncio.run(
+        rzd_debug.run_http_probes(
+            _probe_payload(), transport=httpx.MockTransport(handler)
+        )
+    )
+
+    assert result["base_probe"]["status"] == "http_error"
+    assert result["base_probe"]["status_code"] == status_code
+    assert result["base_probe"]["error_type"] == "HTTPStatusError"
+
+
+def test_http_probe_is_hidden_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = TestClient(app).post(
+        "/api/v1/debug/rzd/http-probe",
+        json={
+            "origin_code": "2000000",
+            "destination_code": "2004000",
+            "date": "2026-08-10",
+            "passengers": 2,
         },
     )
 
