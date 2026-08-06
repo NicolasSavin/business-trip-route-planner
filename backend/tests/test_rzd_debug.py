@@ -82,6 +82,50 @@ def test_debug_search_provider_failure(monkeypatch):
     }
 
 
+def test_debug_search_requires_codes_when_lookup_is_skipped(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+
+    response = TestClient(app).post(
+        "/api/v1/debug/rzd/search",
+        json={
+            "origin": "Москва",
+            "destination": "Санкт-Петербург",
+            "date": "2026-08-10",
+            "skip_station_lookup": True,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+class StationCodeClient:
+    async def resolve_station_code(self, *args, **kwargs):
+        from app.providers.rzd_availability.station_resolver import (
+            StationCodeResolution,
+        )
+        from app.providers.rzd_availability.models import RZDStation
+
+        return StationCodeResolution(RZDStation("2000000", "Москва"), "cache")
+
+
+def test_debug_station_code_reports_resolution_source(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(rzd_debug, "RZDClient", StationCodeClient)
+
+    response = TestClient(app).post(
+        "/api/v1/debug/rzd/station-code",
+        json={"query": "Москва", "provider_code": "c213"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "resolved": True,
+        "rzd_code": "2000000",
+        "source": "cache",
+        "sdk_lookup_used": False,
+    }
+
+
 def test_debug_search_stop_after_stage_returns_intermediate_result(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.setattr(rzd_debug, "RZDClient", DiagnosticClient)
