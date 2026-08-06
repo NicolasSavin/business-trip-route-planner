@@ -3,6 +3,7 @@
   {"normalized_name": "москва казанская", "rzd_code": "2000003", "source": "static", "updated_at": "2026-08-06"},
   {"normalized_name": "москва ленинградская", "rzd_code": "2006004", "source": "static", "updated_at": "2026-08-06"},
   {"normalized_name": "санкт-петербург", "rzd_code": "2004000", "source": "static", "updated_at": "2026-08-06"},
+  {"normalized_name": "санкт петербург", "rzd_code": "2004000", "source": "static", "updated_at": "2026-08-06"},
   {"normalized_name": "петербург", "rzd_code": "2004000", "source": "static", "updated_at": "2026-08-06"},
   {"normalized_name": "рязань", "rzd_code": "2000002", "source": "static", "updated_at": "2026-08-06"}
 ]

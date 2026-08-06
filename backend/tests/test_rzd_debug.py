@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from app.api import rzd_debug
 from app.main import app
-from app.providers.rzd_availability.exceptions import RZDAvailabilityError
+from app.providers.rzd_availability.exceptions import RZDAvailabilityError, RZDNoSeatsError
+from app.providers.rzd_availability.models import RZDStation
+from app.providers.rzd_availability.station_resolver import StationCodeResolution
 
 
 @dataclass
@@ -35,6 +37,30 @@ class DiagnosticClient:
             "result": {"origin_station": {"code": "2000000", "name": "Москва"}},
             "timings": {"sdk_init": 0.1, "origin_station_lookup": 2.5},
         }
+
+
+class NoSeatsSegmentClient:
+    async def resolve_station_code(self, query, **kwargs):
+        code = "2000000" if query == "Москва" else "2000002"
+        return StationCodeResolution(RZDStation(code, query), "cache")
+
+    async def search(self, *args, **kwargs):
+        raise RZDNoSeatsError("На заданном направлении (или поезде) мест нет")
+
+
+def test_debug_segment_returns_structured_unavailable_for_error_311(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(rzd_debug, "RZDClient", NoSeatsSegmentClient)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/debug/rzd/segment",
+        json={"origin": "Москва", "destination": "Рязань",
+              "departure_datetime": "2026-08-10T18:40:00",
+              "train_number": "020С", "passengers": 2},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["error_code"] == 311
+    assert response.json()["final_availability_status"] == "unavailable"
 
 
 def test_application_import_creates_fastapi_app():

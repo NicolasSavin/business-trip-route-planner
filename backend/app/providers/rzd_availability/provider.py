@@ -8,9 +8,9 @@ import time
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityResult
 from app.domain import TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest
-from app.providers.rzd_availability.client import RZDClient
+from app.providers.rzd_availability.client import RZDClient, rzd_error_code
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
-from app.providers.rzd_availability.exceptions import RZDTrainNotFound
+from app.providers.rzd_availability.exceptions import RZDNoSeatsError, RZDTrainNotFound
 from app.providers.rzd_availability.mapper import (
     normalize_train_number,
     train_number_match_type,
@@ -103,7 +103,39 @@ class RZDAvailabilityProvider:
             return to_segment_result(
                 segment, train, request.passengers, preferences_requested=request.seat_preferences is not None
             )
+        except RZDNoSeatsError as exc:
+            logger.info(
+                "rzd_segment_enrichment.unavailable",
+                extra={**context, "failure_stage": "ticket_search", "error_code": 311},
+            )
+            return SegmentAvailabilityResult(
+                segment_id=segment.id,
+                provider="rzd",
+                status=AvailabilityStatus.UNAVAILABLE,
+                schedule_confirmed=True,
+                seats_confirmed=True,
+                passengers_supported=True,
+                available_places_count=0,
+                seat_preferences_status=AvailabilityStatus.UNAVAILABLE,
+                reasons=("На заданном направлении (или поезде) мест нет",),
+                warnings=(),
+                metadata={"rzd_error_code": 311, "stage": "ticket_search"},
+            )
         except Exception as exc:
+            if rzd_error_code(exc) == 311:
+                logger.info(
+                    "rzd_segment_enrichment.unavailable",
+                    extra={**context, "failure_stage": "ticket_search", "error_code": 311},
+                )
+                return SegmentAvailabilityResult(
+                    segment_id=segment.id, provider="rzd",
+                    status=AvailabilityStatus.UNAVAILABLE,
+                    schedule_confirmed=True, seats_confirmed=True,
+                    passengers_supported=True, available_places_count=0,
+                    seat_preferences_status=AvailabilityStatus.UNAVAILABLE,
+                    reasons=("На заданном направлении (или поезде) мест нет",),
+                    warnings=(), metadata={"rzd_error_code": 311, "stage": "ticket_search"},
+                )
             failure_stage = "train_match" if isinstance(exc, RZDTrainNotFound) else stage
             details = {
                 "segment_id": segment.id,

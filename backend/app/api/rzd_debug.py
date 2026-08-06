@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import ssl
 import time
 from datetime import date, datetime
@@ -13,12 +14,17 @@ from rzd_api.exceptions import RzdError
 from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient
-from app.providers.rzd_availability.exceptions import RZDAvailabilityError
+from app.providers.rzd_availability.exceptions import (
+    RZDAvailabilityError,
+    RZDNoSeatsError,
+    SameStationCodeError,
+)
 from app.providers.rzd_availability.exceptions import RZDTrainNotFound
 from app.providers.rzd_availability.mapper import train_number_match_type, to_segment_result
 from app.domain import Carrier, City, Station, TransportSegment, TransportType
 
 router = APIRouter(prefix="/api/v1/debug/rzd", tags=["development"])
+logger = logging.getLogger(__name__)
 
 
 class RZDDebugSearchRequest(BaseModel):
@@ -275,17 +281,48 @@ async def debug_rzd_segment(payload: RZDSegmentDebugRequest) -> Response:
     if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
         raise HTTPException(status_code=404, detail="Not found")
     client = RZDClient()
-    origin_resolution = await client.resolve_station_code(payload.origin)
-    destination_resolution = await client.resolve_station_code(payload.destination)
-    search = await client.search(
-        payload.origin,
-        payload.destination,
-        payload.departure_datetime.date(),
-        payload.passengers,
-        origin_code=origin_resolution.station.code,
-        destination_code=destination_resolution.station.code,
-        skip_station_lookup=True,
-    )
+    try:
+        origin_resolution = await client.resolve_station_code(payload.origin)
+        destination_resolution = await client.resolve_station_code(payload.destination)
+        if origin_resolution.station.code == destination_resolution.station.code:
+            raise SameStationCodeError(
+                origin=payload.origin, destination=payload.destination,
+                origin_code=origin_resolution.station.code,
+                destination_code=destination_resolution.station.code,
+                origin_source=origin_resolution.source,
+                destination_source=destination_resolution.source,
+            )
+        search = await client.search(
+            payload.origin, payload.destination, payload.departure_datetime.date(),
+            payload.passengers, origin_code=origin_resolution.station.code,
+            destination_code=destination_resolution.station.code,
+            skip_station_lookup=True,
+        )
+    except SameStationCodeError as exc:
+        return JSONResponse(status_code=422, content=exc.diagnostic())
+    except RZDNoSeatsError as exc:
+        return JSONResponse(status_code=200, content={
+            "status": "unavailable", "provider": "rzd", "stage": "ticket_search",
+            "error_code": 311, "message": str(exc),
+            "resolved_codes": {
+                "origin": origin_resolution.station.code,
+                "origin_source": origin_resolution.source,
+                "destination": destination_resolution.station.code,
+                "destination_source": destination_resolution.source,
+            },
+            "date": payload.departure_datetime.date().isoformat(),
+            "train_number": payload.train_number,
+            "final_availability_status": "unavailable",
+        })
+    except (RzdError, RZDAvailabilityError) as exc:
+        return JSONResponse(status_code=502, content={
+            "status": "error", "provider": "rzd",
+            "stage": getattr(exc, "stage", None) or "ticket_search",
+            "error_type": type(exc).__name__, "message": str(exc),
+        })
+    except Exception:
+        logger.exception("rzd_segment_debug.unexpected_exception")
+        raise
     match = next(
         (
             (train, train_number_match_type(payload.train_number, train.train_number))

@@ -45,14 +45,17 @@ class StationCodeResolver:
         sdk_lookup: Callable[[str], Awaitable[RZDStation]] | None = None,
         allow_sdk_lookup: bool = True,
     ) -> StationCodeResolution:
+        # A known city cache entry is authoritative.  In particular, a stale
+        # city-level provider hint must not overwrite it (the collision fixed
+        # after PR #93 supplied Moscow's code for Ryazan in this way).
+        record = self._mapping.get(self.normalize_name(query))
+        if record:
+            return StationCodeResolution(RZDStation(record["rzd_code"], query), "cache")
+
         for candidate in (provider_code, location_id):
             code = self._compatible_code(candidate)
             if code:
                 return StationCodeResolution(RZDStation(code, query), "mapping")
-
-        record = self._mapping.get(self.normalize_name(query))
-        if record:
-            return StationCodeResolution(RZDStation(record["rzd_code"], query), "cache")
 
         if allow_sdk_lookup and sdk_lookup is not None:
             return StationCodeResolution(

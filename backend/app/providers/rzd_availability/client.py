@@ -12,7 +12,9 @@ from rzd_api import Config, RzdClient
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.rzd_availability.exceptions import (
     RZDAvailabilityError,
+    RZDNoSeatsError,
     RZDStationNotFound,
+    SameStationCodeError,
 )
 from app.providers.rzd_availability.mapper import map_train
 from app.providers.rzd_availability.models import RZDSearchResult, RZDStation
@@ -22,6 +24,23 @@ from app.providers.rzd_availability.station_resolver import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def rzd_error_code(exc: BaseException) -> int | None:
+    """Read an SDK error code without depending on a particular SDK release."""
+    current: BaseException | None = exc
+    while current is not None:
+        for attribute in ("code", "error_code"):
+            value = getattr(current, attribute, None)
+            try:
+                if value is not None and int(value) == 311:
+                    return 311
+            except (TypeError, ValueError):
+                pass
+        if "error 311" in str(current).casefold():
+            return 311
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class RZDClient:
@@ -75,6 +94,8 @@ class RZDClient:
                 # preserve it for the stage boundary instead of retrying it.
                 raise
             except Exception as exc:
+                if rzd_error_code(exc) == 311:
+                    raise RZDNoSeatsError(str(exc)) from exc
                 last = exc
                 if attempt < self.config.retries:
                     await asyncio.sleep(self.config.backoff_seconds * (2**attempt))
@@ -200,13 +221,6 @@ class RZDClient:
         try:
             timings: dict[str, float] = {}
 
-            async def init_sdk() -> Any:
-                return self._get_sdk()
-
-            _, timings["sdk_init"] = await self._stage(
-                "sdk_init", origin, destination, init_sdk
-            )
-
             async def find_origin() -> StationCodeResolution:
                 return await self.resolve_station_code(
                     origin, origin_code, origin_location_id, not skip_station_lookup
@@ -246,6 +260,16 @@ class RZDClient:
                     "timings": timings,
                 }
 
+            if origin_station.code == destination_station.code:
+                raise SameStationCodeError(
+                    origin=origin,
+                    destination=destination,
+                    origin_code=origin_station.code,
+                    destination_code=destination_station.code,
+                    origin_source=origin_resolution.source,
+                    destination_source=destination_resolution.source,
+                )
+
             async def resolved_codes() -> dict[str, str]:
                 return {
                     "origin": origin_station.code,
@@ -265,6 +289,13 @@ class RZDClient:
                     "result": intermediate,
                     "timings": timings,
                 }
+
+            async def init_sdk() -> Any:
+                return self._get_sdk()
+
+            _, timings["sdk_init"] = await self._stage(
+                "sdk_init", origin, destination, init_sdk
+            )
 
             async def search_tickets() -> Any:
                 return await self._retry(
