@@ -41,12 +41,28 @@ class RZDAvailabilityProvider:
         started = time.monotonic()
         status, error = "ok", None
         try:
+            origin_code = self._endpoint_value(
+                segment,
+                request,
+                "origin",
+                "rzd_origin_code",
+            )
+            destination_code = self._endpoint_value(
+                segment,
+                request,
+                "destination",
+                "rzd_destination_code",
+            )
             search = await asyncio.wait_for(
                 self.client.search(
                     segment.origin_city.name,
                     segment.destination_city.name,
                     segment.departure_datetime.date(),
                     request.passengers,
+                    origin_code=origin_code,
+                    destination_code=destination_code,
+                    origin_location_id=request.origin_location_id,
+                    destination_location_id=request.destination_location_id,
                 ),
                 timeout=self.config.timeout_seconds,
             )
@@ -103,3 +119,27 @@ class RZDAvailabilityProvider:
                     "error": error,
                 },
             )
+
+    @staticmethod
+    def _endpoint_value(
+        segment: TransportSegment,
+        request: RouteSearchRequest,
+        endpoint: str,
+        metadata_key: str,
+    ) -> str | None:
+        metadata_value = segment.metadata.get(metadata_key)
+        if metadata_value:
+            return str(metadata_value)
+        station = getattr(segment, f"{endpoint}_station")
+        if station.id and (
+            station.id.isdigit()
+            or (station.id.lower().startswith("s") and station.id[1:].isdigit())
+        ):
+            return station.id
+        city = getattr(segment, f"{endpoint}_city").name.casefold()
+        request_city = getattr(request, endpoint).casefold()
+        return (
+            getattr(request, f"{endpoint}_provider_code")
+            if city == request_city
+            else None
+        )

@@ -44,6 +44,7 @@ class FakeRZD:
         self.search_calls = 0
 
         self.search_kwargs = None
+        self.search_route = None
 
     def find_stations(self, query):
         self.station_calls += 1
@@ -51,6 +52,7 @@ class FakeRZD:
 
     def search_tickets(self, origin, destination, departure_date, **kwargs):
         self.search_calls += 1
+        self.search_route = (origin, destination)
         self.search_kwargs = kwargs
         return [TrainRoute()]
 
@@ -60,7 +62,7 @@ def config(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_client_looks_up_stations_carriages_and_caches_identical_searches():
+async def test_client_uses_static_codes_and_caches_identical_searches():
     sdk = FakeRZD()
     client = RZDClient(config(), sdk_factory=lambda _: sdk)
     first = await client.search("Москва", "Петербург", date(2026, 8, 10), 2)
@@ -68,8 +70,58 @@ async def test_client_looks_up_stations_carriages_and_caches_identical_searches(
     assert first is second
     assert first.trains[0].available_seats == 2
     assert sdk.search_kwargs == {"adults": 2, "children": 0}
-    assert sdk.station_calls == 2
+    assert sdk.station_calls == 0
     assert sdk.search_calls == 1
+    assert sdk.search_route == ("2000000", "2004000")
+
+
+@pytest.mark.asyncio
+async def test_explicit_codes_fully_bypass_station_lookup():
+    sdk = FakeRZD()
+    client = RZDClient(config(), sdk_factory=lambda _: sdk)
+
+    await client.search(
+        "Неизвестный пункт A",
+        "Неизвестный пункт B",
+        date(2026, 8, 10),
+        origin_code="2000000",
+        destination_code="2004000",
+        skip_station_lookup=True,
+    )
+
+    assert sdk.station_calls == 0
+    assert sdk.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_station_lookup_timeout_does_not_affect_code_search():
+    sdk = SlowRZD("origin_station_lookup")
+    client = RZDClient(
+        config(station_lookup_timeout_seconds=0.001), sdk_factory=lambda _: sdk
+    )
+
+    result = await client.search(
+        "A",
+        "B",
+        date(2026, 8, 10),
+        origin_code="2000000",
+        destination_code="2004000",
+    )
+
+    assert result.trains
+    assert sdk.station_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_yandex_city_code_is_not_assumed_to_be_express_code_and_cache_wins():
+    sdk = FakeRZD()
+    client = RZDClient(config(), sdk_factory=lambda _: sdk)
+
+    resolution = await client.resolve_station_code("Москва", provider_code="c213")
+
+    assert resolution.station.code == "2000000"
+    assert resolution.source == "cache"
+    assert not resolution.sdk_lookup_used
 
 
 class SlowRZD(FakeRZD):
@@ -80,7 +132,7 @@ class SlowRZD(FakeRZD):
     def find_stations(self, query):
         stage = (
             "origin_station_lookup"
-            if query == "Москва"
+            if query in {"Москва", "Origin"}
             else "destination_station_lookup"
         )
         if self.slow_stage == stage:
@@ -108,7 +160,7 @@ async def test_client_timeout_identifies_sdk_stage(stage):
     with pytest.raises(
         RZDAvailabilityError, match=f"rzd_stage_timeout:{stage}"
     ) as error:
-        await client.search("Москва", "Петербург", date(2026, 8, 10))
+        await client.search("Origin", "Destination", date(2026, 8, 10))
 
     assert error.value.stage == stage
     assert error.value.elapsed_ms is not None
@@ -120,14 +172,14 @@ async def test_stop_after_stage_returns_intermediate_result_without_later_calls(
     client = RZDClient(config(), sdk_factory=lambda _: sdk)
 
     result = await client.search(
-        "Москва",
-        "Петербург",
+        "Origin",
+        "Destination",
         date(2026, 8, 10),
         stop_after_stage="origin_station_lookup",
     )
 
     assert result["stage"] == "origin_station_lookup"
-    assert result["result"]["origin_station"].name == "Москва"
+    assert result["result"]["origin_station"].name == "Origin"
     assert "origin_station_lookup" in result["timings"]
     assert sdk.station_calls == 1
     assert sdk.search_calls == 0

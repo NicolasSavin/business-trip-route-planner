@@ -21,10 +21,53 @@ class RZDDebugSearchRequest(BaseModel):
     destination: str = Field(min_length=1)
     date: date
     passengers: int = Field(default=1, ge=1, le=9)
+    origin_code: str | None = None
+    destination_code: str | None = None
+    skip_station_lookup: bool = False
     stop_after_stage: (
-        Literal["origin_station_lookup", "destination_station_lookup", "ticket_search"]
+        Literal[
+            "origin_station_lookup",
+            "destination_station_lookup",
+            "station_codes_resolved",
+            "ticket_search",
+        ]
         | None
     ) = None
+
+
+class RZDStationCodeRequest(BaseModel):
+    query: str = Field(min_length=1)
+    provider_code: str | None = None
+
+
+@router.post("/station-code", response_model=None)
+async def resolve_rzd_station_code(payload: RZDStationCodeRequest) -> Response:
+    if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        result = await RZDClient().resolve_station_code(
+            payload.query, provider_code=payload.provider_code
+        )
+    except (RzdError, RZDAvailabilityError, ValueError) as exc:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "resolved": False,
+                "rzd_code": None,
+                "source": None,
+                "sdk_lookup_used": False,
+                "message": str(exc),
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "resolved": True,
+            "rzd_code": result.station.code,
+            "source": result.source,
+            "sdk_lookup_used": result.sdk_lookup_used,
+        },
+    )
 
 
 def _serialize(value: Any) -> Any:
@@ -47,15 +90,23 @@ def _serialize(value: Any) -> Any:
 async def search_rzd(payload: RZDDebugSearchRequest) -> Response:
     if os.getenv("APP_ENV", "development").lower() in {"production", "prod"}:
         raise HTTPException(status_code=404, detail="Not found")
+    if payload.skip_station_lookup and (
+        not payload.origin_code or not payload.destination_code
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="origin_code and destination_code are required when skip_station_lookup=true",
+        )
     started = time.monotonic()
     try:
         args = (payload.origin, payload.destination, payload.date, payload.passengers)
-        if payload.stop_after_stage:
-            result = await RZDClient().search(
-                *args, stop_after_stage=payload.stop_after_stage
-            )
-        else:
-            result = await RZDClient().search(*args)
+        result = await RZDClient().search(
+            *args,
+            origin_code=payload.origin_code,
+            destination_code=payload.destination_code,
+            skip_station_lookup=payload.skip_station_lookup,
+            stop_after_stage=payload.stop_after_stage,
+        )
     except (RzdError, RZDAvailabilityError) as exc:
         details = {
             "origin": payload.origin,
