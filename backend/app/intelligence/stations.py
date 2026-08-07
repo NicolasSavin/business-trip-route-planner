@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
+import unicodedata
 
 from app.domain import Station, TransportSegment
 
@@ -16,6 +18,11 @@ DEFAULT_CITY_STATIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+def normalize_location_name(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")
+    return " ".join(re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).split())
+
+
 @dataclass(frozen=True)
 class StationResolver:
     city_stations: dict[str, tuple[str, ...]] = field(default_factory=lambda: DEFAULT_CITY_STATIONS.copy())
@@ -26,6 +33,15 @@ class StationResolver:
         for city in known_cities:
             if self._normalize(city) == normalized:
                 return (city,)
+        # Provider settlements are canonical city names, while a station-level
+        # search may carry the station title as its display value.
+        for segment in segments:
+            for station, city in (
+                (segment.origin_station, segment.origin_city),
+                (segment.destination_station, segment.destination_city),
+            ):
+                if self._normalize(station.name) == normalized:
+                    return (city.name,)
         for city, stations in self.city_stations.items():
             if any(self._normalize(station) == normalized for station in stations):
                 return (city,)
@@ -42,7 +58,9 @@ class StationResolver:
         return tuple(stations.values())
 
     def _normalize(self, value: str) -> str:
-        return " ".join(value.lower().replace("ё", "е").split())
+        # Yandex and our location catalogue do not consistently spell compound
+        # city names with the same kind of dash (or with a dash at all).
+        return normalize_location_name(value)
 
 
 def segment_city(name: str):

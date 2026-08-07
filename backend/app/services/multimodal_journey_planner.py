@@ -140,6 +140,9 @@ class MultimodalJourneyPlanner:
             filtered_direct_candidates=[self.route_engine._describe_segment(o.route.segments[0]) for o in routes if o.route.transfers_count == 0],
             rejection_reasons=[*candidate_diagnostics.get("rejection_reasons", []), *availability_rejections],
             ranked_candidates=[self.route_engine._describe_route(o.route, o.rank) for o in checked],
+            resolved_origin_cities=candidate_diagnostics.get("resolved_origin_cities", []),
+            resolved_destination_cities=candidate_diagnostics.get("resolved_destination_cities", []),
+            direct_match_decisions=candidate_diagnostics.get("direct_match_decisions", []),
         )
         if enrichment_errors:
             logger.info("route_search.provider error added to SearchSummary", extra={"providers": list(enrichment_errors)})
