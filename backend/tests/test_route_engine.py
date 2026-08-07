@@ -5,6 +5,7 @@ from app.domain import Carrier, City, Station, TransportClass, TransportSegment,
 from app.engine import RouteEngine
 from app.graph.builder import GraphBuilder
 from app.scoring.service import ScoringService
+from app.providers.yandex.mapper import YandexRaspMapper
 from app.validators.validation import ValidationService
 
 DAY = date(2026, 8, 10)
@@ -115,3 +116,66 @@ def test_route_engine_filters_routes_without_enough_seats():
 def test_transfer_requires_minimum_wait_in_same_city():
     routes = RouteEngine(Provider([seg("ab", "A", "B", dt(8), dt(9)), seg("bc", "B", "C", dt(9), dt(11))])).search(DAY, "A", "C", 1, [TransportType.TRAIN], 1, 30)
     assert routes == []
+
+
+def yandex_moscow_petersburg_segment():
+    payload = {"segments": [{
+        "from": {"code": "s2000009", "title": "Москва Октябрьская", "settlement": {"title": "Москва"}},
+        "to": {"code": "s2004001", "title": "Санкт-Петербург-Главн.", "settlement": {"title": "Санкт-Петербург"}},
+        "departure": "2026-08-10T00:25:00+03:00",
+        "arrival": "2026-08-10T08:53:00+03:00",
+        "thread": {"uid": "022A", "number": "022А", "title": "Москва — Санкт-Петербург", "transport_type": "train"},
+    }]}
+    return YandexRaspMapper().to_segments(payload)[0]
+
+
+@pytest.mark.parametrize("max_transfers", [0, 1])
+def test_yandex_direct_city_route_matches_hyphen_variant_and_ranks_first(max_transfers):
+    direct = yandex_moscow_petersburg_segment()
+    via_ryazan = [
+        seg("moscow-ryazan", "Москва", "Рязань", dt(1), dt(5)),
+        seg("ryazan-petersburg", "Рязань", "Санкт-Петербург", dt(6), dt(15)),
+    ]
+    engine = RouteEngine(Provider([direct, *via_ryazan]))
+
+    routes = engine.search(
+        DAY, "Москва", "Санкт Петербург", 1, [TransportType.TRAIN],
+        max_transfers, 30, origin_provider_code="not-a-station",
+        destination_provider_code="not-a-station", origin_location_type="city",
+        destination_location_type="city", include_unavailable=True,
+    )
+
+    assert routes[0].route.segments[0].vehicle_number == "022А"
+    assert routes[0].route.transfers_count == 0
+    assert any(item["train_number"] == "022А" for item in engine.last_diagnostics["raw_direct_candidates"])
+    assert any(item["train_numbers"] == ["022А"] for item in engine.last_diagnostics["ranked_candidates"])
+    if max_transfers == 1:
+        assert any(route.route.transfers_count == 1 and route.route.total_duration_minutes == 14 * 60 for route in routes)
+
+    decision = next(item for item in engine.last_diagnostics["direct_match_decisions"] if item["candidate"]["train_number"] == "022А")
+    assert decision["segment_origin_city"] == "Москва"
+    assert decision["segment_destination_city"] == "Санкт-Петербург"
+    assert decision["station_matching"] == {
+        "origin_enforced": False, "destination_enforced": False,
+        "origin_match": True, "destination_match": True,
+    }
+    assert decision["rejection_reason"] is None
+
+
+def test_yandex_direct_station_search_resolves_settlement_and_enforces_station_ids():
+    direct = yandex_moscow_petersburg_segment()
+    engine = RouteEngine(Provider([direct]))
+
+    routes = engine.search(
+        DAY, "Москва Октябрьская", "Санкт-Петербург-Главн.", 1,
+        [TransportType.TRAIN], 0, 30, origin_provider_code="s2000009",
+        destination_provider_code="s2004001", origin_location_type="railway_station",
+        destination_location_type="station", include_unavailable=True,
+    )
+
+    assert routes[0].route.segments == (direct,)
+    decision = engine.last_diagnostics["direct_match_decisions"][0]
+    assert decision["resolved_origin_cities"] == ["Москва"]
+    assert decision["resolved_destination_cities"] == ["Санкт-Петербург"]
+    assert decision["station_matching"]["origin_enforced"] is True
+    assert decision["station_matching"]["destination_enforced"] is True

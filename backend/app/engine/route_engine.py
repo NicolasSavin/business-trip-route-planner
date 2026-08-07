@@ -5,6 +5,7 @@ from app.availability import AvailabilityEngine, AvailabilityPolicy
 from app.domain import Route, TransportProvider, TransportType
 from app.graph.builder import GraphBuilder
 from app.intelligence import NearbyCityResolver, RouteComparator, StationResolver, TransferEngine
+from app.intelligence.stations import normalize_location_name
 from app.scoring.service import ScoringService
 from app.validators.validation import ValidationService
 
@@ -75,7 +76,7 @@ class RouteEngine:
         destination_station = self._station_code(destination_location_id, destination_provider_code, destination_location_type)
         # Direct candidates are generated independently of the transfer graph.
         # max_transfers is an upper bound, so these are valid for every value.
-        direct_routes, direct_rejections = self._direct_routes(
+        direct_routes, direct_rejections, direct_decisions = self._direct_routes(
             segments, origin_cities, destination_cities, origin_station,
             destination_station, maximum_total_duration_minutes,
         )
@@ -90,9 +91,12 @@ class RouteEngine:
                     break
         ranked = self.route_comparator.rank(routes)
         self.last_diagnostics = {
-            "raw_direct_candidates": [self._describe_segment(segment) for segment in segments if segment.origin_city.name in origin_cities and segment.destination_city.name in destination_cities],
+            "resolved_origin_cities": list(origin_cities),
+            "resolved_destination_cities": list(destination_cities),
+            "raw_direct_candidates": [decision["candidate"] for decision in direct_decisions if decision["city_match"]],
             "filtered_direct_candidates": [self._describe_segment(route.segments[0]) for route in direct_routes],
             "rejection_reasons": direct_rejections,
+            "direct_match_decisions": direct_decisions,
             "ranked_candidates": [self._describe_route(option.route, option.rank) for option in ranked],
         }
         logger.info("route_search.dedup_rank routes_before_rank=%s routes_after_rank=%s", len(routes), len(ranked))
@@ -110,22 +114,49 @@ class RouteEngine:
         return available
 
     def _direct_routes(self, segments, origin_cities, destination_cities, origin_station, destination_station, maximum_duration):
-        routes, rejected = [], []
+        routes, rejected, decisions = [], [], []
         for segment in segments:
-            if segment.origin_city.name not in origin_cities or segment.destination_city.name not in destination_cities:
-                continue
+            origin_city_match = self._location_matches(segment.origin_city.name, origin_cities)
+            destination_city_match = self._location_matches(segment.destination_city.name, destination_cities)
             reasons = []
-            if origin_station and segment.origin_station.id.lower() != origin_station.lower():
+            if not origin_city_match:
+                reasons.append("origin_city_mismatch")
+            if not destination_city_match:
+                reasons.append("destination_city_mismatch")
+            origin_station_match = origin_station is None or segment.origin_station.id.casefold() == origin_station.casefold()
+            destination_station_match = destination_station is None or segment.destination_station.id.casefold() == destination_station.casefold()
+            if not origin_station_match:
                 reasons.append("origin_station_mismatch")
-            if destination_station and segment.destination_station.id.lower() != destination_station.lower():
+            if not destination_station_match:
                 reasons.append("destination_station_mismatch")
             if maximum_duration is not None and segment.duration_minutes > maximum_duration:
                 reasons.append("maximum_total_duration_exceeded")
+            candidate = self._describe_segment(segment)
+            decision = {
+                "candidate": candidate,
+                "resolved_origin_cities": list(origin_cities),
+                "resolved_destination_cities": list(destination_cities),
+                "segment_origin_city": segment.origin_city.name,
+                "segment_destination_city": segment.destination_city.name,
+                "city_match": origin_city_match and destination_city_match,
+                "station_matching": {
+                    "origin_enforced": origin_station is not None,
+                    "destination_enforced": destination_station is not None,
+                    "origin_match": origin_station_match,
+                    "destination_match": destination_station_match,
+                },
+                "rejection_reason": reasons or None,
+            }
+            decisions.append(decision)
             if reasons:
-                rejected.append({"candidate": self._describe_segment(segment), "reasons": reasons, "stage": "schedule_filter"})
+                rejected.append({"candidate": candidate, "reasons": reasons, "stage": "schedule_filter"})
             else:
                 routes.append(Route((segment,)))
-        return routes, rejected
+        return routes, rejected, decisions
+
+    def _location_matches(self, segment_city: str, resolved_cities) -> bool:
+        normalized_segment_city = normalize_location_name(segment_city)
+        return any(normalize_location_name(city) == normalized_segment_city for city in resolved_cities)
 
     def _dedupe_routes(self, routes):
         output, seen = [], set()

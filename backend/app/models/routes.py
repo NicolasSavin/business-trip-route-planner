@@ -160,6 +160,9 @@ class SearchSummary(BaseModel):
     filtered_direct_candidates: list[dict[str, Any]] = Field(default_factory=list)
     rejection_reasons: list[dict[str, Any]] = Field(default_factory=list)
     ranked_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    resolved_origin_cities: list[str] = Field(default_factory=list)
+    resolved_destination_cities: list[str] = Field(default_factory=list)
+    direct_match_decisions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RouteSearchResponse(BaseModel):
