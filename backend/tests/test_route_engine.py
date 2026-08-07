@@ -71,6 +71,27 @@ def test_route_engine_finds_one_transfer_route():
     assert routes[0].route.transfers_count == 1
 
 
+def test_max_transfers_one_includes_direct_and_transfer_routes():
+    routes = RouteEngine(Provider([
+        seg("sapsan", "A", "C", dt(8), dt(12)),
+        seg("ab", "A", "B", dt(7), dt(12)),
+        seg("bc", "B", "C", dt(13), dt(21)),
+    ])).search(DAY, "A", "C", 1, [TransportType.TRAIN], 1, 30)
+
+    assert {route.route.transfers_count for route in routes} == {0, 1}
+    assert routes[0].route.segments[0].vehicle_number == "sapsan"
+
+
+def test_max_transfers_zero_only_includes_direct_route():
+    routes = RouteEngine(Provider([
+        seg("direct", "A", "C", dt(8), dt(12)),
+        seg("ab", "A", "B", dt(7), dt(9)),
+        seg("bc", "B", "C", dt(10), dt(12)),
+    ])).search(DAY, "A", "C", 1, [TransportType.TRAIN], 0, 30)
+
+    assert [route.route.transfers_count for route in routes] == [0]
+
+
 def test_route_engine_finds_two_transfer_route():
     routes = RouteEngine(Provider([
         seg("ab", "A", "B", dt(6), dt(7)),

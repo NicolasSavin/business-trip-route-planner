@@ -83,7 +83,9 @@ const initialForm: FormState = {
   max_transfers: 1,
   minimum_transfer_minutes: 45,
   maximum_transfer_minutes: 360,
-  strict_availability: true,
+  // Unknown seat inventory must not hide a valid timetable unless the user
+  // explicitly opts into confirmed-only results.
+  strict_availability: false,
   lower_only: true,
   same_compartment: true,
 };
