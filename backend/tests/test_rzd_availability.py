@@ -372,7 +372,7 @@ class NoSeatsClient:
 
 
 @pytest.mark.asyncio
-async def test_provider_maps_error_311_to_unavailable():
+async def test_provider_keeps_direction_level_error_311_unknown():
     result = await RZDAvailabilityProvider(NoSeatsClient(), config()).check_segment(
         segment(),
         RouteSearchRequest(
@@ -380,9 +380,22 @@ async def test_provider_maps_error_311_to_unavailable():
             departure_date="2026-08-10", passengers=1,
         ),
     )
+    assert result.status == AvailabilityStatus.UNKNOWN
+    assert result.available_places_count is None
+    assert result.schedule_confirmed is True
+    assert result.seats_confirmed is False
+    assert result.metadata["rzd_error_code"] == 311
+
+
+def test_exact_matched_train_with_too_few_places_is_unavailable():
+    train = map_train({"number": "8C", "carriages": [{"available_places": 0}]})
+
+    result = to_segment_result(segment(), train, passengers=1)
+
     assert result.status == AvailabilityStatus.UNAVAILABLE
     assert result.available_places_count == 0
-    assert result.metadata["rzd_error_code"] == 311
+    assert result.metadata["availability_match"] == "exact_train_and_query"
+    assert result.metadata["requested_passengers"] == 1
 
 
 class NoTrainClient:

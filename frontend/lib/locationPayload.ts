@@ -46,6 +46,7 @@ function locationType(selected: SelectedLocation): LocationType | null {
 export function buildRouteSearchPayload(formState: RouteFormState): RouteSearchPayload {
   const allowed_transport: TransportType[] =
     formState.transport === "both" ? ["train", "bus"] : [formState.transport];
+  const hasSeatRestrictions = formState.lower_only || formState.same_compartment;
   return {
     origin: locationTitle(formState.originLocation, formState.origin),
     destination: locationTitle(formState.destinationLocation, formState.destination),
@@ -65,15 +66,15 @@ export function buildRouteSearchPayload(formState: RouteFormState): RouteSearchP
     strict_availability: formState.strict_availability,
     preferred_classes: formState.same_compartment ? ["coupe"] : [],
     seat_policy_scope: "every_rail_segment",
-    seat_preferences: {
+    seat_preferences: hasSeatRestrictions ? {
       preferred_classes: formState.same_compartment ? ["coupe"] : [],
       berth_preference: formState.lower_only ? "lower_only" : "any",
       require_same_compartment: formState.same_compartment,
-      require_same_carriage: true,
+      require_same_carriage: formState.same_compartment,
       allow_split_group: false,
       maximum_compartments: formState.same_compartment ? 1 : null,
       strict_preferences: true,
-    },
+    } : null,
     require_group_together: true,
     allow_split_group: false,
   };

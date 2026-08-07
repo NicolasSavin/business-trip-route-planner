@@ -260,6 +260,51 @@ def test_tutu_provider_error_keeps_partial_route_with_unknown_availability(monke
     assert body["provider_errors"]["tutu_playwright"]["errors"][0]["details"]["segment_id"] == "bc"
 
 
+def test_api_keeps_direct_yandex_timetable_when_seats_are_inconclusive(monkeypatch):
+    direct = segment("direct", "Москва", "Санкт-Петербург", dt(8), dt(12))
+    first = segment("first", "Москва", "Рязань", dt(7), dt(9))
+    second = segment("second", "Рязань", "Санкт-Петербург", dt(10), dt(14))
+    service = RouteSearchService(Provider([direct, first, second]))
+    unknown = {
+        item.id: SegmentAvailabilityResult(
+            segment_id=item.id,
+            provider="tutu_playwright",
+            status=AvailabilityStatus.UNCONFIRMED,
+            schedule_confirmed=True,
+            seats_confirmed=False,
+            passengers_supported=False,
+            available_places_count=None,
+            seat_preferences_status=AvailabilityStatus.UNKNOWN,
+            reasons=("Расписание найдено, наличие мест не подтверждено",),
+        )
+        for item in (direct, first, second)
+    }
+    service.planner.tutu_playwright = TutuClient(unknown)
+    monkeypatch.setattr(routes_api, "service", service)
+
+    response = TestClient(app).post(
+        "/api/v1/routes/search",
+        json={
+            "origin": "Москва",
+            "destination": "Санкт-Петербург",
+            "departure_date": "2026-08-10",
+            "passengers": 1,
+            "allowed_transport": ["train"],
+            "max_transfers": 1,
+            "minimum_transfer_minutes": 45,
+            "maximum_transfer_minutes": 360,
+            "strict_availability": False,
+            "seat_preferences": None,
+        },
+    )
+
+    assert response.status_code == 200
+    routes = response.json()["routes"]
+    assert [route["transfers_count"] for route in routes] == [0, 1]
+    assert routes[0]["segments"][0]["id"] == "direct"
+    assert routes[0]["availability"]["is_available"] is None
+
+
 def test_openapi_marks_route_availability_as_nullable():
     schema = app.openapi()
     availability_schema = schema["components"]["schemas"]["RouteAvailability-Output"]["properties"]["is_available"]

@@ -108,7 +108,7 @@ export type RouteSearchPayload = {
   strict_availability?: boolean;
   allowed_transport_types?: TransportType[];
   seat_policy_scope?: "every_rail_segment" | "first_rail_segment_only" | "any_rail_segment";
-  seat_preferences?: { preferred_classes?: TransportClass[]; berth_preference?: "any" | "lower_only" | "upper_only"; require_same_compartment?: boolean; require_same_carriage?: boolean; allow_split_group?: boolean; maximum_compartments?: number | null; strict_preferences?: boolean };
+  seat_preferences?: { preferred_classes?: TransportClass[]; berth_preference?: "any" | "lower_only" | "upper_only"; require_same_compartment?: boolean; require_same_carriage?: boolean; allow_split_group?: boolean; maximum_compartments?: number | null; strict_preferences?: boolean } | null;
   preferred_classes?: TransportClass[];
   require_group_together?: boolean;
   allow_split_group?: boolean;
