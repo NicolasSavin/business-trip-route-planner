@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 import httpx
@@ -47,6 +48,58 @@ def test_successful_search_maps_train_route():
     direct = provider.last_diagnostics["raw_direct_candidates"][0]
     assert direct["train_number"] == "001А"
     assert direct["departure"] == "2026-08-10T08:00:00+03:00"
+
+
+def test_yandex_search_logs_direct_segment_diagnostics(caplog):
+    direct = segment()
+    direct["thread"]["title"] = "Москва — Санкт-Петербург"
+    provider, _ = provider_with_payload({"segments": [direct]})
+
+    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+        provider.get_segments(
+            DAY,
+            [TransportType.TRAIN],
+            origin="Москва",
+            destination="Санкт-Петербург",
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    segment_message = next(
+        message for message in messages
+        if message.startswith("route_search.yandex_direct_segment")
+    )
+    assert "number='001А'" in segment_message
+    assert "title='Москва — Санкт-Петербург'" in segment_message
+    assert "origin='Москва'" in segment_message
+    assert "destination='Санкт-Петербург'" in segment_message
+    assert "origin_station='Москва'" in segment_message
+    assert "destination_station='Санкт-Петербург'" in segment_message
+    assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
+    assert "route_search.yandex_segments_total count=4" in messages
+    assert "route_search.yandex_direct_candidates_to_route_engine count=1" in messages
+
+
+def test_yandex_search_logs_reason_when_no_direct_candidates(caplog):
+    provider, _ = provider_with_payload({"segments": []})
+
+    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+        try:
+            provider.get_segments(
+                DAY,
+                [TransportType.TRAIN],
+                origin="Москва",
+                destination="Санкт-Петербург",
+            )
+        except Exception:
+            pass
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "route_search.yandex_segments_total count=0" in messages
+    assert "route_search.yandex_direct_candidates_to_route_engine count=0" in messages
+    assert (
+        "route_search.yandex_direct_candidates_to_route_engine_zero "
+        "reason=yandex_returned_no_segments"
+    ) in messages
 
 
 def test_bus_segment_is_supported():
