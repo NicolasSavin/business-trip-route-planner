@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime
 
 from fastapi.testclient import TestClient
@@ -170,6 +171,34 @@ def post_search_with_service(monkeypatch, service):
             "strict_availability": False,
         },
     )
+
+
+def test_search_endpoint_executes_multimodal_planner_and_route_engine(monkeypatch, caplog):
+    """The public endpoint must not bypass the planner's RouteEngine path."""
+    service = RouteSearchService(Provider([]))
+    calls = []
+    planner_impl = service.planner._search_async_impl
+    route_engine_search = service.planner.route_engine.search
+
+    async def traced_planner_impl(request):
+        calls.append("MultimodalJourneyPlanner._search_async_impl")
+        return await planner_impl(request)
+
+    def traced_route_engine_search(**kwargs):
+        calls.append("RouteEngine.search")
+        return route_engine_search(**kwargs)
+
+    monkeypatch.setattr(service.planner, "_search_async_impl", traced_planner_impl)
+    monkeypatch.setattr(service.planner.route_engine, "search", traced_route_engine_search)
+    caplog.set_level(logging.INFO)
+
+    response = post_search_with_service(monkeypatch, service)
+
+    assert response.status_code == 200
+    assert calls == ["MultimodalJourneyPlanner._search_async_impl", "RouteEngine.search"]
+    assert "route_search.endpoint_enter" in caplog.text
+    assert "planner_class=MultimodalJourneyPlanner" in caplog.text
+    assert "route_search.actual_route_engine_call" in caplog.text
 
 
 def test_route_availability_allows_unknown_and_api_serializes_null(monkeypatch):
