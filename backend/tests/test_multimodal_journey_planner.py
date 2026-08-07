@@ -4,7 +4,9 @@ import pytest
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest, SeatPreferencesRequest
+from app.providers.yandex.mapper import YandexRaspMapper
 from app.services.multimodal_journey_planner import MultimodalJourneyPlanner
+from app.services.route_search import RouteSearchService
 from app.services.segment_enrichment import SegmentEnrichmentService
 
 DAY = date(2026, 7, 28)
@@ -116,6 +118,42 @@ def test_yandex_schedule_only_strict_is_not_confirmed_and_explains_unavailable_d
     assert summary.confirmed_routes == 0
     assert summary.partially_confirmed_routes == 1
     assert summary.rejected_routes == 0
+
+
+def yandex_moscow_petersburg_schedule():
+    payload = {"segments": [{
+        "from": {"code": "s2000009", "title": "Москва Октябрьская", "settlement": {"title": "Москва"}},
+        "to": {"code": "s2004001", "title": "Санкт-Петербург-Главн.", "settlement": {"title": "Санкт-Петербург"}},
+        "departure": "2026-07-28T00:25:00+03:00",
+        "arrival": "2026-07-28T08:53:00+03:00",
+        "thread": {"uid": "022A", "number": "022А", "title": "Москва — Санкт-Петербург", "transport_type": "train"},
+    }]}
+    return YandexRaspMapper().to_segments(payload)[0]
+
+
+def test_api_preserves_direct_yandex_unknown_availability_when_not_confirmed_only():
+    service = RouteSearchService(Provider([yandex_moscow_petersburg_schedule()]))
+    response = service.search_response(req(
+        origin="Москва", destination="Санкт-Петербург", max_transfers=1,
+        strict_availability=False, allowed_transport=["train"],
+    ))
+
+    assert len(response.routes) == 1
+    assert response.routes[0].transfers_count == 0
+    assert response.routes[0].segments[0].number == "022А"
+    assert response.routes[0].availability.is_available is None
+
+
+def test_api_confirmed_only_hides_direct_yandex_unknown_availability():
+    service = RouteSearchService(Provider([yandex_moscow_petersburg_schedule()]))
+    response = service.search_response(req(
+        origin="Москва", destination="Санкт-Петербург", max_transfers=1,
+        strict_availability=True, allowed_transport=["train"],
+    ))
+
+    assert response.routes == []
+    assert len(response.partially_confirmed_routes) == 1
+    assert response.partially_confirmed_routes[0].transfers_count == 0
 
 class TutuProviderErrorClient:
     def __init__(self, messages):
