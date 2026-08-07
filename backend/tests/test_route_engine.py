@@ -149,7 +149,13 @@ def test_yandex_direct_city_route_matches_hyphen_variant_and_ranks_first(max_tra
     assert routes[0].route.segments[0].vehicle_number == "022А"
     assert routes[0].route.transfers_count == 0
     assert any(item["train_number"] == "022А" for item in engine.last_diagnostics["raw_direct_candidates"])
+    assert any(item["train_number"] == "022А" for item in engine.last_diagnostics["filtered_direct_candidates"])
     assert any(item["train_numbers"] == ["022А"] for item in engine.last_diagnostics["ranked_candidates"])
+    assert engine.last_diagnostics["direct_candidate_source"] == {
+        "collection": "provider_segments",
+        "total_segment_count": 3,
+        "direct_match_count": 1,
+    }
     if max_transfers == 1:
         assert any(route.route.transfers_count == 1 and route.route.total_duration_minutes == 14 * 60 for route in routes)
 

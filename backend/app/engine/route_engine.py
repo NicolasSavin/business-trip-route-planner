@@ -78,11 +78,20 @@ class RouteEngine:
         destination_cities = self.station_resolver.resolve_city_names(destination, segments)
         origin_station = self._station_code(origin_location_id, origin_provider_code, origin_location_type)
         destination_station = self._station_code(destination_location_id, destination_provider_code, destination_location_type)
-        # Direct candidates are generated independently of the transfer graph.
-        # max_transfers is an upper bound, so these are valid for every value.
+        # Keep the complete provider output as the source of direct candidates.
+        # The graph is an additional representation used for transfer searches;
+        # its edges must never become the source here because graph preparation
+        # may select only the legs useful for connecting paths.
+        direct_candidate_segments = segments
         direct_routes, direct_rejections, direct_decisions = self._direct_routes(
-            segments, origin_cities, destination_cities, origin_station,
+            direct_candidate_segments, origin_cities, destination_cities, origin_station,
             destination_station, maximum_total_duration_minutes,
+        )
+        direct_match_count = sum(decision["city_match"] for decision in direct_decisions)
+        logger.info(
+            "route_search.route_engine_direct_candidate_source collection=%s "
+            "total_segment_count=%s direct_match_count=%s",
+            "provider_segments", len(direct_candidate_segments), direct_match_count,
         )
         logger.info(
             "route_search.route_engine_direct_candidates count=%s segments=%s",
@@ -103,6 +112,11 @@ class RouteEngine:
             "input_segment_count": len(segments),
             "input_segments": input_descriptions,
             "direct_candidate_count": len(direct_routes),
+            "direct_candidate_source": {
+                "collection": "provider_segments",
+                "total_segment_count": len(direct_candidate_segments),
+                "direct_match_count": direct_match_count,
+            },
             "resolved_origin_cities": list(origin_cities),
             "resolved_destination_cities": list(destination_cities),
             "raw_direct_candidates": [decision["candidate"] for decision in direct_decisions if decision["city_match"]],
