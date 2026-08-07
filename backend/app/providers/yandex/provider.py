@@ -34,6 +34,10 @@ class YandexRaspProvider(TransportProvider):
             pairs = [(origin, destination)] if origin and destination else [("Москва", "Санкт-Петербург")]
             segments: list[TransportSegment] = []
             pair_errors: list[dict[str, Any]] = []
+            yandex_segment_count = 0
+            raw_direct_segment_count = 0
+            direct_candidate_ids: set[str] = set()
+            direct_candidate_count = 0
             for origin_name, destination_name in pairs:
                 origin_resolution = self._resolve_location(origin_name or "", origin_provider_code)
                 destination_resolution = self._resolve_location(destination_name or "", destination_provider_code)
@@ -56,6 +60,9 @@ class YandexRaspProvider(TransportProvider):
                         attempt_diag["request_params"] = getattr(self.client, "last_request_params", None)
                         self._validate_payload(payload, diagnostics)
                         raw_segments = payload["segments"]
+                        yandex_segment_count += len(raw_segments)
+                        if not transfers:
+                            raw_direct_segment_count += len(raw_segments)
                         attempt_diag.update({
                             "http_status": getattr(self.client, "last_status_code", None),
                             "response_keys": sorted(payload.keys()),
@@ -66,7 +73,22 @@ class YandexRaspProvider(TransportProvider):
                         mapped_segments = self.mapper.to_segments(payload)
                         attempt_diag["mapped_segment_count"] = len(mapped_segments)
                         if not transfers:
+                            direct_candidate_count += len(mapped_segments)
+                            direct_candidate_ids.update(segment.id for segment in mapped_segments)
                             diagnostics["raw_direct_candidates"].extend(self._describe_direct(segment) for segment in mapped_segments)
+                            for segment in mapped_segments:
+                                if self._is_moscow_to_saint_petersburg(segment):
+                                    logger.info(
+                                        "route_search.yandex_direct_segment number=%r title=%r origin=%r destination=%r "
+                                        "origin_station=%r destination_station=%r departure_time=%s",
+                                        segment.vehicle_number,
+                                        segment.metadata.get("train_title"),
+                                        segment.origin_city.name,
+                                        segment.destination_city.name,
+                                        segment.origin_station.name,
+                                        segment.destination_station.name,
+                                        segment.departure_datetime.isoformat(),
+                                    )
                         logger.info(
                             "route_search.yandex_response origin_code=%s destination_code=%s request=%s yandex_segments=%s mapped_segments=%s",
                             origin_code,
@@ -95,6 +117,22 @@ class YandexRaspProvider(TransportProvider):
                 )
                 self.last_diagnostics = diagnostics
                 pair_errors.extend(item for item in diagnostics["attempts"] if item.get("error"))
+            direct_candidates_passed = sum(segment.id in direct_candidate_ids for segment in segments)
+            logger.info("route_search.yandex_segments_total count=%s", yandex_segment_count)
+            logger.info(
+                "route_search.yandex_direct_candidates_to_route_engine count=%s",
+                direct_candidates_passed,
+            )
+            if direct_candidates_passed == 0:
+                logger.info(
+                    "route_search.yandex_direct_candidates_to_route_engine_zero reason=%s",
+                    self._zero_direct_candidates_reason(
+                        yandex_segment_count=yandex_segment_count,
+                        raw_direct_segment_count=raw_direct_segment_count,
+                        direct_candidate_count=direct_candidate_count,
+                        returned_segment_count=len(segments),
+                    ),
+                )
             if segments:
                 self.last_error = None
                 self.last_error_payload = None
@@ -184,6 +222,33 @@ class YandexRaspProvider(TransportProvider):
             "transport_type": segment.transport_type.value,
             "transport_subtype": segment.metadata.get("transport_subtype") or segment.metadata.get("raw_transport_type"),
         }
+
+    def _is_moscow_to_saint_petersburg(self, segment: TransportSegment) -> bool:
+        def normalize(value: str) -> str:
+            return " ".join(value.casefold().replace("ё", "е").replace("-", " ").split())
+
+        return (
+            normalize(segment.origin_city.name) == "москва"
+            and normalize(segment.destination_city.name) == "санкт петербург"
+        )
+
+    def _zero_direct_candidates_reason(
+        self,
+        *,
+        yandex_segment_count: int,
+        raw_direct_segment_count: int,
+        direct_candidate_count: int,
+        returned_segment_count: int,
+    ) -> str:
+        if yandex_segment_count == 0:
+            return "yandex_returned_no_segments"
+        if raw_direct_segment_count == 0:
+            return "yandex_returned_no_direct_segments"
+        if direct_candidate_count == 0:
+            return "yandex_direct_segments_could_not_be_mapped"
+        if returned_segment_count == 0:
+            return "direct_segments_were_not_added_to_provider_results"
+        return "direct_segments_were_deduplicated_against_provider_results"
 
     def healthcheck(self) -> bool:
         return self.config.enabled and bool(self.config.api_key)
