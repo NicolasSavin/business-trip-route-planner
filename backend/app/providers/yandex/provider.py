@@ -28,6 +28,7 @@ class YandexRaspProvider(TransportProvider):
         self.last_diagnostics: dict = {}
 
     def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None, origin_provider_code: str | None = None, destination_provider_code: str | None = None, **_kwargs) -> list[TransportSegment]:
+        logger.info("route_search.yandex_provider_enter\norigin=%r\ndestination=%r\ndate=%s", origin, destination, departure_date)
         if not self.config.enabled:
             return []
         try:
