@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from app.domain import TransportSegment, TransportType
@@ -46,6 +46,16 @@ class YandexRaspProvider(TransportProvider):
                 seen_ids = {segment.id for segment in segments}
                 origin_codes = self._codes_for_transport(origin_resolution, allowed_transport)
                 destination_codes = self._codes_for_transport(destination_resolution, allowed_transport)
+                logger.info(
+                    "route_search.yandex_station_candidates origin_station_search_count=%s destination_station_search_count=%s "
+                    "origin_considered_count=%s destination_considered_count=%s origin_codes=%s destination_codes=%s",
+                    len(origin_resolution.stations), len(destination_resolution.stations),
+                    len(origin_codes), len(destination_codes), list(origin_codes), list(destination_codes),
+                )
+                for code in origin_codes:
+                    logger.info("route_search.yandex_station_candidates role=origin code=%s", code)
+                for code in destination_codes:
+                    logger.info("route_search.yandex_station_candidates role=destination code=%s", code)
                 diagnostics["raw_direct_candidates"] = []
                 if not origin_codes or not destination_codes:
                     diagnostics["reason"] = "missing_station_code"
@@ -57,6 +67,11 @@ class YandexRaspProvider(TransportProvider):
                     attempt_diag["candidate_kind"] = "transfer" if transfers else "direct"
                     diagnostics["attempts"].append(attempt_diag)
                     try:
+                        logger.info(
+                            "route_search.yandex_request origin_code=%s destination_code=%s date=%s transfers=%s allowed_transport=%s attempt=%s",
+                            origin_code, destination_code, departure_date.isoformat(), transfers,
+                            [item.value for item in allowed_transport], attempt,
+                        )
                         payload = self.client.search(origin_code=origin_code, destination_code=destination_code, departure_date=departure_date, allowed_transport=allowed_transport, transfers=transfers)
                         attempt_diag["request_params"] = getattr(self.client, "last_request_params", None)
                         self._validate_payload(payload, diagnostics)
@@ -64,6 +79,18 @@ class YandexRaspProvider(TransportProvider):
                         yandex_segment_count += len(raw_segments)
                         if not transfers:
                             raw_direct_segment_count += len(raw_segments)
+                            for candidate_index, raw_segment in enumerate(raw_segments):
+                                candidate = self._describe_raw_direct(raw_segment, candidate_index)
+                                logger.info(
+                                    "route_search.yandex_direct_candidate origin_code=%s destination_code=%s candidate=%s",
+                                    origin_code, destination_code, candidate,
+                                )
+                                rejection_reason = self._raw_direct_rejection_reason(raw_segment)
+                                if rejection_reason:
+                                    logger.info(
+                                        "route_search.yandex_direct_rejected origin_code=%s destination_code=%s candidate_index=%s reason=%s candidate=%s",
+                                        origin_code, destination_code, candidate_index, rejection_reason, candidate,
+                                    )
                         attempt_diag.update({
                             "http_status": getattr(self.client, "last_status_code", None),
                             "response_keys": sorted(payload.keys()),
@@ -71,6 +98,10 @@ class YandexRaspProvider(TransportProvider):
                             "pagination": {key: payload.get(key) for key in ("pagination", "page", "total", "limit", "offset") if key in payload},
                             "response_diagnostics": getattr(self.client, "last_response_diagnostics", None),
                         })
+                        logger.info(
+                            "route_search.yandex_request origin_code=%s destination_code=%s transfers=%s attempt=%s segment_count=%s phase=response",
+                            origin_code, destination_code, transfers, attempt, len(raw_segments),
+                        )
                         mapped_segments = self.mapper.to_segments(payload)
                         attempt_diag["mapped_segment_count"] = len(mapped_segments)
                         if not transfers:
@@ -91,20 +122,35 @@ class YandexRaspProvider(TransportProvider):
                                         segment.departure_datetime.isoformat(),
                                     )
                         logger.info(
-                            "route_search.yandex_response origin_code=%s destination_code=%s request=%s yandex_segments=%s mapped_segments=%s",
+                            "route_search.yandex_response origin_code=%s destination_code=%s transfers=%s request=%s yandex_segments=%s mapped_segments=%s",
                             origin_code,
                             destination_code,
+                            transfers,
                             getattr(self.client, "last_request_params", None),
                             len(raw_segments),
                             len(mapped_segments),
                         )
                         for segment in mapped_segments:
                             if segment.id in seen_ids:
+                                if not transfers:
+                                    logger.info(
+                                        "route_search.yandex_direct_rejected origin_code=%s destination_code=%s segment=%s reason=duplicate_segment_id",
+                                        origin_code, destination_code, self._describe_direct(segment),
+                                    )
                                 continue
                             seen_ids.add(segment.id)
                             segments.append(segment)
+                            if not transfers:
+                                logger.info(
+                                    "route_search.yandex_direct_accepted origin_code=%s destination_code=%s segment=%s",
+                                    origin_code, destination_code, self._describe_direct(segment),
+                                )
                     except YandexRaspError as exc:
                         attempt_diag["error"] = exc.to_error()
+                        logger.info(
+                            "route_search.yandex_request origin_code=%s destination_code=%s transfers=%s attempt=%s segment_count=unknown phase=error error_code=%s",
+                            origin_code, destination_code, transfers, attempt, exc.code,
+                        )
                         logger.exception("Yandex Rasp pair failed: from=%s to=%s attempt=%s", origin_code, destination_code, attempt)
                         continue
                 if not segments:
@@ -123,6 +169,10 @@ class YandexRaspProvider(TransportProvider):
             returned_direct = [self._describe_direct(segment) for segment in segments if segment.id in direct_candidate_ids]
             logger.info(
                 "route_search.yandex_provider_output total_count=%s direct_count=%s direct_segments=%s",
+                len(segments), direct_candidates_passed, returned_direct,
+            )
+            logger.info(
+                "route_search.yandex_provider_return total_count=%s direct_count=%s direct_segments=%s",
                 len(segments), direct_candidates_passed, returned_direct,
             )
             if direct_candidates_passed == 0:
@@ -224,6 +274,63 @@ class YandexRaspProvider(TransportProvider):
             "transport_type": segment.transport_type.value,
             "transport_subtype": segment.metadata.get("transport_subtype") or segment.metadata.get("raw_transport_type"),
         }
+
+    def _describe_raw_direct(self, item: Any, candidate_index: int) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            return {"candidate_index": candidate_index, "value_type": type(item).__name__}
+        thread = item.get("thread") if isinstance(item.get("thread"), dict) else {}
+        carrier = thread.get("carrier") if isinstance(thread.get("carrier"), dict) else {}
+        origin = item.get("from") if isinstance(item.get("from"), dict) else {}
+        destination = item.get("to") if isinstance(item.get("to"), dict) else {}
+        return {
+            "candidate_index": candidate_index,
+            "has_transfers": item.get("has_transfers"),
+            "train_number": thread.get("number") or item.get("number"),
+            "train_title": thread.get("title") or thread.get("short_title"),
+            "transport_type": thread.get("transport_type"),
+            "transport_subtype": thread.get("transport_subtype"),
+            "company": carrier.get("title") or carrier.get("name"),
+            "express_type": thread.get("express_type"),
+            "origin_code": origin.get("code"),
+            "origin_title": origin.get("title"),
+            "destination_code": destination.get("code"),
+            "destination_title": destination.get("title"),
+            "departure": item.get("departure"),
+            "arrival": item.get("arrival"),
+            "tickets_info": item.get("tickets_info"),
+        }
+
+    def _raw_direct_rejection_reason(self, item: Any) -> str | None:
+        """Describe mapper exclusions without changing the mapper's decisions."""
+        if not isinstance(item, dict):
+            return "unsupported_segment_not_object"
+        if item.get("has_transfers"):
+            details = item.get("details") or []
+            if not isinstance(details, list):
+                return "unsupported_transfer_details_not_list"
+            if not any(isinstance(detail, dict) for detail in details):
+                return "unsupported_transfer_details_empty"
+            return None
+        origin = item.get("from") or {}
+        destination = item.get("to") or {}
+        if not isinstance(origin, dict):
+            return "unsupported_origin_not_object"
+        if not isinstance(destination, dict):
+            return "unsupported_destination_not_object"
+        if not origin:
+            return "missing_origin_station"
+        if not destination:
+            return "missing_destination_station"
+        if not item.get("departure"):
+            return "invalid_schedule_missing_departure"
+        if not item.get("arrival"):
+            return "invalid_schedule_missing_arrival"
+        try:
+            datetime.fromisoformat(item["departure"])
+            datetime.fromisoformat(item["arrival"])
+        except (TypeError, ValueError):
+            return "invalid_schedule_datetime"
+        return None
 
     def _is_moscow_to_saint_petersburg(self, segment: TransportSegment) -> bool:
         def normalize(value: str) -> str:

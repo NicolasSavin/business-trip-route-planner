@@ -118,6 +118,62 @@ def test_yandex_search_logs_reason_when_no_direct_candidates(caplog):
     ) in messages
 
 
+def test_yandex_search_logs_station_requests_candidates_and_acceptance(caplog):
+    provider, _ = provider_with_payload({"segments": [segment()]})
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        provider.get_segments(
+            DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург"
+        )
+
+    messages = caplog.messages
+    station_summary = next(
+        message for message in messages
+        if message.startswith("route_search.yandex_station_candidates origin_station_search_count=")
+    )
+    assert "origin_station_search_count=2" in station_summary
+    assert "destination_station_search_count=1" in station_summary
+    assert any("role=origin code=s2000003" in message for message in messages)
+    assert any("role=destination code=s9602494" in message for message in messages)
+    assert any(
+        message.startswith("route_search.yandex_request ")
+        and "transfers=False" in message
+        and "phase=response" in message
+        and "segment_count=1" in message
+        for message in messages
+    )
+    assert any(
+        message.startswith("route_search.yandex_direct_candidate ")
+        and "'train_number': '001А'" in message
+        and "'transport_type': 'train'" in message
+        for message in messages
+    )
+    assert any(message.startswith("route_search.yandex_direct_accepted ") for message in messages)
+    assert any(
+        message.startswith("route_search.yandex_provider_return total_count=1 direct_count=1")
+        for message in messages
+    )
+
+
+def test_yandex_search_logs_direct_rejection_reasons(caplog):
+    invalid = segment("train", "bad")
+    invalid.pop("arrival")
+    duplicate = segment("train", "duplicate")
+    provider, _ = provider_with_payload({"segments": [invalid, duplicate, duplicate]})
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        provider.get_segments(
+            DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург"
+        )
+
+    rejected = [
+        message for message in caplog.messages
+        if message.startswith("route_search.yandex_direct_rejected ")
+    ]
+    assert any("reason=invalid_schedule_missing_arrival" in message for message in rejected)
+    assert any("reason=duplicate_segment_id" in message for message in rejected)
+
+
 def test_bus_segment_is_supported():
     provider, _ = provider_with_payload({"segments": [segment("bus", "МБ-10")]})
     segments = provider.get_segments(DAY, [TransportType.BUS], origin="Москва", destination="Санкт-Петербург")
