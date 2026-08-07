@@ -43,6 +43,10 @@ def test_successful_search_maps_train_route():
     assert segments[0].carrier.name == "Перевозчик"
     assert segments[0].metadata["source"] == "Яндекс Расписания"
     assert client.kwargs["transfers"] is True
+    assert provider.last_diagnostics["raw_direct_schedule_count"] == 1
+    direct = provider.last_diagnostics["raw_direct_candidates"][0]
+    assert direct["train_number"] == "001А"
+    assert direct["departure"] == "2026-08-10T08:00:00+03:00"
 
 
 def test_bus_segment_is_supported():

@@ -65,6 +65,7 @@ class RouteSearchService:
                 destination=segment.destination_city.name,
                 transport_type=segment.transport_type,
                 number=segment.vehicle_number,
+                title=segment.metadata.get("train_title"),
                 departure_time=segment.departure_datetime,
                 arrival_time=segment.arrival_datetime,
                 available_seats=segment.available_seats,

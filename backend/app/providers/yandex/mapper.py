@@ -74,7 +74,15 @@ class YandexRaspMapper:
             duration_minutes=int((arrival_dt - departure_dt).total_seconds() // 60),
             available_seats=None,
             price=self._price(item),
-            metadata={"source": "Яндекс Расписания", "availability_unknown": True, "raw_transport_type": thread.get("transport_type")},
+            metadata={
+                "source": "Яндекс Расписания",
+                "availability_unknown": True,
+                "raw_transport_type": thread.get("transport_type"),
+                "train_title": thread.get("title") or thread.get("short_title"),
+                "transport_subtype": thread.get("transport_subtype", {}).get("title")
+                if isinstance(thread.get("transport_subtype"), dict)
+                else thread.get("transport_subtype"),
+            },
         )
 
     def _transport_type(self, value: str | None) -> TransportType:

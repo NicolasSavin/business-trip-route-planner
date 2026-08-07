@@ -41,15 +41,18 @@ class YandexRaspProvider(TransportProvider):
                 seen_ids = {segment.id for segment in segments}
                 origin_codes = self._codes_for_transport(origin_resolution, allowed_transport)
                 destination_codes = self._codes_for_transport(destination_resolution, allowed_transport)
+                diagnostics["raw_direct_candidates"] = []
                 if not origin_codes or not destination_codes:
                     diagnostics["reason"] = "missing_station_code"
                     pair_errors.append(diagnostics)
                     continue
-                for attempt, (origin_code, destination_code) in enumerate(((o, d) for o in origin_codes for d in destination_codes), start=1):
+                request_pairs = [(o, d, transfers) for o in origin_codes for d in destination_codes for transfers in (False, True)]
+                for attempt, (origin_code, destination_code, transfers) in enumerate(request_pairs, start=1):
                     attempt_diag = self._attempt_diagnostics(origin_code, destination_code, attempt)
+                    attempt_diag["candidate_kind"] = "transfer" if transfers else "direct"
                     diagnostics["attempts"].append(attempt_diag)
                     try:
-                        payload = self.client.search(origin_code=origin_code, destination_code=destination_code, departure_date=departure_date, allowed_transport=allowed_transport, transfers=True)
+                        payload = self.client.search(origin_code=origin_code, destination_code=destination_code, departure_date=departure_date, allowed_transport=allowed_transport, transfers=transfers)
                         attempt_diag["request_params"] = getattr(self.client, "last_request_params", None)
                         self._validate_payload(payload, diagnostics)
                         raw_segments = payload["segments"]
@@ -62,6 +65,8 @@ class YandexRaspProvider(TransportProvider):
                         })
                         mapped_segments = self.mapper.to_segments(payload)
                         attempt_diag["mapped_segment_count"] = len(mapped_segments)
+                        if not transfers:
+                            diagnostics["raw_direct_candidates"].extend(self._describe_direct(segment) for segment in mapped_segments)
                         logger.info(
                             "route_search.yandex_response origin_code=%s destination_code=%s request=%s yandex_segments=%s mapped_segments=%s",
                             origin_code,
@@ -81,6 +86,13 @@ class YandexRaspProvider(TransportProvider):
                         continue
                 if not segments:
                     diagnostics["reason"] = "no_direct_segments"
+                diagnostics["raw_direct_candidates"] = list({item["id"]: item for item in diagnostics["raw_direct_candidates"]}.values())
+                diagnostics["raw_direct_schedule_count"] = len(diagnostics["raw_direct_candidates"])
+                logger.info(
+                    "route_search.yandex_direct_schedules count=%s trains=%s",
+                    diagnostics["raw_direct_schedule_count"],
+                    [item["train_number"] for item in diagnostics["raw_direct_candidates"]],
+                )
                 self.last_diagnostics = diagnostics
                 pair_errors.extend(item for item in diagnostics["attempts"] if item.get("error"))
             if segments:
@@ -159,6 +171,19 @@ class YandexRaspProvider(TransportProvider):
         self.last_error = exc.message
         self.last_error_payload = exc.to_error()
         self.last_diagnostics = exc.diagnostics or self.last_diagnostics
+
+    def _describe_direct(self, segment: TransportSegment) -> dict[str, Any]:
+        return {
+            "id": segment.id,
+            "train_number": segment.vehicle_number,
+            "title": segment.metadata.get("train_title"),
+            "departure": segment.departure_datetime.isoformat(),
+            "arrival": segment.arrival_datetime.isoformat(),
+            "duration_minutes": segment.duration_minutes,
+            "provider": segment.provider,
+            "transport_type": segment.transport_type.value,
+            "transport_subtype": segment.metadata.get("transport_subtype") or segment.metadata.get("raw_transport_type"),
+        }
 
     def healthcheck(self) -> bool:
         return self.config.enabled and bool(self.config.api_key)

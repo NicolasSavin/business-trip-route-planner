@@ -35,7 +35,9 @@ class RouteSearchRequest(BaseModel):
     maximum_transfer_minutes: int = Field(default=360, ge=0)
     maximum_total_duration_minutes: int | None = Field(default=None, ge=1)
     allow_overnight_transfer: bool = True
-    strict_availability: bool = True
+    # ``confirmed_only`` is the public wording; keep the old name compatible.
+    # An omitted flag must not discard schedules whose seats are not checked.
+    strict_availability: bool = Field(default=False, validation_alias=AliasChoices("strict_availability", "confirmed_only"))
     seat_policy_scope: Literal["every_rail_segment", "first_rail_segment_only", "any_rail_segment"] = "every_rail_segment"
     seat_preferences: SeatPreferencesRequest | None = None
     preferred_classes: list[TransportClass] = Field(default_factory=list)
@@ -50,6 +52,7 @@ class RouteSegment(BaseModel):
     destination: str
     transport_type: TransportType
     number: str
+    title: str | None = None
     departure_time: datetime
     arrival_time: datetime
     available_seats: int | None
@@ -153,6 +156,10 @@ class SearchSummary(BaseModel):
     segments_by_provider: dict[str, int] = Field(default_factory=dict)
     provider_diagnostics: dict[str, object] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    raw_direct_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    filtered_direct_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    rejection_reasons: list[dict[str, Any]] = Field(default_factory=list)
+    ranked_candidates: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RouteSearchResponse(BaseModel):

@@ -12,6 +12,7 @@ export type RouteSegment = {
   destination: string;
   transport_type: TransportType;
   number: string;
+  title?: string | null;
   departure_time: string;
   arrival_time: string;
   available_seats: number | null;
@@ -83,7 +84,7 @@ export type DecisionSummary = {
 export type DecisionAnalyzeResponse = { summaries: DecisionSummary[]; best_route_id: string | null };
 export type DecisionCriterion = { name: string; left: string; right: string; winner: string | null; difference: string };
 export type DecisionCompareResponse = { winner_route_id: string | null; criteria: DecisionCriterion[]; differences: string[]; recommendations: DecisionReason[]; left_summary: DecisionSummary; right_summary: DecisionSummary };
-export type RouteSearchResponse = { routes: RouteOption[]; partially_confirmed_routes?: RouteOption[]; rejected_routes?: RouteOption[]; warnings?: string[]; provider_errors?: Record<string, string | { code: string; message: string; query?: string; details?: Record<string, unknown> }>; search_summary?: { segments_loaded: number; candidate_journeys: number; availability_checks: number; confirmed_routes: number; partially_confirmed_routes: number; rejected_routes: number; providers_considered?: string[]; providers_enabled?: string[]; providers_called?: string[]; providers_succeeded?: string[]; providers_failed?: string[]; provider_errors?: Record<string, string | { code: string; message: string; query?: string; details?: Record<string, unknown> }>; provider_diagnostics?: Record<string, unknown>; segments_by_provider?: Record<string, number>; warnings?: string[] } };
+export type RouteSearchResponse = { routes: RouteOption[]; partially_confirmed_routes?: RouteOption[]; rejected_routes?: RouteOption[]; warnings?: string[]; provider_errors?: Record<string, string | { code: string; message: string; query?: string; details?: Record<string, unknown> }>; search_summary?: { segments_loaded: number; candidate_journeys: number; availability_checks: number; confirmed_routes: number; partially_confirmed_routes: number; rejected_routes: number; providers_considered?: string[]; providers_enabled?: string[]; providers_called?: string[]; providers_succeeded?: string[]; providers_failed?: string[]; provider_errors?: Record<string, string | { code: string; message: string; query?: string; details?: Record<string, unknown> }>; provider_diagnostics?: Record<string, unknown>; segments_by_provider?: Record<string, number>; warnings?: string[]; raw_direct_candidates?: Array<Record<string, unknown>>; filtered_direct_candidates?: Array<Record<string, unknown>>; rejection_reasons?: Array<Record<string, unknown>>; ranked_candidates?: Array<Record<string, unknown>> } };
 export type LocationType = "city" | "station" | "bus_station" | "railway_station" | "settlement";
 export type LocationSuggestion = { id: string; name: string; display_name: string; type: LocationType; provider_code: string | null; region: string | null; country: string | null };
 export type LocationSuggestResponse = { items: LocationSuggestion[] };

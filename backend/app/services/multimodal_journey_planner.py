@@ -83,9 +83,11 @@ class MultimodalJourneyPlanner:
         )
         logger.info("route search enrichment started", extra={"candidate_journeys": len(options), "max_journeys_to_enrich": TUTU_MAX_JOURNEYS_TO_ENRICH})
         checked = await self._attach_journey_availability(options, request) if options else []
+        checked = self._rank_after_availability(checked)
         confirmed = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.CONFIRMED]
-        partial = [o for o in checked if o.availability and o.availability.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
-        rejected = [o for o in checked if not o.availability or o.availability.status not in {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}]
+        visible_statuses = {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED, AvailabilityStatus.UNKNOWN}
+        partial = [o for o in checked if o.availability and o.availability.status in visible_statuses - {AvailabilityStatus.CONFIRMED}]
+        rejected = [o for o in checked if not o.availability or o.availability.status not in visible_statuses]
         routes = confirmed if request.strict_availability else confirmed + partial
         logger.info(
             "route_search.filters availability_checked=%s confirmed=%s partially_confirmed=%s rejected_by_confirmation=%s strict_availability=%s final_routes=%s",
@@ -105,6 +107,19 @@ class MultimodalJourneyPlanner:
             warnings.append("Расписание найдено, но проверить наличие мест через РЖД не удалось.")
         if self.route_engine.last_segments_count == 0 and provider_diagnostics.get("provider_errors"):
             warnings.append("Источники расписаний не вернули сегменты; подробности в provider_errors")
+        candidate_diagnostics = dict(self.route_engine.last_diagnostics)
+        availability_rejections = []
+        for option in checked:
+            if option.route.transfers_count != 0 or not option.availability:
+                continue
+            hidden = option.availability.status not in visible_statuses or (request.strict_availability and option.availability.status != AvailabilityStatus.CONFIRMED)
+            if hidden:
+                prefix = "confirmed_only" if request.strict_availability and option.availability.status != AvailabilityStatus.CONFIRMED else "availability"
+                availability_rejections.append({
+                    "candidate": self.route_engine._describe_segment(option.route.segments[0]),
+                    "reasons": [f"{prefix}:{option.availability.status.value}", *option.availability.reasons],
+                    "stage": "availability_filter",
+                })
         summary = SearchSummary(
             segments_loaded=min(MAX_SEGMENTS_PER_QUERY, self.route_engine.last_segments_count),
             candidate_journeys=len(options),
@@ -121,12 +136,28 @@ class MultimodalJourneyPlanner:
             segments_by_provider=provider_diagnostics.get("segments_by_provider", {}),
             provider_diagnostics=provider_diagnostics.get("provider_diagnostics", {}),
             warnings=list(dict.fromkeys(warnings)),
+            raw_direct_candidates=candidate_diagnostics.get("raw_direct_candidates", []),
+            filtered_direct_candidates=[self.route_engine._describe_segment(o.route.segments[0]) for o in routes if o.route.transfers_count == 0],
+            rejection_reasons=[*candidate_diagnostics.get("rejection_reasons", []), *availability_rejections],
+            ranked_candidates=[self.route_engine._describe_route(o.route, o.rank) for o in checked],
         )
         if enrichment_errors:
             logger.info("route_search.provider error added to SearchSummary", extra={"providers": list(enrichment_errors)})
         logger.info("route search response returned", extra={"duration_ms": int((monotonic() - started_at) * 1000), "routes": len(routes), "partial": len(partial), "rejected": len(rejected)})
         self.last_summary = summary
         return routes, partial, rejected, summary
+
+    def _rank_after_availability(self, options: list[DomainRouteOption]) -> list[DomainRouteOption]:
+        """Keep direct/fast journeys primary, then use confirmation and price."""
+        confirmation_order = {AvailabilityStatus.CONFIRMED: 0, AvailabilityStatus.PARTIALLY_CONFIRMED: 1, AvailabilityStatus.UNCONFIRMED: 2, AvailabilityStatus.UNKNOWN: 2}
+
+        def key(option):
+            prices = [segment.price for segment in option.route.segments]
+            total_price = sum(prices) if prices and all(price is not None for price in prices) else float("inf")
+            status = getattr(option.availability, "status", AvailabilityStatus.UNKNOWN)
+            return (option.route.transfers_count, option.route.total_duration_minutes, confirmation_order.get(status, 3), total_price, option.score)
+
+        return [replace(option, rank=index) for index, option in enumerate(sorted(options, key=key), start=1)]
 
     def search(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
         try:
