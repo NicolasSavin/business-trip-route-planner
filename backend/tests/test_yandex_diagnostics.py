@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -223,3 +223,90 @@ def test_route_search_api_compact_provider_errors_does_not_502_for_large_body(mo
     assert error["code"] == "unexpected_content_type"
     assert "raw_body" not in __import__("json").dumps(error, ensure_ascii=False)
     assert len(response.content) < 32768
+
+
+def test_yandex_direct_segment_survives_aggregation_and_api_alongside_transfer(monkeypatch):
+    """Regression: cross-provider dedup used to replace the valid Yandex record."""
+    from fastapi.testclient import TestClient
+
+    from app.api import routes as routes_api
+    from app.domain import Carrier, City, Station, TransportClass, TransportSegment
+    from app.main import app
+    from app.providers.unified.models import ProviderCapabilities, ProviderPriority
+    from app.providers.unified.provider import UnifiedTransportProvider
+    from app.providers.unified.registry import ProviderRegistry
+    from app.services.route_search import RouteSearchService
+
+    payload = {"segments": [{
+        "from": {"code": "s2000009", "title": "Москва Октябрьская", "settlement": {"title": "Москва"}},
+        "to": {"code": "s2004001", "title": "Санкт-Петербург-Главн.", "settlement": {"title": "Санкт-Петербург"}},
+        "departure": "2026-08-10T08:00:00+03:00",
+        "arrival": "2026-08-10T12:00:00+03:00",
+        "thread": {"uid": "754A", "number": "754А", "title": "Москва — Санкт-Петербург", "transport_type": "train", "carrier": {"code": "carrier", "title": "РЖД"}},
+    }]}
+    yandex = YandexRaspProvider(
+        YandexRaspConfiguration("secret", enabled=True),
+        client=client_for_response(httpx.Response(200, json=payload, headers={"content-type": "application/json"})),
+        resolver=YandexLocationResolver(),
+    )
+    provider_output = yandex.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert any(segment.vehicle_number == "754А" for segment in provider_output)
+    yandex_direct = next(segment for segment in provider_output if segment.vehicle_number == "754А")
+
+    def transfer_segment(segment_id, origin, destination, departure, arrival):
+        origin_city, destination_city = City(origin), City(destination)
+        return TransportSegment(
+            id=segment_id, provider="other", carrier=Carrier("other", "Other"),
+            transport_type=TransportType.TRAIN, transport_class=TransportClass.SEATED,
+            vehicle_number=segment_id, origin_city=origin_city,
+            origin_station=Station(f"{origin}-station", origin, origin_city),
+            destination_city=destination_city,
+            destination_station=Station(f"{destination}-station", destination, destination_city),
+            departure_datetime=departure, arrival_datetime=arrival,
+            duration_minutes=int((arrival - departure).total_seconds() // 60), available_seats=5,
+        )
+
+    # Same physical schedule but deliberately bad city metadata reproduces the
+    # record that previously won cross-provider dedup and hid the Yandex route.
+    bad_origin, bad_destination = City("Moscow"), City("Saint Petersburg")
+    competing = TransportSegment(
+        **{**yandex_direct.__dict__, "id": "competing-754", "provider": "other",
+           "origin_city": bad_origin, "destination_city": bad_destination,
+           "origin_station": Station(yandex_direct.origin_station.id, yandex_direct.origin_station.name, bad_origin),
+           "destination_station": Station(yandex_direct.destination_station.id, yandex_direct.destination_station.name, bad_destination)}
+    )
+    transfers = [
+        transfer_segment("moscow-tver", "Москва", "Тверь", datetime.fromisoformat("2026-08-10T06:00:00+03:00"), datetime.fromisoformat("2026-08-10T07:30:00+03:00")),
+        transfer_segment("tver-petersburg", "Тверь", "Санкт-Петербург", datetime.fromisoformat("2026-08-10T08:30:00+03:00"), datetime.fromisoformat("2026-08-10T14:00:00+03:00")),
+    ]
+
+    class OtherProvider:
+        def get_segments(self, *_args, **_kwargs):
+            return [competing, *transfers]
+
+    capabilities = ProviderCapabilities(supported_transport=[TransportType.TRAIN], supports_schedule=True)
+    registry = ProviderRegistry()
+    registry.register(OtherProvider(), id="other", name="Other", priority=ProviderPriority.HIGH + 1, capabilities=capabilities)
+    registry.register(yandex, id="yandex_rasp", name="Yandex", priority=ProviderPriority.HIGH, capabilities=capabilities)
+    unified = UnifiedTransportProvider(registry)
+    aggregated = unified.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
+    assert any(segment.provider == "yandex_rasp" and segment.vehicle_number == "754А" for segment in aggregated)
+
+    service = RouteSearchService(unified)
+    monkeypatch.setattr(routes_api, "service", service)
+    response = TestClient(app).post("/api/v1/routes/search", json={
+        "origin": "Москва", "destination": "Санкт-Петербург",
+        "departure_date": DAY.isoformat(), "passengers": 1,
+        "allowed_transport": ["train"], "max_transfers": 1, "confirmed_only": False,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    direct = next(route for route in body["routes"] if route["segments"][0]["number"] == "754А")
+    assert direct["transfers_count"] == 0
+    assert any(route["transfers_count"] == 1 for route in body["routes"])
+    assert any(
+        item["id"] == yandex_direct.id and item["train_number"] == "754А"
+        for item in service.planner.route_engine.last_diagnostics["input_segments"]
+    )
+    assert any(item["train_number"] == "754А" for item in service.planner.route_engine.last_diagnostics["raw_direct_candidates"])

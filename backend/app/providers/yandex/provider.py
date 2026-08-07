@@ -120,13 +120,14 @@ class YandexRaspProvider(TransportProvider):
                 pair_errors.extend(item for item in diagnostics["attempts"] if item.get("error"))
             direct_candidates_passed = sum(segment.id in direct_candidate_ids for segment in segments)
             logger.info("route_search.yandex_segments_total count=%s", yandex_segment_count)
+            returned_direct = [self._describe_direct(segment) for segment in segments if segment.id in direct_candidate_ids]
             logger.info(
-                "route_search.yandex_direct_candidates_to_route_engine count=%s",
-                direct_candidates_passed,
+                "route_search.yandex_provider_output total_count=%s direct_count=%s direct_segments=%s",
+                len(segments), direct_candidates_passed, returned_direct,
             )
             if direct_candidates_passed == 0:
                 logger.info(
-                    "route_search.yandex_direct_candidates_to_route_engine_zero reason=%s",
+                    "route_search.yandex_provider_output_direct_zero reason=%s",
                     self._zero_direct_candidates_reason(
                         yandex_segment_count=yandex_segment_count,
                         raw_direct_segment_count=raw_direct_segment_count,

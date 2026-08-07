@@ -67,7 +67,11 @@ class RouteEngine:
         except TypeError:
             segments = self.provider.get_segments(departure_date, allowed_transport)
         self.last_segments_count = len(segments)
-        logger.info("route_search.segments_loaded count=%s origin=%r destination=%r", len(segments), origin, destination)
+        input_descriptions = [self._describe_segment(segment) for segment in segments]
+        logger.info(
+            "route_search.route_engine_input count=%s origin=%r destination=%r segments=%s",
+            len(segments), origin, destination, input_descriptions,
+        )
         self.validator.validate_segments(segments)
         graph = self.graph_builder.build(segments)
         origin_cities = self.station_resolver.resolve_city_names(origin, segments)
@@ -80,6 +84,11 @@ class RouteEngine:
             segments, origin_cities, destination_cities, origin_station,
             destination_station, maximum_total_duration_minutes,
         )
+        logger.info(
+            "route_search.route_engine_direct_candidates count=%s segments=%s",
+            len(direct_routes),
+            [self._describe_segment(route.segments[0]) for route in direct_routes],
+        )
         graph_routes = self.search_algorithm.find_routes(graph, origin_cities, destination_cities, passengers, max_transfers, minimum_transfer_minutes, maximum_transfer_minutes, maximum_total_duration_minutes, allow_overnight_transfer, origin_station, destination_station)
         routes = self._dedupe_routes([*direct_routes, *graph_routes])
         logger.info("route_search.transfer_filter direct_and_transfer_candidates=%s max_transfers=%s min_transfer=%s max_transfer=%s", len(routes), max_transfers, minimum_transfer_minutes, maximum_transfer_minutes)
@@ -91,6 +100,9 @@ class RouteEngine:
                     break
         ranked = self.route_comparator.rank(routes)
         self.last_diagnostics = {
+            "input_segment_count": len(segments),
+            "input_segments": input_descriptions,
+            "direct_candidate_count": len(direct_routes),
             "resolved_origin_cities": list(origin_cities),
             "resolved_destination_cities": list(destination_cities),
             "raw_direct_candidates": [decision["candidate"] for decision in direct_decisions if decision["city_match"]],
