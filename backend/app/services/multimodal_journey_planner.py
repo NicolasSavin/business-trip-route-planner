@@ -12,6 +12,7 @@ from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCach
 from app.availability.seats import BerthPosition, GenderRestriction, RailwayPlace, SeatAllocationService, SeatPreferences
 from app.domain import RouteOption as DomainRouteOption, TransportClass, TransportSegment, TransportType
 from app.engine import RouteEngine
+from app.intelligence.stations import normalize_location_name
 from app.models.routes import RouteSearchRequest, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.segment_enrichment import SegmentEnrichmentService
@@ -53,6 +54,24 @@ class MultimodalJourneyPlanner:
 
     async def _search_async_impl(self, request: RouteSearchRequest) -> tuple[list[DomainRouteOption], list[DomainRouteOption], list[DomainRouteOption], SearchSummary]:
         started_at = monotonic()
+        segments = self._load_provider_segments(request)
+        direct_matches = [
+            segment for segment in segments
+            if self._segment_matches_request(segment, request)
+        ]
+        provider_counts: dict[str, int] = {}
+        for segment in segments:
+            provider_counts[segment.provider] = provider_counts.get(segment.provider, 0) + 1
+        logger.info(
+            "route_search.planner_route_engine_input total_segment_count=%s "
+            "direct_match_count=%s origin=%r destination=%r provider_counts=%s direct_matches=%s",
+            len(segments),
+            len(direct_matches),
+            request.origin,
+            request.destination,
+            provider_counts,
+            [{"id": segment.id, "train_number": segment.vehicle_number} for segment in direct_matches],
+        )
         options = self.route_engine.search(
             departure_date=request.departure_date,
             origin=request.origin,
@@ -74,6 +93,9 @@ class MultimodalJourneyPlanner:
             destination_location_id=request.destination_location_id,
             destination_provider_code=request.destination_provider_code,
             destination_location_type=request.destination_location_type,
+            # Pass the complete deduplicated provider output, not a graph-derived
+            # subset. The same collection supplies direct and transfer searches.
+            segments=segments,
         )[:MAX_CANDIDATE_JOURNEYS]
         logger.info(
             "route_search.candidates segments_loaded=%s candidate_journeys=%s truncated_to=%s",
@@ -166,6 +188,29 @@ class MultimodalJourneyPlanner:
         logger.info("route search response returned", extra={"duration_ms": int((monotonic() - started_at) * 1000), "routes": len(routes), "partial": len(partial), "rejected": len(rejected)})
         self.last_summary = summary
         return routes, partial, rejected, summary
+
+    def _load_provider_segments(self, request: RouteSearchRequest) -> list[TransportSegment]:
+        try:
+            return self.provider.get_segments(
+                request.departure_date,
+                request.allowed_transport,
+                origin=request.origin,
+                destination=request.destination,
+                origin_provider_code=request.origin_provider_code,
+                destination_provider_code=request.destination_provider_code,
+                origin_location_id=request.origin_location_id,
+                destination_location_id=request.destination_location_id,
+                origin_location_type=request.origin_location_type,
+                destination_location_type=request.destination_location_type,
+            )
+        except TypeError:
+            return self.provider.get_segments(request.departure_date, request.allowed_transport)
+
+    def _segment_matches_request(self, segment: TransportSegment, request: RouteSearchRequest) -> bool:
+        return (
+            normalize_location_name(segment.origin_city.name) == normalize_location_name(request.origin)
+            and normalize_location_name(segment.destination_city.name) == normalize_location_name(request.destination)
+        )
 
     def _rank_after_availability(self, options: list[DomainRouteOption]) -> list[DomainRouteOption]:
         """Keep direct/fast journeys primary, then use confirmation and price."""

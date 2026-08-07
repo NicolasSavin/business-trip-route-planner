@@ -293,6 +293,14 @@ def test_yandex_direct_segment_survives_aggregation_and_api_alongside_transfer(m
     assert any(segment.provider == "yandex_rasp" and segment.vehicle_number == "754А" for segment in aggregated)
 
     service = RouteSearchService(unified)
+    received_route_engine_segments = []
+    route_engine_search = service.planner.route_engine.search
+
+    def capture_route_engine_input(**kwargs):
+        received_route_engine_segments.extend(kwargs["segments"])
+        return route_engine_search(**kwargs)
+
+    monkeypatch.setattr(service.planner.route_engine, "search", capture_route_engine_input)
     monkeypatch.setattr(routes_api, "service", service)
     response = TestClient(app).post("/api/v1/routes/search", json={
         "origin": "Москва", "destination": "Санкт-Петербург",
@@ -305,6 +313,11 @@ def test_yandex_direct_segment_survives_aggregation_and_api_alongside_transfer(m
     direct = next(route for route in body["routes"] if route["segments"][0]["number"] == "754А")
     assert direct["transfers_count"] == 0
     assert any(route["transfers_count"] == 1 for route in body["routes"])
+    assert {segment.id for segment in received_route_engine_segments} == {segment.id for segment in aggregated}
+    assert any(
+        segment.provider == "yandex_rasp" and segment.vehicle_number == "754А"
+        for segment in received_route_engine_segments
+    )
     assert any(
         item["id"] == yandex_direct.id and item["train_number"] == "754А"
         for item in service.planner.route_engine.last_diagnostics["input_segments"]

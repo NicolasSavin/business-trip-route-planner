@@ -2,7 +2,7 @@ from datetime import date
 import logging
 from app.algorithms.search import GraphRouteSearch
 from app.availability import AvailabilityEngine, AvailabilityPolicy
-from app.domain import Route, TransportProvider, TransportType
+from app.domain import Route, TransportProvider, TransportSegment, TransportType
 from app.graph.builder import GraphBuilder
 from app.intelligence import NearbyCityResolver, RouteComparator, StationResolver, TransferEngine
 from app.intelligence.stations import normalize_location_name
@@ -61,11 +61,13 @@ class RouteEngine:
         destination_location_id: str | None = None,
         destination_provider_code: str | None = None,
         destination_location_type: str | None = None,
+        segments: list[TransportSegment] | None = None,
     ):
-        try:
-            segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination, origin_provider_code=origin_provider_code, destination_provider_code=destination_provider_code, origin_location_id=origin_location_id, destination_location_id=destination_location_id, origin_location_type=origin_location_type, destination_location_type=destination_location_type)
-        except TypeError:
-            segments = self.provider.get_segments(departure_date, allowed_transport)
+        if segments is None:
+            try:
+                segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination, origin_provider_code=origin_provider_code, destination_provider_code=destination_provider_code, origin_location_id=origin_location_id, destination_location_id=destination_location_id, origin_location_type=origin_location_type, destination_location_type=destination_location_type)
+            except TypeError:
+                segments = self.provider.get_segments(departure_date, allowed_transport)
         self.last_segments_count = len(segments)
         input_descriptions = [self._describe_segment(segment) for segment in segments]
         logger.info(
