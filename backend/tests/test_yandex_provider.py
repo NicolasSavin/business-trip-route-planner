@@ -36,6 +36,17 @@ def provider_with_payload(payload):
     return YandexRaspProvider(YandexRaspConfiguration("key", enabled=True), client=client, resolver=resolver), client
 
 
+def test_yandex_provider_logs_entry_before_enabled_check(caplog):
+    provider = YandexRaspProvider(YandexRaspConfiguration(None, enabled=False))
+
+    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+        assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург") == []
+
+    assert caplog.messages == [
+        "route_search.yandex_provider_enter\norigin='Москва'\ndestination='Санкт-Петербург'\ndate=2026-08-10"
+    ]
+
+
 def test_successful_search_maps_train_route():
     provider, client = provider_with_payload({"segments": [segment()]})
     segments = provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
