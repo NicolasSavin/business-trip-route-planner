@@ -108,9 +108,10 @@ def test_route_engine_returns_no_route_when_path_absent():
     assert routes == []
 
 
-def test_route_engine_filters_routes_without_enough_seats():
+def test_route_engine_attaches_unavailability_without_filtering_routes():
     routes = RouteEngine(Provider([seg("ab", "A", "B", dt(8), dt(9), seats=1), seg("bc", "B", "C", dt(10), dt(11), seats=5)])).search(DAY, "A", "C", 2, [TransportType.TRAIN], 1, 30)
-    assert routes == []
+    assert len(routes) == 1
+    assert routes[0].availability.is_available is False
 
 
 def test_transfer_requires_minimum_wait_in_same_city():

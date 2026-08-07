@@ -107,11 +107,39 @@ class RouteEngine:
             allow_split_group=allow_split_group,
         )
         checked = [self.availability_engine.attach(option, policy) for option in ranked]
-        available = [option for option in checked if option.availability and option.availability.is_available]
-        logger.info("route_search.availability_filter checked=%s removed=%s include_unavailable=%s", len(checked), len(checked) - len(available), include_unavailable)
-        if include_unavailable:
-            return checked
-        return available
+        direct_checked = [option for option in checked if option.route.transfers_count == 0]
+        direct_availability = [
+            {
+                "segment_ids": [segment.id for segment in option.route.segments],
+                "status": getattr(getattr(option, "availability", None), "status", None).value
+                if getattr(getattr(option, "availability", None), "status", None)
+                else "unknown",
+                "is_available": getattr(getattr(option, "availability", None), "is_available", None),
+            }
+            for option in direct_checked
+        ]
+        self.last_diagnostics.update({
+            "include_unavailable": include_unavailable,
+            "direct_routes_before_availability_filtering": sum(
+                option.route.transfers_count == 0 for option in ranked
+            ),
+            # RouteEngine attaches availability, but deliberately does not filter it.
+            "direct_routes_after_availability_filtering": len(direct_checked),
+            "direct_route_availability": direct_availability,
+        })
+        logger.info(
+            "route_search.availability_checked checked=%s include_unavailable=%s "
+            "direct_before=%s direct_after=%s direct_availability=%s",
+            len(checked),
+            include_unavailable,
+            self.last_diagnostics["direct_routes_before_availability_filtering"],
+            self.last_diagnostics["direct_routes_after_availability_filtering"],
+            direct_availability,
+        )
+        # Confirmation policy belongs to the planner/service layer.  Returning all
+        # checked schedules here prevents UNKNOWN and UNCONFIRMED schedules from
+        # disappearing before the request's confirmed_only flag is considered.
+        return checked
 
     def _direct_routes(self, segments, origin_cities, destination_cities, origin_station, destination_station, maximum_duration):
         routes, rejected, decisions = [], [], []

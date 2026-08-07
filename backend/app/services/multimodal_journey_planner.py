@@ -89,6 +89,15 @@ class MultimodalJourneyPlanner:
         partial = [o for o in checked if o.availability and o.availability.status in visible_statuses - {AvailabilityStatus.CONFIRMED}]
         rejected = [o for o in checked if not o.availability or o.availability.status not in visible_statuses]
         routes = confirmed if request.strict_availability else confirmed + partial
+        direct_before = [o for o in checked if o.route.transfers_count == 0]
+        direct_after = [o for o in routes if o.route.transfers_count == 0]
+        direct_availability = [
+            {
+                "segment_ids": [segment.id for segment in option.route.segments],
+                "status": option.availability.status.value if option.availability else "unknown",
+            }
+            for option in direct_before
+        ]
         logger.info(
             "route_search.filters availability_checked=%s confirmed=%s partially_confirmed=%s rejected_by_confirmation=%s strict_availability=%s final_routes=%s",
             len(checked),
@@ -97,6 +106,14 @@ class MultimodalJourneyPlanner:
             len(rejected),
             request.strict_availability,
             len(routes),
+        )
+        logger.info(
+            "route_search.direct_availability_filter direct_before=%s direct_after=%s "
+            "include_unavailable=%s direct_availability=%s",
+            len(direct_before),
+            len(direct_after),
+            not request.strict_availability,
+            direct_availability,
         )
         provider_diagnostics = getattr(self.provider, "last_diagnostics", {}) or {}
         enrichment_errors = self._collect_enrichment_errors(checked)
