@@ -39,12 +39,13 @@ def provider_with_payload(payload):
 def test_yandex_provider_logs_entry_before_enabled_check(caplog):
     provider = YandexRaspProvider(YandexRaspConfiguration(None, enabled=False))
 
-    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         assert provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург") == []
 
     assert caplog.messages == [
         "route_search.yandex_provider_enter\norigin='Москва'\ndestination='Санкт-Петербург'\ndate=2026-08-10"
     ]
+    assert {record.name for record in caplog.records} == {"uvicorn.error"}
 
 
 def test_successful_search_maps_train_route():
@@ -66,7 +67,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     direct["thread"]["title"] = "Москва — Санкт-Петербург"
     provider, _ = provider_with_payload({"segments": [direct]})
 
-    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         provider.get_segments(
             DAY,
             [TransportType.TRAIN],
@@ -75,6 +76,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
         )
 
     messages = [record.getMessage() for record in caplog.records]
+    assert all(record.name == "uvicorn.error" for record in caplog.records)
     segment_message = next(
         message for message in messages
         if message.startswith("route_search.yandex_direct_segment")
@@ -88,12 +90,14 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
     assert "route_search.yandex_segments_total count=4" in messages
     assert "route_search.yandex_direct_candidates_to_route_engine count=1" in messages
+    assert any(message.startswith("route_search.yandex_response") for message in messages)
+    assert any(message.startswith("route_search.yandex_direct_schedules") for message in messages)
 
 
 def test_yandex_search_logs_reason_when_no_direct_candidates(caplog):
     provider, _ = provider_with_payload({"segments": []})
 
-    with caplog.at_level(logging.INFO, logger="app.providers.yandex.provider"):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         try:
             provider.get_segments(
                 DAY,
@@ -105,6 +109,7 @@ def test_yandex_search_logs_reason_when_no_direct_candidates(caplog):
             pass
 
     messages = [record.getMessage() for record in caplog.records]
+    assert all(record.name == "uvicorn.error" for record in caplog.records)
     assert "route_search.yandex_segments_total count=0" in messages
     assert "route_search.yandex_direct_candidates_to_route_engine count=0" in messages
     assert (
