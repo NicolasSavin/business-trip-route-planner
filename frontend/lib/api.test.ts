@@ -194,6 +194,40 @@ test("buildRouteSearchPayload strips UI suffix fallback when no selected locatio
   assert.equal(actual.origin_provider_code, null);
 });
 
+test("buildRouteSearchPayload sends no seat policy when no restriction is selected", () => {
+  const actual = buildRouteSearchPayload(formState);
+  assert.equal(actual.seat_preferences, null);
+  assert.deepEqual(actual.preferred_classes, []);
+});
+
+test("buildRouteSearchPayload applies only the selected lower berth restriction", () => {
+  const actual = buildRouteSearchPayload({ ...formState, lower_only: true });
+  assert.deepEqual(actual.seat_preferences, {
+    preferred_classes: [],
+    berth_preference: "lower_only",
+    require_same_compartment: false,
+    require_same_carriage: false,
+    allow_split_group: false,
+    maximum_compartments: null,
+    strict_preferences: true,
+  });
+  assert.deepEqual(actual.preferred_classes, []);
+});
+
+test("buildRouteSearchPayload applies only the selected compartment restrictions", () => {
+  const actual = buildRouteSearchPayload({ ...formState, same_compartment: true });
+  assert.deepEqual(actual.seat_preferences, {
+    preferred_classes: ["coupe"],
+    berth_preference: "any",
+    require_same_compartment: true,
+    require_same_carriage: true,
+    allow_split_group: false,
+    maximum_compartments: 1,
+    strict_preferences: true,
+  });
+  assert.deepEqual(actual.preferred_classes, ["coupe"]);
+});
+
 const partialRoute: RouteOption = {
   id: "route-partial",
   origin: "Москва",

@@ -107,7 +107,17 @@ class MultimodalJourneyPlanner:
         checked = await self._attach_journey_availability(options, request) if options else []
         checked = self._rank_after_availability(checked)
         confirmed = [o for o in checked if o.availability and o.availability.status == AvailabilityStatus.CONFIRMED]
-        visible_statuses = {AvailabilityStatus.CONFIRMED, AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED, AvailabilityStatus.UNKNOWN}
+        # In a non-strict search, enrichment failures must not erase a valid
+        # schedule. UNAVAILABLE remains excluded because providers may emit it
+        # only from conclusive, passenger-specific inventory data.
+        visible_statuses = {
+            AvailabilityStatus.CONFIRMED,
+            AvailabilityStatus.PARTIALLY_CONFIRMED,
+            AvailabilityStatus.UNCONFIRMED,
+            AvailabilityStatus.UNKNOWN,
+            AvailabilityStatus.PROVIDER_ERROR,
+            AvailabilityStatus.STALE,
+        }
         partial = [o for o in checked if o.availability and o.availability.status in visible_statuses - {AvailabilityStatus.CONFIRMED}]
         rejected = [o for o in checked if not o.availability or o.availability.status not in visible_statuses]
         routes = confirmed if request.strict_availability else confirmed + partial

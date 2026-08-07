@@ -158,6 +158,11 @@ def to_segment_result(
         warnings=warnings,
         metadata={
             "matched_train": train.train_number,
+            "availability_match": "exact_train_and_query",
+            "requested_passengers": passengers,
+            "travel_date": segment.departure_datetime.date().isoformat(),
+            "origin_station_id": segment.origin_station.id,
+            "destination_station_id": segment.destination_station.id,
             "places": [seat.__dict__ for seat in train.seats],
             "carriages": list(train.carriages),
             "min_price": train.min_price,
