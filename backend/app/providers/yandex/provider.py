@@ -12,7 +12,7 @@ from app.providers.yandex.exceptions import YandexRaspEmptyResponseError, Yandex
 from app.providers.yandex.mapper import YandexRaspMapper
 from app.providers.yandex.resolver import YandexLocationMatch, YandexLocationResolver
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 class YandexRaspProvider(TransportProvider):
