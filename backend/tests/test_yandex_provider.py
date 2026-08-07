@@ -89,7 +89,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     assert "destination_station='Санкт-Петербург'" in segment_message
     assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
     assert "route_search.yandex_segments_total count=4" in messages
-    assert "route_search.yandex_direct_candidates_to_route_engine count=1" in messages
+    assert any(message.startswith("route_search.yandex_provider_output total_count=1 direct_count=1") for message in messages)
     assert any(message.startswith("route_search.yandex_response") for message in messages)
     assert any(message.startswith("route_search.yandex_direct_schedules") for message in messages)
 
@@ -111,9 +111,9 @@ def test_yandex_search_logs_reason_when_no_direct_candidates(caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert all(record.name == "uvicorn.error" for record in caplog.records)
     assert "route_search.yandex_segments_total count=0" in messages
-    assert "route_search.yandex_direct_candidates_to_route_engine count=0" in messages
+    assert any(message.startswith("route_search.yandex_provider_output total_count=0 direct_count=0") for message in messages)
     assert (
-        "route_search.yandex_direct_candidates_to_route_engine_zero "
+        "route_search.yandex_provider_output_direct_zero "
         "reason=yandex_returned_no_segments"
     ) in messages
 

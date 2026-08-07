@@ -37,14 +37,30 @@ def test_registry_priority_enable_disable():
     assert registry.enable("high").enabled is True
 
 
-def test_unified_merge_deduplicates_by_carrier_time_stations_and_number():
+def test_unified_merge_keeps_equivalent_schedules_from_different_providers():
     registry = ProviderRegistry()
     registry.register(Provider([seg("a", "first", seats=3)]), id="first", name="First", priority=ProviderPriority.HIGH, capabilities=caps())
     registry.register(Provider([seg("b", "second", seats=9)]), id="second", name="Second", priority=ProviderPriority.LOW, capabilities=caps())
     segments = UnifiedTransportProvider(registry).get_segments(DAY, [TransportType.TRAIN])
-    assert len(segments) == 1
-    assert segments[0].provider == "first"
-    assert segments[0].metadata["source_provider"] == "first"
+    assert len(segments) == 2
+    assert [segment.provider for segment in segments] == ["first", "second"]
+
+
+def test_unified_merge_deduplicates_repeated_schedule_from_same_provider():
+    registry = ProviderRegistry()
+    registry.register(
+        Provider([seg("a", "source"), seg("b", "source")]),
+        id="source", name="Source", priority=ProviderPriority.HIGH, capabilities=caps(),
+    )
+
+    unified = UnifiedTransportProvider(registry)
+    segments = unified.get_segments(
+        DAY, [TransportType.TRAIN], origin="Москва", destination="Казань",
+    )
+
+    assert [segment.id for segment in segments] == ["a"]
+    assert len(unified.last_diagnostics["direct_segments_before_dedup"]) == 2
+    assert len(unified.last_diagnostics["direct_segments_after_dedup"]) == 1
 
 
 def test_unified_health_marks_failed_provider_degraded_or_offline():
