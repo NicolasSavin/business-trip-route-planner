@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import importlib
+import importlib.util
 import os
 import ssl
 import time
@@ -11,7 +13,8 @@ from typing import Any, Literal
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from rzd_api.exceptions import RzdError
+_rzd_exceptions = importlib.import_module("rzd_api.exceptions") if importlib.util.find_spec("rzd_api") else None
+RzdError = getattr(_rzd_exceptions, "RzdError", Exception)
 from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient

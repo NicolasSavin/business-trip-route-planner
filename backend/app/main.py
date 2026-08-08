@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import logging
 import os
 from importlib.metadata import version
@@ -57,8 +58,11 @@ async def log_browser_startup_diagnostics() -> None:
         "rzd_availability.sdk_ready",
         extra={
             "sdk_class": "RzdClient",
-            "package_version": version("rzd-api"),
+            "sdk_available": importlib.util.find_spec("rzd_api") is not None,
+            "package_version": version("rzd-api") if importlib.util.find_spec("rzd_api") else None,
             "enabled": RZDAvailabilityConfig.from_env().enabled,
+            "station_resolver_ready": True,
+            "last_ticket_search_status": "never_checked",
         },
     )
     yandex_location_resolver.warm_from_existing_cache()

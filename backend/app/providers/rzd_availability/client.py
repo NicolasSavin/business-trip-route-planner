@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
 from dataclasses import asdict, is_dataclass
 import logging
 import time
 from datetime import date
+from types import SimpleNamespace
 from typing import Any, Callable, Literal
 
-from rzd_api import Config, RzdClient
+_rzd_api = importlib.import_module("rzd_api") if importlib.util.find_spec("rzd_api") else None
+Config = getattr(_rzd_api, "Config", None)
+if Config is None:
+    class Config(SimpleNamespace):
+        def __init__(self, **kwargs: Any):
+            super().__init__(**kwargs)
+RzdClient = getattr(_rzd_api, "RzdClient", Any)
 
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.rzd_availability.exceptions import (
@@ -56,6 +65,7 @@ class RZDClient:
         station_resolver: StationCodeResolver | None = None,
     ):
         self.config = config or RZDAvailabilityConfig.from_env()
+        self._uses_default_sdk = sdk_factory is None
         self._sdk_factory = sdk_factory or self._default_sdk_factory
         self._sdk: Any = None
         self.station_resolver = station_resolver or StationCodeResolver()
@@ -67,6 +77,8 @@ class RZDClient:
         return RzdClient(config)
 
     def _get_sdk(self) -> RzdClient:
+        if _rzd_api is None and self._uses_default_sdk:
+            raise RZDAvailabilityError("rzd-api SDK is not installed")
         if self._sdk is None:
             sdk_config = Config(
                 connect_timeout=self.config.timeout_seconds,
