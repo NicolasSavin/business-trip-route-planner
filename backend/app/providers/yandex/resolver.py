@@ -287,7 +287,10 @@ class YandexLocationResolver:
         self._last_exception_type: str | None = None
         self._sync_lock = threading.Lock()
         self._syncing = False
-        self._last_sync_failure = 0.0
+        # ``time.monotonic()`` starts at an arbitrary, platform-specific origin.
+        # A numeric sentinel of 0 incorrectly puts a freshly created resolver in
+        # the retry cooldown on hosts whose uptime is shorter than the cooldown.
+        self._last_sync_failure: float | None = None
     normalize = staticmethod(normalize)
     def _safe_failure_message(self, exc: BaseException) -> str:
         loader_owner = getattr(self._directory_cache.loader, "__self__", None)
@@ -340,7 +343,13 @@ class YandexLocationResolver:
                     return True
             except sqlite3.DatabaseError as exc:
                 self.mark_index_failed(exc)
-            if time.monotonic() - self._last_sync_failure < SYNC_RETRY_COOLDOWN_SECONDS:
+            # Cool down only after a real failure has been caught and recorded.
+            # In particular, an empty first startup must proceed directly to the
+            # configured stations_list loader rather than silently returning False.
+            if (
+                self._last_sync_failure is not None
+                and time.monotonic() - self._last_sync_failure < SYNC_RETRY_COOLDOWN_SECONDS
+            ):
                 return False
             self._syncing = True
             try:
@@ -351,7 +360,7 @@ class YandexLocationResolver:
                 if stats.get("locations", 0) <= 0:
                     raise RuntimeError("Yandex stations directory produced an empty index")
                 self._cache.clear()
-                self._last_sync_failure = 0.0
+                self._last_sync_failure = None
                 return True
             except Exception as exc:
                 self._last_exception_type = exc.__class__.__name__

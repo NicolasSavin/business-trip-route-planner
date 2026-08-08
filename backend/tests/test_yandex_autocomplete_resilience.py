@@ -110,6 +110,35 @@ def test_concurrent_empty_index_has_single_sync(tmp_path):
     assert calls == 1
 
 
+def test_first_startup_downloads_directory_when_cache_and_sqlite_are_absent(tmp_path, monkeypatch):
+    requests = 0
+
+    def successful_directory(request):
+        nonlocal requests
+        requests += 1
+        assert request.url.path.endswith("/stations_list/")
+        assert request.url.params["apikey"] == "configured-api-key"
+        return httpx.Response(200, json=complete_directory())
+
+    # Reproduce a freshly booted host.  A monotonic value below the retry
+    # cooldown must not be mistaken for a recent synchronization failure.
+    monkeypatch.setattr("app.providers.yandex.resolver.time.monotonic", lambda: 1.0)
+    resolver = resolver_for_yandex_response(
+        tmp_path,
+        successful_directory,
+        api_key="configured-api-key",
+    )
+
+    assert not (tmp_path / "stations.json").exists()
+    assert not (tmp_path / "stations.sqlite3").exists()
+    assert resolver.warm_from_existing_cache()["locations"] == 0
+
+    assert resolver.ensure_index_ready() is True
+    assert requests == 1
+    assert resolver.stats()["locations"] > 0
+    assert resolver.startup_diagnostics()["last_source"] == "remote"
+
+
 def test_failed_sync_observes_cooldown(tmp_path):
     calls = 0
 
