@@ -7,7 +7,7 @@ import pytest
 from app.domain import TransportType
 from app.engine import RouteEngine
 from app.providers.yandex import YandexLocationResolver, YandexRaspClient, YandexRaspConfiguration, YandexRaspProvider
-from app.providers.yandex.exceptions import YandexRaspUnexpectedContentTypeError
+from app.providers.yandex.exceptions import YandexRaspInvalidResponseError, YandexRaspUnexpectedContentTypeError
 
 DAY = date(2026, 8, 10)
 
@@ -457,6 +457,38 @@ def test_yandex_stations_list_canonical_json_succeeds_without_retry():
     assert dict(requests[0].url.params) == {"apikey": "secret", "format": "json", "lang": "ru_RU"}
 
 
+def test_yandex_stations_list_accepts_valid_json_with_html_content_type():
+    payload = {"countries": [{"title": "Россия", "regions": []}]}
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=payload,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    assert client.stations_list() == payload
+
+
+def test_yandex_search_accepts_valid_json_with_html_content_type():
+    payload = {"pagination": {}, "segments": [], "search": {}}
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=payload,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    assert client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN]) == payload
+
+
 def test_yandex_stations_list_canonical_html_raises_safe_error_and_does_not_retry(caplog):
     requests = []
 
@@ -482,6 +514,16 @@ def test_yandex_stations_list_canonical_html_raises_safe_error_and_does_not_retr
     assert details["redirect_history_hosts"] == []
     assert "top-secret-key" not in str(details)
     assert "top-secret-key" not in caplog.text
+
+
+def test_yandex_client_application_json_with_malformed_body_is_invalid_response():
+    def handler(request):
+        return httpx.Response(200, text="{malformed", headers={"content-type": "application/json"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    with pytest.raises(YandexRaspInvalidResponseError):
+        client.search(origin_code="c2", destination_code="c213", departure_date=DAY, allowed_transport=[TransportType.TRAIN])
 
 
 def test_yandex_client_json_response_is_parsed_and_search_params_are_documented():

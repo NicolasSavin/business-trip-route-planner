@@ -111,8 +111,15 @@ class YandexRaspClient:
         except httpx.HTTPStatusError as exc:
             raise YandexRaspInvalidResponseError("Yandex Rasp API HTTP error", diagnostics=self.last_response_diagnostics) from exc
 
+        parsed_json = None
+        json_exception = None
+        try:
+            parsed_json = response.json()
+        except Exception as exc:
+            json_exception = exc
+
         content_type = response.headers.get("content-type", "")
-        if "application/json" not in content_type.lower():
+        if json_exception is not None and "application/json" not in content_type.lower():
             if retry_legacy_html and response.status_code == 200 and "text/html" in content_type.lower() and request.url.host == LEGACY_YANDEX_RASP_HOST:
                 canonical_url = f"{CANONICAL_YANDEX_RASP_BASE_URL}stations_list/"
                 retry_request = self._client.build_request("GET", canonical_url, params=dict(request.url.params))
@@ -124,12 +131,6 @@ class YandexRaspClient:
                 diagnostics=diagnostics,
             )
 
-        parsed_json = None
-        json_exception = None
-        try:
-            parsed_json = response.json()
-        except Exception as exc:
-            json_exception = exc
         self.last_response_diagnostics = write_yandex_diagnostics(request=request, response=response, parsed_json=parsed_json, json_exception=json_exception)
         if json_exception is not None:
             raise YandexRaspInvalidResponseError("Неожиданная структура ответа Яндекс Расписаний", diagnostics=self.last_response_diagnostics) from json_exception
