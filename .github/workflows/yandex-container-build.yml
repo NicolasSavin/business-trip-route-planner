@@ -19,17 +19,23 @@ jobs:
       IMAGE: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/business-trip-route-planner-backend
       YC_REGISTRY_ID: ${{ secrets.YC_REGISTRY_ID }}
       YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+      YANDEX_RASP_API_KEY: ${{ secrets.YANDEX_RASP_API_KEY }}
 
     steps:
       - name: Check required secrets
         shell: bash
         run: |
+          set +x
           if [[ -z "$YC_REGISTRY_ID" ]]; then
             echo "::error::Required GitHub secret YC_REGISTRY_ID is missing or empty."
             exit 1
           fi
           if [[ -z "$YC_SA_JSON_CREDENTIALS" ]]; then
             echo "::error::Required GitHub secret YC_SA_JSON_CREDENTIALS is missing or empty."
+            exit 1
+          fi
+          if [[ -z "$YANDEX_RASP_API_KEY" ]]; then
+            echo "::error::Required GitHub secret YANDEX_RASP_API_KEY is missing or empty."
             exit 1
           fi
 
@@ -65,10 +71,12 @@ jobs:
       - name: Smoke test image
         shell: bash
         run: |
+          set +x
           container_id="$(docker run --detach --publish 8080:8080 \
             --env TUTU_ENABLED=false \
             --env TUTU_PLAYWRIGHT_ENABLED=false \
             --env RZD_AVAILABILITY_ENABLED=false \
+            --env YANDEX_RASP_API_KEY="$YANDEX_RASP_API_KEY" \
             --env APP_ENV=development \
             --env PORT=8080 \
             "$IMAGE:${GITHUB_SHA}")"
