@@ -1,4 +1,3 @@
-import json
 import importlib.util
 import logging
 import os
@@ -65,19 +64,12 @@ async def log_browser_startup_diagnostics() -> None:
             "last_ticket_search_status": "never_checked",
         },
     )
-    yandex_location_resolver.warm_from_existing_cache()
-    if not yandex_location_resolver.ensure_index_ready():
-        diagnostics = yandex_location_resolver.startup_diagnostics()
-        message = "Yandex stations catalogue initialization failed: " + json.dumps(
-            diagnostics, ensure_ascii=False, sort_keys=True
-        )
-        logger.error(message)
-        raise RuntimeError(message)
+    yandex_location_resolver.initialize_for_startup()
     log_memory("after Yandex directory metadata")
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
     log_memory("after Yandex indexes")
-    if yandex_location_resolver.stats()["auto_sync"]:
-        yandex_location_resolver.startup_refresh_background()
+    startup_network_enabled = os.getenv("YANDEX_STATIONS_STARTUP_NETWORK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    yandex_location_resolver.startup_refresh_background(network_enabled=startup_network_enabled)
     try:
         log_memory("before Playwright probe")
         diagnostics = await browser_manager.startup_diagnostics()

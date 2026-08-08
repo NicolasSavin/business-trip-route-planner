@@ -222,6 +222,29 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
         finally:
             try: tmp.unlink(missing_ok=True)
             except Exception: pass
+    def rebuild_from_local_points(self, points: tuple[YandexLocationMatch, ...]) -> dict[str, Any]:
+        """Create the small, offline-safe index used while the catalogue is unavailable."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
+        os.close(fd); tmp = Path(tmp_name); count = 0
+        try:
+            con = sqlite3.connect(tmp)
+            con.executescript("CREATE TABLE locations(code TEXT PRIMARY KEY,title TEXT NOT NULL,normalized_title TEXT NOT NULL,point_type TEXT NOT NULL,settlement TEXT,normalized_settlement TEXT,region TEXT,country TEXT,station_type TEXT,transport_types TEXT,latitude REAL,longitude REAL,aliases TEXT); CREATE INDEX idx_locations_normalized_title ON locations(normalized_title); CREATE INDEX idx_locations_code ON locations(code); CREATE INDEX idx_locations_settlement ON locations(normalized_settlement); CREATE INDEX idx_locations_region ON locations(region);")
+            for point in points:
+                count += self._insert_match(con, point)
+                for station in point.stations:
+                    count += self._insert_match(con, YandexLocationMatch(
+                        station.code, station.title, "station", station.transport_types,
+                        (station,), station.latitude, station.longitude,
+                        country=station.country or point.country,
+                        region=station.region or point.region,
+                        settlement=station.settlement or point.settlement or point.title,
+                        station_type=station.type,
+                    ))
+            con.commit(); con.close(); os.replace(tmp, self.path); self._initialized = True
+            return self.cache_info() | {"written": count}
+        finally:
+            tmp.unlink(missing_ok=True)
     def _insert_match(self, con, m):
         aliases="|"+"|".join(sorted({normalize(a) for a in m.aliases_used if a}))+"|"
         con.execute("INSERT OR REPLACE INTO locations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (m.code,m.title,normalize(m.title),m.type,m.settlement,normalize(m.settlement or ""),m.region,m.country,m.station_type,",".join(m.transport_types),m.latitude,m.longitude,aliases)); return 1
@@ -291,6 +314,8 @@ class YandexLocationResolver:
         # A numeric sentinel of 0 incorrectly puts a freshly created resolver in
         # the retry cooldown on hosts whose uptime is shorter than the cooldown.
         self._last_sync_failure: float | None = None
+        self._catalogue_status = "degraded"
+        self._catalogue_source = "none"
     normalize = staticmethod(normalize)
     def _safe_failure_message(self, exc: BaseException) -> str:
         loader_owner = getattr(self._directory_cache.loader, "__self__", None)
@@ -361,6 +386,8 @@ class YandexLocationResolver:
                     raise RuntimeError("Yandex stations directory produced an empty index")
                 self._cache.clear()
                 self._last_sync_failure = None
+                self._catalogue_status = "ready"
+                self._catalogue_source = self._directory_cache.last_source
                 return True
             except Exception as exc:
                 self._last_exception_type = exc.__class__.__name__
@@ -395,25 +422,80 @@ class YandexLocationResolver:
         stats = self._stations_repository.rebuild_from_directory(data)
         self._cache.clear()
         self._directory_cache.last_source = "remote"
+        self._last_sync_failure = None
+        self._directory_cache.last_error = None
+        self._last_exception_type = None
+        self._catalogue_status = "ready"
+        self._catalogue_source = "remote"
         return stats | {"total_points": stats.get("locations", 0)}
     def warm_from_existing_cache(self):
-        try: return self._stations_repository.cache_info()
+        try:
+            info = self._stations_repository.cache_info()
+            if info.get("locations", 0) > 0:
+                self._catalogue_status = "ready"
+                self._catalogue_source = "sqlite_cache"
+            return info
         except sqlite3.DatabaseError as exc:
             self.mark_index_failed(exc)
             return {"locations": 0, "error": str(exc)}
-    def startup_refresh_background(self):
-        if self._directory_cache.last_source == "remote":
-            return
+    def initialize_for_startup(self) -> dict[str, Any]:
+        """Prepare a usable catalogue without performing any network I/O."""
+        info = self.warm_from_existing_cache()
+        if info.get("locations", 0) > 0:
+            return info
+        if self._directory_cache.path.exists():
+            try:
+                with self._directory_cache.path.open(encoding="utf-8") as stream:
+                    info = self._stations_repository.rebuild_from_directory(json.load(stream))
+                self._directory_cache.last_source = "cache"
+                self._catalogue_status = "ready"
+                self._catalogue_source = "json_cache"
+                return info
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                self._last_exception_type = exc.__class__.__name__
+                self._directory_cache.last_error = self._safe_failure_message(exc)
+                logger.warning("Yandex stations cached directory could not be loaded: %s", self._directory_cache.last_error)
+        repository = self._stations_repository
+        bootstrap = getattr(repository, "rebuild_from_local_points", None)
+        if bootstrap is not None:
+            info = bootstrap(LOCAL_POINTS)
+        else:
+            info = {"locations": len(LOCAL_POINTS)}
+        self._catalogue_status = "degraded"
+        self._catalogue_source = "local_points"
+        self._directory_cache.last_source = "local_points"
+        return info
+
+    def startup_refresh_background(self, *, network_enabled: bool = True):
+        """Refresh in a daemon thread, honoring failure cooldown and never delaying boot."""
+        if not network_enabled or not self._directory_cache.loader or self._catalogue_source == "remote":
+            return None
+        if self._last_sync_failure is not None and self._retry_after_seconds() > 0:
+            return None
+        with self._sync_lock:
+            if self._syncing:
+                return None
+            self._syncing = True
 
         def refresh_safely():
             try:
                 self.refresh()
             except Exception as exc:
-                self._directory_cache.last_error = str(exc) or exc.__class__.__name__
-                logger.warning("Yandex stations background refresh failed: %s", exc)
+                self._last_exception_type = exc.__class__.__name__
+                self._directory_cache.last_error = self._safe_failure_message(exc)
+                self._last_sync_failure = time.monotonic()
+                self._catalogue_status = "degraded"
+                logger.warning("Yandex stations background refresh failed: %s: %s", self._last_exception_type, self._directory_cache.last_error)
+            finally:
+                self._syncing = False
 
         thread = threading.Thread(target=refresh_safely, name="yandex-stations-refresh", daemon=True)
         thread.start()
+        return thread
+    def _retry_after_seconds(self) -> float:
+        if self._last_sync_failure is None:
+            return 0
+        return max(0, SYNC_RETRY_COOLDOWN_SECONDS - (time.monotonic() - self._last_sync_failure))
     def stats(self):
         try:
             info = self._stations_repository.cache_info()
@@ -428,7 +510,16 @@ class YandexLocationResolver:
         config = getattr(loader_owner, "config", None)
         api_key_configured = bool(getattr(config, "api_key", None) or os.getenv("YANDEX_RASP_API_KEY"))
         repository_path = getattr(self._stations_repository, "path", None)
+        info = self.stats()
+        retry_after = self._retry_after_seconds()
         return {
+            "catalogue_status": self._catalogue_status,
+            "ready": self._catalogue_status == "ready",
+            "cache_source": self._catalogue_source,
+            "locations_count": info.get("locations", 0),
+            "refresh_in_progress": self._syncing,
+            "retry_after_seconds": round(retry_after, 3),
+            "next_retry_monotonic": time.monotonic() + retry_after if retry_after else None,
             "exception_class": self._last_exception_type,
             "http_status": client_diagnostics.get("status_code"),
             "endpoint": "stations_list",
@@ -445,6 +536,7 @@ class YandexLocationResolver:
             "sqlite_path_exists": bool(repository_path and Path(repository_path).exists()),
             "last_source": self._directory_cache.last_source,
             "last_error": self._directory_cache.last_error,
+            "last_refresh_error": self._directory_cache.last_error,
         }
     def _local(self, query):
         key=normalize(query); ranked=[]
