@@ -12,6 +12,7 @@ from app.providers.unified import registry as provider_registry
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.yandex.location_service import yandex_location_resolver
 from app.memory import log_memory
+from app.hotels import session_secret
 
 app = FastAPI(title="Business Trip Route Planner API")
 logger = logging.getLogger("uvicorn.error")
@@ -28,6 +29,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def validate_hotels_security_configuration() -> None:
+    session_secret()
 
 
 

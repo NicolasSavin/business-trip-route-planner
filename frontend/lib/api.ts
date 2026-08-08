@@ -56,6 +56,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(url, {
       ...init,
+      credentials: "include",
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch (error) {
@@ -91,6 +92,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   }
 }
+
+export type Hotel = { id: number; name: string; locality: string; address: string; photo_url: string; report_amount: number; actual_price: number | null; notes: string };
+export type HotelInput = Omit<Hotel, "id">;
+export type HotelsUser = { surname: string; is_admin: boolean };
+export const hotelsLogin = (surname: string, password: string) => request<HotelsUser>("/api/hotels/auth/login", { method: "POST", body: JSON.stringify({ surname, password }) });
+export const hotelsLogout = () => request<void>("/api/hotels/auth/logout", { method: "POST" });
+export const hotelsMe = () => request<HotelsUser>("/api/hotels/auth/me");
+export const listHotels = () => request<Hotel[]>("/api/hotels");
+export const createHotel = (hotel: HotelInput) => request<Hotel>("/api/hotels", { method: "POST", body: JSON.stringify(hotel) });
+export const updateHotel = (id: number, hotel: HotelInput) => request<Hotel>(`/api/hotels/${id}`, { method: "PUT", body: JSON.stringify(hotel) });
+export const deleteHotel = (id: number) => request<void>(`/api/hotels/${id}`, { method: "DELETE" });
 
 export function searchRoutes(payload: RouteSearchPayload) {
   return request<RouteSearchResponse>("/api/v1/routes/search", {

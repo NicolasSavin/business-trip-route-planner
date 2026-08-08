@@ -1,0 +1,842 @@
+[
+  {
+    "id": 1,
+    "name": "Гостиница 1",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 2,
+    "name": "Гостиница 2",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 3,
+    "name": "Гостиница 3",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 4,
+    "name": "Гостиница 4",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 5,
+    "name": "Гостиница 5",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 6,
+    "name": "Гостиница 6",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 7,
+    "name": "Гостиница 7",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 8,
+    "name": "Гостиница 8",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 9,
+    "name": "Гостиница 9",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 10,
+    "name": "Гостиница 10",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 11,
+    "name": "Гостиница 11",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 12,
+    "name": "Гостиница 12",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 13,
+    "name": "Гостиница 13",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 14,
+    "name": "Гостиница 14",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 15,
+    "name": "Гостиница 15",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 16,
+    "name": "Гостиница 16",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 17,
+    "name": "Гостиница 17",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 18,
+    "name": "Гостиница 18",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 19,
+    "name": "Гостиница 19",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 20,
+    "name": "Гостиница 20",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 21,
+    "name": "Гостиница 21",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 22,
+    "name": "Гостиница 22",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 23,
+    "name": "Гостиница 23",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 24,
+    "name": "Гостиница 24",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 25,
+    "name": "Гостиница 25",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 26,
+    "name": "Гостиница 26",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 27,
+    "name": "Гостиница 27",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 28,
+    "name": "Гостиница 28",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 29,
+    "name": "Гостиница 29",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 30,
+    "name": "Гостиница 30",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 31,
+    "name": "Гостиница 31",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 32,
+    "name": "Гостиница 32",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 33,
+    "name": "Гостиница 33",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 34,
+    "name": "Гостиница 34",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 35,
+    "name": "Гостиница 35",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 36,
+    "name": "Гостиница 36",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 37,
+    "name": "Гостиница 37",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 38,
+    "name": "Гостиница 38",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 39,
+    "name": "Гостиница 39",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 40,
+    "name": "Гостиница 40",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 41,
+    "name": "Гостиница 41",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 42,
+    "name": "Гостиница 42",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 43,
+    "name": "Гостиница 43",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 44,
+    "name": "Гостиница 44",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 45,
+    "name": "Гостиница 45",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 46,
+    "name": "Гостиница 46",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 47,
+    "name": "Гостиница 47",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 48,
+    "name": "Гостиница 48",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 49,
+    "name": "Гостиница 49",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 50,
+    "name": "Гостиница 50",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 51,
+    "name": "Гостиница 51",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 52,
+    "name": "Гостиница 52",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 53,
+    "name": "Гостиница 53",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 54,
+    "name": "Гостиница 54",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 55,
+    "name": "Гостиница 55",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 56,
+    "name": "Гостиница 56",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 57,
+    "name": "Гостиница 57",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 58,
+    "name": "Гостиница 58",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 59,
+    "name": "Гостиница 59",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 60,
+    "name": "Гостиница 60",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 61,
+    "name": "Гостиница 61",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 62,
+    "name": "Гостиница 62",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 63,
+    "name": "Гостиница 63",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 64,
+    "name": "Гостиница 64",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 65,
+    "name": "Гостиница 65",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 66,
+    "name": "Гостиница 66",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 67,
+    "name": "Гостиница 67",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 68,
+    "name": "Гостиница 68",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 69,
+    "name": "Гостиница 69",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 70,
+    "name": "Гостиница 70",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 71,
+    "name": "Гостиница 71",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 72,
+    "name": "Гостиница 72",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 73,
+    "name": "Гостиница 73",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 74,
+    "name": "Гостиница 74",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 75,
+    "name": "Гостиница 75",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 76,
+    "name": "Гостиница 76",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 77,
+    "name": "Гостиница 77",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 78,
+    "name": "Гостиница 78",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 79,
+    "name": "Гостиница 79",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 80,
+    "name": "Гостиница 80",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 81,
+    "name": "Гостиница 81",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 82,
+    "name": "Гостиница 82",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 83,
+    "name": "Гостиница 83",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 84,
+    "name": "Гостиница 84",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 0,
+    "actual_price": null,
+    "notes": ""
+  }
+]
