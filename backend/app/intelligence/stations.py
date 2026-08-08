@@ -23,6 +23,37 @@ def normalize_location_name(value: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).split())
 
 
+# Only remove a parenthetical suffix when it is recognisably station metadata.
+# Parentheses can be a meaningful part of a settlement's name, so a blanket
+# ``rsplit("(")`` would merge unrelated places.
+_STATION_QUALIFIER = re.compile(
+    r"\b(?:вокзал|вокзала|станция|станции|аэропорт|автовокзал|"
+    r"station|terminal|airport)\b",
+    flags=re.IGNORECASE,
+)
+_TRAILING_QUALIFIER = re.compile(r"^(?P<city>.+?)\s*\((?P<qualifier>[^()]*)\)\s*$")
+
+
+def city_name_without_station_qualifier(value: str) -> str:
+    """Remove a recognisable trailing station qualifier, preserving display case."""
+    normalized_value = unicodedata.normalize("NFKC", value).strip()
+    match = _TRAILING_QUALIFIER.match(normalized_value)
+    if match and _STATION_QUALIFIER.search(match.group("qualifier")):
+        return match.group("city").strip()
+    return normalized_value
+
+
+def canonical_city_name(value: str) -> str:
+    """Return a conservative comparison key for a city display name."""
+    return normalize_location_name(city_name_without_station_qualifier(value))
+
+
+def city_names_match(first: str, second: str) -> bool:
+    """Compare city identities without broadening to substring matching."""
+    first_key = canonical_city_name(first)
+    return bool(first_key) and first_key == canonical_city_name(second)
+
+
 @dataclass(frozen=True)
 class StationResolver:
     city_stations: dict[str, tuple[str, ...]] = field(default_factory=lambda: DEFAULT_CITY_STATIONS.copy())
@@ -31,7 +62,7 @@ class StationResolver:
         normalized = self._normalize(query)
         known_cities = {segment.origin_city.name for segment in segments} | {segment.destination_city.name for segment in segments} | set(self.city_stations)
         for city in known_cities:
-            if self._normalize(city) == normalized:
+            if city_names_match(city, query):
                 return (city,)
         # Provider settlements are canonical city names, while a station-level
         # search may carry the station title as its display value.
@@ -51,7 +82,7 @@ class StationResolver:
         stations: dict[str, Station] = {}
         for segment in segments:
             for station in (segment.origin_station, segment.destination_station):
-                if station.city.name == city:
+                if city_names_match(station.city.name, city):
                     stations[station.id] = station
         for name in self.city_stations.get(city, ()):
             stations.setdefault(f"{city}:{self._normalize(name)}", Station(f"{city}:{self._normalize(name)}", name, next(iter(stations.values())).city if stations else segment_city(city)))

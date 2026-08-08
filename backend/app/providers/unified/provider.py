@@ -7,7 +7,7 @@ import logging
 from app.domain import TransportSegment, TransportType
 from app.providers.base import TransportProvider
 from app.providers.unified.registry import ProviderRegistry
-from app.intelligence.stations import normalize_location_name
+from app.intelligence.stations import city_names_match
 
 
 logger = logging.getLogger(__name__)
@@ -138,8 +138,8 @@ class UnifiedTransportProvider(TransportProvider):
         if not origin or not destination:
             return False
         return (
-            normalize_location_name(segment.origin_city.name) == normalize_location_name(origin)
-            and normalize_location_name(segment.destination_city.name) == normalize_location_name(destination)
+            city_names_match(segment.origin_city.name, origin)
+            and city_names_match(segment.destination_city.name, destination)
         )
 
     def _describe_segment(self, segment: TransportSegment) -> dict[str, str]:

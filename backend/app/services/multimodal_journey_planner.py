@@ -12,7 +12,7 @@ from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCach
 from app.availability.seats import BerthPosition, GenderRestriction, RailwayPlace, SeatAllocationService, SeatPreferences
 from app.domain import RouteOption as DomainRouteOption, TransportClass, TransportSegment, TransportType
 from app.engine import RouteEngine
-from app.intelligence.stations import normalize_location_name
+from app.intelligence.stations import city_names_match
 from app.models.routes import RouteSearchRequest, SearchSummary
 from app.providers.base import TransportProvider
 from app.services.segment_enrichment import SegmentEnrichmentService
@@ -218,8 +218,8 @@ class MultimodalJourneyPlanner:
 
     def _segment_matches_request(self, segment: TransportSegment, request: RouteSearchRequest) -> bool:
         return (
-            normalize_location_name(segment.origin_city.name) == normalize_location_name(request.origin)
-            and normalize_location_name(segment.destination_city.name) == normalize_location_name(request.destination)
+            city_names_match(segment.origin_city.name, request.origin)
+            and city_names_match(segment.destination_city.name, request.destination)
         )
 
     def _rank_after_availability(self, options: list[DomainRouteOption]) -> list[DomainRouteOption]:
