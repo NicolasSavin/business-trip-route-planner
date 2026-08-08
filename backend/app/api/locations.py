@@ -21,6 +21,7 @@ def _to_suggestion(match) -> LocationSuggestion:
 
 @router.get("/suggest", response_model=LocationSuggestResponse)
 def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Query(default=10, ge=1, le=20)) -> LocationSuggestResponse:
+    matches = []
     if len(q.strip()) >= 2:
         try:
             matches = yandex_location_resolver.resolve_all(q)[:limit]
@@ -28,8 +29,30 @@ def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Que
             logger.warning("Yandex location suggestions database failed for %r: %s", q, exc)
             matches = []
         if matches:
+            index_ready = yandex_location_resolver.stats().get("locations", 0) > 0
+            yandex_match_count = sum(match.source == "sqlite" for match in matches)
+            logger.info(
+                "route_search.location_suggest",
+                extra={
+                    "query": q,
+                    "yandex_index_ready": index_ready,
+                    "yandex_match_count": yandex_match_count,
+                    "fallback_used": yandex_match_count != len(matches),
+                },
+            )
             return LocationSuggestResponse(items=[_to_suggestion(item) for item in matches])
-    return LocationSuggestResponse(items=location_repository.suggest(q, min(limit, 10)))
+    fallback = location_repository.suggest(q, min(limit, 10))
+    fallback_used = bool(fallback)
+    logger.info(
+        "route_search.location_suggest",
+        extra={
+            "query": q,
+            "yandex_index_ready": yandex_location_resolver.stats().get("locations", 0) > 0,
+            "yandex_match_count": len(matches),
+            "fallback_used": fallback_used,
+        },
+    )
+    return LocationSuggestResponse(items=fallback)
 
 
 @router.get("/resolve")

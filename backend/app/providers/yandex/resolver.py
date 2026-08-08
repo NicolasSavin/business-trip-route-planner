@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ CACHE_TTL_SECONDS = int(os.getenv("YANDEX_STATIONS_CACHE_TTL_SECONDS", str(7 * 2
 CACHE_PATH = Path(os.getenv("YANDEX_STATIONS_CACHE_PATH", "/tmp/business-trip-route-planner/yandex_stations_list.json"))
 SQLITE_PATH = Path(os.getenv("YANDEX_STATIONS_SQLITE_PATH", "/tmp/business-trip-route-planner/yandex_stations.sqlite3"))
 YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "false").lower() in {"1", "true", "yes", "on"}
+SYNC_RETRY_SECONDS = int(os.getenv("YANDEX_STATIONS_SYNC_RETRY_SECONDS", "60"))
 logger = logging.getLogger(__name__)
 
 STOP_WORDS = {"вокзал", "станция", "ст", "жд", "ж д", "железнодорожный", "железнодорожная"}
@@ -229,6 +231,8 @@ class YandexLocationResolver:
         sqlite_path = cache_path.with_suffix(".sqlite3") if cache_path != CACHE_PATH else SQLITE_PATH
         self._stations_repository = stations_repository or SQLiteYandexStationsRepository(path=sqlite_path, loader=directory_loader)
         self._cache: dict[str, list[YandexLocationMatch]] = {}; self._last_diag: dict[str, Any] = {}; self._initialized=False
+        self._sync_lock = threading.Lock()
+        self._last_sync_attempt = 0.0
     normalize = staticmethod(normalize)
     def resolve(self, query: str) -> YandexLocationMatch:
         matches=self.resolve_all(query)
@@ -249,29 +253,52 @@ class YandexLocationResolver:
         title = fallback_title or code
         return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
-        self._maybe_seed_repository()
+        index_ready = self.ensure_index_ready()
         self._initialized=True; key=normalize(query)
         if key in self._cache: return [self._with_cache_hit(m) for m in self._cache[key]]
         matches=self._stations_repository.resolve(query) or self._local(query) or self._fallback_repository(query)
         self._cache[key]=matches; self._last_diag={"source":self._directory_cache.last_source if self._directory_cache.last_source != "fallback" else ("cache" if self._stations_repository.cache_info().get("locations", 0) else "sqlite"),"cache_info":self._stations_repository.cache_info(),"selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1}
+        self._last_diag["yandex_index_ready"] = index_ready
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
-    def _maybe_seed_repository(self):
+    def ensure_index_ready(self) -> bool:
+        """Populate an empty index once, while preventing a sync stampede."""
         info = self._stations_repository.cache_info()
-        if info.get("locations", 0) == 0 and self._directory_cache.loader:
+        if info.get("locations", 0) > 0:
+            return True
+        if not self._directory_cache.loader:
+            return False
+        # A failed upstream must not cause every keystroke to download the full
+        # stations directory again. Successful refreshes clear resolver caches.
+        with self._sync_lock:
+            if self._stations_repository.cache_info().get("locations", 0) > 0:
+                return True
+            if time.monotonic() - self._last_sync_attempt < SYNC_RETRY_SECONDS:
+                return False
+            self._last_sync_attempt = time.monotonic()
             try:
                 self._stations_repository.refresh()
                 self._directory_cache.last_source = "remote"
             except Exception as exc:
                 self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+                logger.exception("Unable to initialize Yandex location index")
+                return False
+            self._cache.clear()
+            return self._stations_repository.cache_info().get("locations", 0) > 0
+    def _maybe_seed_repository(self):
+        self.ensure_index_ready()
     def refresh(self):
-        self._cache.clear()
-        stats = self._stations_repository.refresh()
-        self._directory_cache.last_source = "remote"
-        return stats | {"total_points": stats.get("locations", 0)}
+        with self._sync_lock:
+            self._last_sync_attempt = time.monotonic()
+            stats = self._stations_repository.refresh()
+            self._cache.clear()
+            self._directory_cache.last_source = "remote"
+            return stats | {"total_points": stats.get("locations", 0)}
     def warm_from_existing_cache(self): self._stations_repository.cache_info()
     def startup_refresh_background(self):
-        if YANDEX_STATIONS_AUTO_SYNC: logger.warning("YANDEX_STATIONS_AUTO_SYNC is enabled; prefer build-job sync in production")
+        info = self._stations_repository.cache_info()
+        if info.get("locations", 0) == 0 or YANDEX_STATIONS_AUTO_SYNC:
+            threading.Thread(target=self.ensure_index_ready, name="yandex-location-sync", daemon=True).start()
     def stats(self): return self._stations_repository.cache_info() | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
     def _local(self, query):
         key=normalize(query); ranked=[]
