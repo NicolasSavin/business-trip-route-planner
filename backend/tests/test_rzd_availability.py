@@ -33,6 +33,20 @@ class CarGroup:
     place_quantity: int = 2
 
 
+@pytest.mark.parametrize("place_number", ["1", "2"])
+def test_numeric_place_without_explicit_berth_remains_unknown(place_number):
+    train = map_train({
+        "number": "008С",
+        "car_groups": [{
+            "number": "1",
+            "places": [{"number": place_number}],
+        }],
+    })
+
+    assert train.seats[0].number == place_number
+    assert train.seats[0].berth_position == "unknown"
+
+
 @dataclass
 class TrainRoute:
     number: str = "008С"

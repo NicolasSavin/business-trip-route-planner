@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 import pytest
 
-from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache
+from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache, SegmentAvailabilityResult
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest, SeatPreferencesRequest
 from app.providers.yandex.mapper import YandexRaspMapper
@@ -66,6 +66,57 @@ def test_lower_berths_same_compartment_required_on_every_train():
     routes, _, rejected, _ = planner.search(req(seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True, require_same_carriage=True, strict_preferences=True)))
     assert routes == []
     assert rejected[0].availability.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_aggregate_lower_quantity_confirms_lower_only_without_compartment_rule():
+    segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(
+        max_transfers=0,
+        seat_preferences=SeatPreferencesRequest(
+            berth_preference="lower_only", require_same_compartment=False
+        ),
+    )
+    provider_result = SegmentAvailabilityResult(
+        segment_id=segment.id,
+        provider="rzd",
+        status=AvailabilityStatus.PARTIALLY_CONFIRMED,
+        available_places_count=10,
+        metadata={"lower_places_count": 2, "places": []},
+    )
+
+    result = planner._apply_railway_preferences(segment, request, provider_result)
+
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.seat_preferences_status == AvailabilityStatus.CONFIRMED
+    assert result.metadata["lower_berths_confirmed"] is True
+    assert result.selected_places == ()
+
+
+def test_aggregate_lower_quantity_cannot_confirm_same_compartment():
+    segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(
+        max_transfers=0,
+        seat_preferences=SeatPreferencesRequest(
+            berth_preference="lower_only", require_same_compartment=True
+        ),
+    )
+    provider_result = SegmentAvailabilityResult(
+        segment_id=segment.id,
+        provider="rzd",
+        status=AvailabilityStatus.PARTIALLY_CONFIRMED,
+        available_places_count=10,
+        metadata={"lower_places_count": 2, "places": []},
+    )
+
+    result = planner._apply_railway_preferences(segment, request, provider_result)
+
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.seat_preferences_status == AvailabilityStatus.UNKNOWN
+    assert result.metadata["lower_berths_confirmed"] is False
+    assert result.metadata["same_compartment_confirmed"] is False
+    assert result.selected_places == ()
 
 def test_tutu_enrichment_matches_only_the_same_train():
     schedule = seg("s", "A", "C", dt(8), dt(12), number="016М")

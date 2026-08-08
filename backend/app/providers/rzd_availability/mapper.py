@@ -78,8 +78,6 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
             if available:
                 number = str(seat.get("number") or seat.get("place") or seat.get("placeNumber") or seat.get("place_number") or "")
                 berth = str(seat.get("berth_position") or seat.get("berthPosition") or seat.get("placeType") or "unknown").lower()
-                if berth == "unknown" and number.isdigit():
-                    berth = "lower" if int(number) % 2 else "upper"
                 seats.append(
                     RZDSeat(
                         number,
