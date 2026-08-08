@@ -14,7 +14,7 @@ DAY = date(2026, 8, 10)
 def client_for_response(response: httpx.Response) -> YandexRaspClient:
     def handler(request):
         return response
-    return YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex.net/v3.0"))
+    return YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0"))
 
 
 def run_provider(client: YandexRaspClient):

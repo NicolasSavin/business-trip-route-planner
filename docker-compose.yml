@@ -4,6 +4,7 @@ services:
       context: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
+      YANDEX_RASP_BASE_URL: https://api.rasp.yandex-net.ru/v3.0/
       TUTU_PLAYWRIGHT_ENABLED: "false"
       TUTU_PLAYWRIGHT_SERVICE_URL: http://tutu-playwright-service:8000
       TUTU_PLAYWRIGHT_SERVICE_TOKEN: ${SERVICE_API_TOKEN:-local-dev-token}

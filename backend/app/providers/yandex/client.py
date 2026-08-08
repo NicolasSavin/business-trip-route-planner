@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import date
+import logging
 
 import httpx
 
 from app.domain import TransportType
-from app.providers.yandex.config import YandexRaspConfiguration
+from app.providers.yandex.config import CANONICAL_YANDEX_RASP_BASE_URL, LEGACY_YANDEX_RASP_HOST, YandexRaspConfiguration
 from app.providers.yandex.diagnostics import write_yandex_diagnostics
 from app.providers.yandex.exceptions import (
     YandexRaspAuthError,
@@ -23,6 +24,7 @@ YANDEX_TRANSPORT_TYPES = {
 }
 SUBURBAN_TRANSPORT_TYPE = "suburban"
 BODY_PREVIEW_CHARS = 1000
+logger = logging.getLogger("uvicorn.error")
 
 
 class YandexRaspClient:
@@ -51,14 +53,17 @@ class YandexRaspClient:
         })
 
     def stations_list(self) -> dict:
-        return self._get("stations_list/", params={"format": "json", "lang": "ru_RU"})
+        return self._get("stations_list/", params={"format": "json", "lang": "ru_RU"}, retry_legacy_html=True)
 
-    def _get(self, path: str, params: dict) -> dict:
+    def _get(self, path: str, params: dict, *, retry_legacy_html: bool = False) -> dict:
         if not self.config.api_key:
             raise YandexRaspAuthError("YANDEX_RASP_API_KEY is not configured")
         request_params = {"apikey": self.config.api_key, **params}
         self.last_request_params = {**params, "apikey": "***redacted***"}
         request = self._client.build_request("GET", path, params=request_params)
+        return self._send(request, retry_legacy_html=retry_legacy_html)
+
+    def _send(self, request: httpx.Request, *, retry_legacy_html: bool) -> dict:
         try:
             response = self._client.send(request)
             self.last_status_code = response.status_code
@@ -67,6 +72,13 @@ class YandexRaspClient:
             raise YandexRaspTimeoutError("Yandex Rasp API timeout", diagnostics=self.last_response_diagnostics) from exc
 
         self.last_response_diagnostics = write_yandex_diagnostics(request=request, response=response)
+        logger.info(
+            "Yandex Rasp response: request_host=%s request_path=%s http_status=%s content_type=%s",
+            request.url.host,
+            request.url.path,
+            response.status_code,
+            response.headers.get("content-type", ""),
+        )
         if response.status_code in {401, 403}:
             raise YandexRaspAuthError("Yandex Rasp API rejected API key", diagnostics=self.last_response_diagnostics)
         if response.status_code == 429:
@@ -80,6 +92,10 @@ class YandexRaspClient:
 
         content_type = response.headers.get("content-type", "")
         if "application/json" not in content_type.lower():
+            if retry_legacy_html and response.status_code == 200 and "text/html" in content_type.lower() and request.url.host == LEGACY_YANDEX_RASP_HOST:
+                canonical_url = f"{CANONICAL_YANDEX_RASP_BASE_URL}stations_list/"
+                retry_request = self._client.build_request("GET", canonical_url, params=dict(request.url.params))
+                return self._send(retry_request, retry_legacy_html=False)
             diagnostics = self._unexpected_content_type_details(request, response)
             self.last_response_diagnostics = diagnostics
             raise YandexRaspUnexpectedContentTypeError(
@@ -103,6 +119,8 @@ class YandexRaspClient:
         return {
             "status_code": response.status_code,
             "content_type": response.headers.get("content-type", ""),
+            "request_host": request.url.host,
+            "request_path": request.url.path,
             "request_url": str(request.url).split("?", 1)[0],
             "final_response_url": str(response.url).split("?", 1)[0],
             "body_preview": text,

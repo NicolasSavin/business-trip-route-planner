@@ -34,6 +34,8 @@ services:
         value: true
       - key: YANDEX_RASP_API_KEY
         sync: false
+      - key: YANDEX_RASP_BASE_URL
+        value: https://api.rasp.yandex-net.ru/v3.0/
       - key: MAX_PROVIDER_CONCURRENCY
         value: 2
       - key: MAX_AVAILABILITY_CHECKS_PER_QUERY

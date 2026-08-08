@@ -18,7 +18,7 @@ def resolver_for_yandex_response(tmp_path, handler, api_key="startup-super-secre
         YandexRaspConfiguration(api_key, enabled=True),
         httpx.Client(
             transport=httpx.MockTransport(handler),
-            base_url="https://api.rasp.yandex.net/v3.0/",
+            base_url="https://api.rasp.yandex-net.ru/v3.0/",
         ),
     )
     return YandexLocationResolver(

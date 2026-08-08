@@ -138,7 +138,7 @@ Backend добавляет endpoints `/api/v1/saved-searches`, а ручная �
 
 ### Яндекс Расписания
 
-При `YANDEX_RASP_ENABLED=true` backend регистрирует provider `yandex_rasp` и обращается только к официальному API Яндекс Расписаний (`https://api.rasp.yandex.net/v3.0/search/` и `https://api.rasp.yandex.net/v3.0/stations_list/`). Ключ берётся из `YANDEX_RASP_API_KEY`, таймаут — из `YANDEX_RASP_TIMEOUT_SECONDS`. Если provider выключен, используются существующие Mock/GTFS/RZD provider без изменения их поведения.
+При `YANDEX_RASP_ENABLED=true` backend регистрирует provider `yandex_rasp` и обращается только к официальному API Яндекс Расписаний (`https://api.rasp.yandex-net.ru/v3.0/search/` и `https://api.rasp.yandex-net.ru/v3.0/stations_list/`). Устаревшее значение `api.rasp.yandex.net` в `YANDEX_RASP_BASE_URL` автоматически заменяется каноническим адресом. Ключ берётся из `YANDEX_RASP_API_KEY`, таймаут — из `YANDEX_RASP_TIMEOUT_SECONDS`. Если provider выключен, используются существующие Mock/GTFS/RZD provider без изменения их поведения.
 
 Ограничение: API Яндекс Расписаний возвращает расписания и перевозчика, но не подтверждает наличие мест в текущей интеграции, поэтому UI показывает «Наличие мест пока не подтверждено». Для проверки мест нужен отдельный официальный источник availability/booking-данных перевозчиков.
 
