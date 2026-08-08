@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,25 @@ def test_location_suggest_does_not_mask_programming_errors(monkeypatch):
 
     with pytest.raises(AttributeError):
         TestClient(app, raise_server_exceptions=True).get("/api/v1/locations/suggest", params={"q": "Москва"})
+
+
+def test_location_suggest_corrupt_sqlite_uses_fallback_without_diagnostics_access(monkeypatch):
+    calls = []
+
+    def corrupt(_query):
+        calls.append("resolve")
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(yandex_location_resolver, "resolve_all", corrupt)
+    monkeypatch.setattr(yandex_location_resolver, "mark_index_failed", lambda _exc: calls.append("quarantine"))
+    monkeypatch.setattr(
+        yandex_location_resolver,
+        "stats",
+        lambda: (_ for _ in ()).throw(AssertionError("diagnostics must not access SQLite")),
+    )
+
+    response = TestClient(app).get("/api/v1/locations/suggest", params={"q": "Москва"})
+
+    assert response.status_code == 200
+    assert response.json()["items"]
+    assert calls == ["resolve", "quarantine"]
