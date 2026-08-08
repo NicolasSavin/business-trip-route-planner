@@ -2,10 +2,12 @@ import logging
 from datetime import date
 
 import httpx
+import pytest
 
 from app.domain import TransportType
 from app.engine import RouteEngine
 from app.providers.yandex import YandexLocationResolver, YandexRaspClient, YandexRaspConfiguration, YandexRaspProvider
+from app.providers.yandex.exceptions import YandexRaspUnexpectedContentTypeError
 
 DAY = date(2026, 8, 10)
 
@@ -204,7 +206,7 @@ def test_provider_raises_auth_timeout_429_and_500_errors():
             if isinstance(exc, httpx.Response):
                 return exc
             raise exc
-        client = YandexRaspClient(YandexRaspConfiguration("key", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex.net/v3.0"))
+        client = YandexRaspClient(YandexRaspConfiguration("key", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0"))
         provider = YandexRaspProvider(YandexRaspConfiguration("key", enabled=True), client=client, resolver=YandexLocationResolver())
         try:
             provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
@@ -361,6 +363,18 @@ def test_yandex_default_base_url_uses_new_domain(monkeypatch):
     assert config.base_url == "https://api.rasp.yandex-net.ru/v3.0/"
 
 
+@pytest.mark.parametrize("legacy_url", [
+    "api.rasp.yandex.net",
+    "https://api.rasp.yandex.net",
+    "https://api.rasp.yandex.net/v3.0/",
+    "http://api.rasp.yandex.net/v3.0/stations_list/",
+])
+def test_yandex_legacy_base_url_normalizes_to_canonical(legacy_url):
+    config = YandexRaspConfiguration("secret", enabled=True, base_url=legacy_url)
+
+    assert config.base_url == "https://api.rasp.yandex-net.ru/v3.0/"
+
+
 def test_yandex_base_url_can_be_overridden(monkeypatch):
     monkeypatch.setenv("YANDEX_RASP_BASE_URL", "https://example.test/v3.0")
 
@@ -405,6 +419,64 @@ def test_yandex_client_stations_list_preserves_api_version_path_in_request_url()
 
     assert seen["url"] == "https://api.rasp.yandex-net.ru/v3.0/stations_list/"
     assert seen["url"] != "https://api.rasp.yandex-net.ru/stations_list/"
+
+
+def test_yandex_stations_list_legacy_html_retries_canonical_once():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "api.rasp.yandex.net":
+            return httpx.Response(200, text="<html>legacy</html>", headers={"content-type": "text/html; charset=utf-8"}, request=request)
+        return httpx.Response(200, json={"countries": []}, headers={"content-type": "application/json"}, request=request)
+
+    # An externally supplied client may retain a legacy base URL even though all
+    # YandexRaspConfiguration values are normalized.
+    http_client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex.net/v3.0/")
+    client = YandexRaspClient(YandexRaspConfiguration("top-secret-key", enabled=True), http_client)
+
+    assert client.stations_list() == {"countries": []}
+    assert [(request.url.host, request.url.path) for request in requests] == [
+        ("api.rasp.yandex.net", "/v3.0/stations_list/"),
+        ("api.rasp.yandex-net.ru", "/v3.0/stations_list/"),
+    ]
+    assert all(request.url.params["format"] == "json" and request.url.params["lang"] == "ru_RU" for request in requests)
+
+
+def test_yandex_stations_list_canonical_json_succeeds_without_retry():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"countries": []}, headers={"content-type": "application/json"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("secret", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    assert client.stations_list() == {"countries": []}
+    assert len(requests) == 1
+    assert dict(requests[0].url.params) == {"apikey": "secret", "format": "json", "lang": "ru_RU"}
+
+
+def test_yandex_stations_list_canonical_html_raises_safe_error_and_does_not_retry(caplog):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text="<html>bad</html>", headers={"content-type": "text/html; charset=utf-8"}, request=request)
+
+    client = YandexRaspClient(YandexRaspConfiguration("top-secret-key", enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    with pytest.raises(YandexRaspUnexpectedContentTypeError) as raised:
+        client.stations_list()
+
+    assert len(requests) == 1
+    details = raised.value.to_error()["details"]
+    assert details["request_host"] == "api.rasp.yandex-net.ru"
+    assert details["request_path"] == "/v3.0/stations_list/"
+    assert details["status_code"] == 200
+    assert details["content_type"].startswith("text/html")
+    assert "top-secret-key" not in str(details)
+    assert "top-secret-key" not in caplog.text
 
 
 def test_yandex_client_json_response_is_parsed_and_search_params_are_documented():
