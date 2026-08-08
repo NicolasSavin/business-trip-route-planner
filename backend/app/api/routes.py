@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 async def search_routes(request: RouteSearchRequest, raw_request: Request) -> RouteSearchResponse:
     started_at = monotonic()
     request_id = raw_request.headers.get("x-request-id") or raw_request.headers.get("x-correlation-id") or str(uuid4())
+    logger.info(
+        "route_search.endpoint_enter module=%s handler=%s planner_class=%s origin=%r destination=%r",
+        __name__,
+        search_routes.__name__,
+        service.planner.__class__.__name__,
+        request.origin,
+        request.destination,
+    )
     provider = service.planner.provider
     selected_providers = [
         registration.id

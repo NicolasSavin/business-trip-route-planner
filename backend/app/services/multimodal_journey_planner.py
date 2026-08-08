@@ -72,6 +72,14 @@ class MultimodalJourneyPlanner:
             provider_counts,
             [{"id": segment.id, "train_number": segment.vehicle_number} for segment in direct_matches],
         )
+        logger.info(
+            "route_search.actual_route_engine_call planner_class=%s segment_count=%s "
+            "direct_match_count=%s direct_train_numbers=%s",
+            self.__class__.__name__,
+            len(segments),
+            len(direct_matches),
+            [segment.vehicle_number for segment in direct_matches[:10]],
+        )
         options = self.route_engine.search(
             departure_date=request.departure_date,
             origin=request.origin,
