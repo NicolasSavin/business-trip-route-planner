@@ -61,10 +61,16 @@ async def log_browser_startup_diagnostics() -> None:
         },
     )
     yandex_location_resolver.warm_from_existing_cache()
+    if not yandex_location_resolver.ensure_index_ready():
+        raise RuntimeError(
+            "Yandex stations catalogue is unavailable; configure YANDEX_RASP_API_KEY "
+            "or provide YANDEX_STATIONS_CACHE_PATH before starting the API"
+        )
     log_memory("after Yandex directory metadata")
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
     log_memory("after Yandex indexes")
-    yandex_location_resolver.startup_refresh_background()
+    if yandex_location_resolver.stats()["auto_sync"]:
+        yandex_location_resolver.startup_refresh_background()
     try:
         log_memory("before Playwright probe")
         diagnostics = await browser_manager.startup_diagnostics()

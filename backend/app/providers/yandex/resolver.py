@@ -201,6 +201,8 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
                         if st_title and city_code:
                             transports=tuple(sorted({t for s in station_rows for t in s.transport_types}))
                             count += self._insert_match(con, YandexLocationMatch(str(city_code), st_title, "city", transports, tuple(station_rows[:50]), country=country_title, region=region_title, settlement=st_title, source="stations_list"))
+            if count <= 0:
+                raise ValueError("Yandex stations directory contains no indexable locations")
             con.commit(); con.close(); os.replace(tmp, self.path); self._initialized=True; gc.collect(); return self.cache_info() | {"written": count}
         finally:
             try: tmp.unlink(missing_ok=True)
@@ -225,11 +227,20 @@ class YandexStationsCache:
     def load(self, *, force=False):
         # An ephemeral container may still have a directory JSON even when its
         # derived SQLite file disappeared.  Reusing it avoids an upstream call.
-        if not force and self.path.exists():
+        cache_is_fresh = (
+            self.path.exists()
+            and self.age_seconds() is not None
+            and self.age_seconds() <= self.ttl_seconds
+        )
+        if not force and cache_is_fresh:
             with self.path.open(encoding="utf-8") as stream:
                 self.last_source = "cache"
                 return json.load(stream)
         if not self.loader:
+            if self.path.exists():
+                with self.path.open(encoding="utf-8") as stream:
+                    self.last_source = "stale_cache"
+                    return json.load(stream)
             return None
         try:
             data = self.loader()
@@ -289,7 +300,12 @@ class YandexLocationResolver:
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
     def ensure_index_ready(self) -> bool:
-        """Ensure a usable index exists, with one builder and failure cooldown."""
+        """Ensure a usable index exists, with one blocking builder and failure cooldown.
+
+        The index is a prerequisite for autocomplete.  Callers wait for an in-flight
+        build instead of temporarily searching the emergency catalogue.  This is
+        important during process startup, when several requests can arrive together.
+        """
         try:
             if self._stations_repository.cache_info().get("locations", 0) > 0:
                 if self._directory_cache.path.exists():
@@ -298,26 +314,31 @@ class YandexLocationResolver:
         except sqlite3.DatabaseError as exc:
             self.mark_index_failed(exc)
         with self._sync_lock:
-            if self._syncing:
-                return False
+            # Another thread may have completed the build while this thread waited.
+            try:
+                if self._stations_repository.cache_info().get("locations", 0) > 0:
+                    return True
+            except sqlite3.DatabaseError as exc:
+                self.mark_index_failed(exc)
             if time.monotonic() - self._last_sync_failure < SYNC_RETRY_COOLDOWN_SECONDS:
                 return False
             self._syncing = True
-        try:
-            data = self._directory_cache.load()
-            if data is None:
-                raise RuntimeError("Yandex stations directory loader is not configured")
-            self._stations_repository.rebuild_from_directory(data)
-            self._cache.clear()
-            self._last_sync_failure = 0.0
-            return True
-        except Exception as exc:
-            self._directory_cache.last_error = str(exc) or exc.__class__.__name__
-            self._last_sync_failure = time.monotonic()
-            logger.warning("Yandex stations index initialization failed: %s", exc)
-            return False
-        finally:
-            with self._sync_lock:
+            try:
+                data = self._directory_cache.load()
+                if data is None:
+                    raise RuntimeError("Yandex stations directory loader is not configured")
+                stats = self._stations_repository.rebuild_from_directory(data)
+                if stats.get("locations", 0) <= 0:
+                    raise RuntimeError("Yandex stations directory produced an empty index")
+                self._cache.clear()
+                self._last_sync_failure = 0.0
+                return True
+            except Exception as exc:
+                self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+                self._last_sync_failure = time.monotonic()
+                logger.warning("Yandex stations index initialization failed: %s", exc)
+                return False
+            finally:
                 self._syncing = False
 
     def mark_index_failed(self, exc: BaseException) -> None:
@@ -346,7 +367,17 @@ class YandexLocationResolver:
             self.mark_index_failed(exc)
             return {"locations": 0, "error": str(exc)}
     def startup_refresh_background(self):
-        thread = threading.Thread(target=self.ensure_index_ready, name="yandex-stations-init", daemon=True)
+        if self._directory_cache.last_source == "remote":
+            return
+
+        def refresh_safely():
+            try:
+                self.refresh()
+            except Exception as exc:
+                self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+                logger.warning("Yandex stations background refresh failed: %s", exc)
+
+        thread = threading.Thread(target=refresh_safely, name="yandex-stations-refresh", daemon=True)
         thread.start()
     def stats(self):
         try:

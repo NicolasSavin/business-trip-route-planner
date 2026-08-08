@@ -12,24 +12,12 @@ from app.providers.yandex.resolver import (
 )
 
 
-def test_sqlite_suggest_moscow_does_not_raise_attribute_error(tmp_path: Path):
+def test_empty_directory_is_rejected_without_replacing_catalogue(tmp_path: Path):
     repo = SQLiteYandexStationsRepository(path=tmp_path / "stations.sqlite3")
-    repo.rebuild_from_directory({"countries": []})
+    with pytest.raises(ValueError, match="no indexable locations"):
+        repo.rebuild_from_directory({"countries": []})
 
-    matches = repo.resolve("Москва")
-
-    assert matches
-    assert any(match.title == "Москва" for match in matches)
-
-
-def test_sqlite_suggest_saint_petersburg_returns_local_items(tmp_path: Path):
-    repo = SQLiteYandexStationsRepository(path=tmp_path / "stations.sqlite3")
-    repo.rebuild_from_directory({"countries": []})
-
-    matches = repo.resolve("Санкт-Петербург")
-
-    assert matches
-    assert any(match.title == "Санкт-Петербург" for match in matches)
+    assert not repo.path.exists()
 
 
 def test_sqlite_dedupe_removes_identical_code_and_fallback_key(tmp_path: Path):

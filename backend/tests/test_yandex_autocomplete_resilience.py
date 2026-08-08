@@ -1,7 +1,14 @@
+import os
 import sqlite3
 import threading
 import time
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.providers.yandex.client import YandexRaspClient
+from app.providers.yandex.config import YandexRaspConfiguration
 from app.providers.yandex.resolver import YandexLocationResolver
 
 
@@ -12,7 +19,10 @@ def complete_directory():
         ("Пермь", "c50", [("Пермь-2", "s9602498")]),
         ("Мурманск", "c23", [("Мурманск", "s9602499")]),
         ("Москва", "c213", [("Москва Курская", "s2000001")]),
+        ("Санкт-Петербург", "c2", [("Санкт-Петербург-Главн.", "s9602494")]),
         ("Кеза", "c999", [("Кеза", "s9990001")]),
+        ("Сайгатка", "c998", [("Сайгатка", "s9980001")]),
+        ("Яр", "c997", [("Яр", "s9970001")]),
     ):
         settlements.append({
             "title": city,
@@ -39,6 +49,29 @@ def test_complete_directory_cities_and_stations(tmp_path):
         assert {city_code, station_code} <= codes
     assert resolver.resolve_all("совершенно-неизвестная-точка") == []
     assert (tmp_path / "stations.sqlite3").exists()
+
+
+def test_suggest_endpoint_searches_built_station_index(tmp_path, monkeypatch):
+    resolver = YandexLocationResolver(directory_loader=complete_directory, cache_path=tmp_path / "stations.json")
+    monkeypatch.setattr("app.api.locations.yandex_location_resolver", resolver)
+
+    client = TestClient(app)
+    for query in ("Ижевск", "Пермь", "Мурманск", "Москва", "Санкт-Петербург", "Кеза", "Сайгатка", "Яр"):
+        response = client.get("/api/v1/locations/suggest", params={"q": query, "limit": 20})
+        assert response.status_code == 200
+        assert response.json()["items"], query
+
+
+@pytest.mark.skipif(not os.getenv("YANDEX_RASP_API_KEY"), reason="YANDEX_RASP_API_KEY is required for the official catalogue contract test")
+def test_official_yandex_catalogue_contains_major_cities_and_small_stations(tmp_path):
+    """Contract test against the complete, unmodified stations_list response."""
+    client = YandexRaspClient(YandexRaspConfiguration.from_env())
+    resolver = YandexLocationResolver(directory_loader=client.stations_list, cache_path=tmp_path / "stations.json")
+
+    assert resolver.ensure_index_ready()
+    assert resolver.stats()["locations"] > 10_000
+    for query in ("Ижевск", "Пермь", "Мурманск", "Москва", "Санкт-Петербург", "Кеза", "Сайгатка", "Яр"):
+        assert resolver.resolve_all(query), query
 
 
 def test_concurrent_empty_index_has_single_sync(tmp_path):
