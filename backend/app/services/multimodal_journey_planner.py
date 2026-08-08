@@ -193,12 +193,24 @@ class MultimodalJourneyPlanner:
             resolved_origin_cities=candidate_diagnostics.get("resolved_origin_cities", []),
             resolved_destination_cities=candidate_diagnostics.get("resolved_destination_cities", []),
             direct_match_decisions=candidate_diagnostics.get("direct_match_decisions", []),
+            yandex_requests_made=self._yandex_diagnostic(provider_diagnostics, "yandex_requests_made", 0),
+            yandex_direct_requests_made=self._yandex_diagnostic(provider_diagnostics, "yandex_direct_requests_made", 0),
+            yandex_transfer_requests_made=self._yandex_diagnostic(provider_diagnostics, "yandex_transfer_requests_made", 0),
+            yandex_candidate_origin_codes=self._yandex_diagnostic(provider_diagnostics, "yandex_candidate_origin_codes", []),
+            yandex_candidate_destination_codes=self._yandex_diagnostic(provider_diagnostics, "yandex_candidate_destination_codes", []),
+            yandex_fanout_limited=self._yandex_diagnostic(provider_diagnostics, "yandex_fanout_limited", False),
+            yandex_search_deadline_exceeded=self._yandex_diagnostic(provider_diagnostics, "yandex_search_deadline_exceeded", False),
         )
         if enrichment_errors:
             logger.info("route_search.provider error added to SearchSummary", extra={"providers": list(enrichment_errors)})
         logger.info("route search response returned", extra={"duration_ms": int((monotonic() - started_at) * 1000), "routes": len(routes), "partial": len(partial), "rejected": len(rejected)})
         self.last_summary = summary
         return routes, partial, rejected, summary
+
+    @staticmethod
+    def _yandex_diagnostic(provider_diagnostics: dict, key: str, default):
+        details = provider_diagnostics.get("provider_diagnostics", {}).get("yandex_rasp", {})
+        return details.get(key, default)
 
     def _load_provider_segments(self, request: RouteSearchRequest) -> list[TransportSegment]:
         try:
@@ -213,6 +225,7 @@ class MultimodalJourneyPlanner:
                 destination_location_id=request.destination_location_id,
                 origin_location_type=request.origin_location_type,
                 destination_location_type=request.destination_location_type,
+                max_transfers=request.max_transfers,
             )
         except TypeError:
             return self.provider.get_segments(request.departure_date, request.allowed_transport)

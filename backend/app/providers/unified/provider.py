@@ -80,7 +80,12 @@ class UnifiedTransportProvider(TransportProvider):
                 merged.append(normalized)
                 if is_direct:
                     direct_after_dedup.append(description)
-        warnings = []
+        provider_details = {registration.id: getattr(provider, "last_diagnostics", {}) for registration, provider in self.registry.enabled(allowed_transport, schedule_only=True) if getattr(provider, "last_diagnostics", {})}
+        warnings = [
+            warning
+            for details in provider_details.values()
+            for warning in details.get("warnings", [])
+        ]
         real_enabled = [pid for pid in enabled if pid != "mock"]
         if not merged and not real_enabled:
             warnings.append("Не подключён ни один реальный источник расписаний")
@@ -108,7 +113,6 @@ class UnifiedTransportProvider(TransportProvider):
             len(direct_before_dedup), len(direct_after_dedup),
             direct_before_dedup, direct_after_dedup,
         )
-        provider_details = {registration.id: getattr(provider, "last_diagnostics", {}) for registration, provider in self.registry.enabled(allowed_transport, schedule_only=True) if getattr(provider, "last_diagnostics", {})}
         if provider_details:
             self.last_diagnostics["provider_diagnostics"] = provider_details
         return merged

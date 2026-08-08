@@ -65,7 +65,7 @@ class RouteEngine:
     ):
         if segments is None:
             try:
-                segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination, origin_provider_code=origin_provider_code, destination_provider_code=destination_provider_code, origin_location_id=origin_location_id, destination_location_id=destination_location_id, origin_location_type=origin_location_type, destination_location_type=destination_location_type)
+                segments = self.provider.get_segments(departure_date, allowed_transport, origin=origin, destination=destination, origin_provider_code=origin_provider_code, destination_provider_code=destination_provider_code, origin_location_id=origin_location_id, destination_location_id=destination_location_id, origin_location_type=origin_location_type, destination_location_type=destination_location_type, max_transfers=max_transfers)
             except TypeError:
                 segments = self.provider.get_segments(departure_date, allowed_transport)
         self.last_segments_count = len(segments)

@@ -170,6 +170,13 @@ class SearchSummary(BaseModel):
     resolved_origin_cities: list[str] = Field(default_factory=list)
     resolved_destination_cities: list[str] = Field(default_factory=list)
     direct_match_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    yandex_requests_made: int = 0
+    yandex_direct_requests_made: int = 0
+    yandex_transfer_requests_made: int = 0
+    yandex_candidate_origin_codes: list[str] = Field(default_factory=list)
+    yandex_candidate_destination_codes: list[str] = Field(default_factory=list)
+    yandex_fanout_limited: bool = False
+    yandex_search_deadline_exceeded: bool = False
 
 
 class RouteSearchResponse(BaseModel):

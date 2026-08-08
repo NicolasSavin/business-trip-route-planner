@@ -24,6 +24,10 @@ class YandexRaspConfiguration:
     enabled: bool = False
     timeout_seconds: float = 10.0
     base_url: str = CANONICAL_YANDEX_RASP_BASE_URL
+    max_direct_requests_per_search: int = 12
+    max_transfer_requests_per_search: int = 12
+    max_stations_per_city: int = 6
+    route_search_total_timeout_seconds: float = 20.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_url", normalize_yandex_rasp_base_url(self.base_url))
@@ -35,4 +39,8 @@ class YandexRaspConfiguration:
             enabled=(os.getenv("YANDEX_RASP_ENABLED", "").lower() in {"1", "true", "yes", "on"}) or bool(os.getenv("YANDEX_RASP_API_KEY")),
             timeout_seconds=float(os.getenv("YANDEX_RASP_TIMEOUT_SECONDS", "10")),
             base_url=os.getenv("YANDEX_RASP_BASE_URL", CANONICAL_YANDEX_RASP_BASE_URL),
+            max_direct_requests_per_search=max(1, int(os.getenv("YANDEX_MAX_DIRECT_REQUESTS_PER_SEARCH", "12"))),
+            max_transfer_requests_per_search=max(0, int(os.getenv("YANDEX_MAX_TRANSFER_REQUESTS_PER_SEARCH", "12"))),
+            max_stations_per_city=max(0, int(os.getenv("YANDEX_MAX_STATIONS_PER_CITY", "6"))),
+            route_search_total_timeout_seconds=max(0.1, float(os.getenv("YANDEX_ROUTE_SEARCH_TOTAL_TIMEOUT_SECONDS", "20"))),
         )
