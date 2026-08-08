@@ -173,6 +173,7 @@ class MultimodalJourneyPlanner:
             segments_loaded=min(MAX_SEGMENTS_PER_QUERY, self.route_engine.last_segments_count),
             candidate_journeys=len(options),
             availability_checks=sum(len(o.route.segments) for o in checked),
+            skipped_due_to_budget=getattr(self, "_skipped_due_to_budget", 0),
             confirmed_routes=len(confirmed),
             partially_confirmed_routes=len(partial),
             rejected_routes=len(rejected),
@@ -242,14 +243,17 @@ class MultimodalJourneyPlanner:
         raise RuntimeError("Use search_async() inside a running event loop")
 
     async def _attach_journey_availability(self, options: list[DomainRouteOption], request: RouteSearchRequest) -> list[DomainRouteOption]:
-        enrich_options = options[:TUTU_MAX_JOURNEYS_TO_ENRICH]
+        # The check budget is explicit and applies to unique rail segments. Direct
+        # routes are considered first, followed by the already ranked transfers.
+        enrich_options = sorted(options, key=lambda option: (option.route.transfers_count, option.rank or 10_000))
         local_cache: dict[str, SegmentAvailabilityResult] = {}
         unique_segments: dict[str, TransportSegment] = {}
         for option in enrich_options:
-            for segment in option.route.segments[:MAX_AVAILABILITY_CHECKS_PER_QUERY]:
+            for segment in option.route.segments:
                 if segment.transport_type == TransportType.TRAIN:
                     key = self._cache_key(segment, request)
-                    unique_segments.setdefault(key, segment)
+                    if key not in unique_segments and len(unique_segments) < MAX_AVAILABILITY_CHECKS_PER_QUERY:
+                        unique_segments[key] = segment
         logger.info("unique segments count", extra={"unique_segments_count": len(unique_segments)})
 
         # Compute cheap/local availability for every segment first. Tutu results below may override it.
@@ -261,6 +265,21 @@ class MultimodalJourneyPlanner:
 
         availability_provider = self.rzd_availability if self.rzd_availability.available() else self.tutu_playwright
         provider_available = availability_provider.available() if hasattr(availability_provider, "available") else True
+        all_rail_keys = {
+            self._cache_key(segment, request)
+            for option in options for segment in option.route.segments
+            if segment.transport_type == TransportType.TRAIN
+        }
+        skipped_keys = all_rail_keys - unique_segments.keys() if provider_available else set()
+        self._skipped_due_to_budget = len(skipped_keys)
+        for key in skipped_keys:
+            base = local_cache[key]
+            local_cache[key] = replace(
+                base, status=AvailabilityStatus.UNCONFIRMED, seats_confirmed=False,
+                passengers_supported=False, seat_preferences_status=AvailabilityStatus.UNKNOWN,
+                warnings=tuple(dict.fromkeys((*base.warnings, "Проверка мест пропущена из-за лимита запроса"))),
+                metadata={**base.metadata, "skipped_due_to_budget": True},
+            )
         if unique_segments and provider_available:
             sem = asyncio.Semaphore(max(1, TUTU_ENRICHMENT_CONCURRENCY))
 
@@ -313,7 +332,7 @@ class MultimodalJourneyPlanner:
                     logger.warning("tutu_playwright.enrichment exception captured", extra={"error_type": type(exc).__name__})
                     continue
                 if result is not None:
-                    local_cache[key] = result
+                    local_cache[key] = self._apply_railway_preferences(unique_segments[key], request, result) if request.seat_preferences else result
             if pending:
                 logger.warning("enrichment budget exhausted", extra={"timeout_seconds": TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS, "pending_tasks": len(pending)})
                 for task in pending:
@@ -399,17 +418,28 @@ class MultimodalJourneyPlanner:
     def _apply_railway_preferences(self, segment: TransportSegment, request: RouteSearchRequest, base: SegmentAvailabilityResult) -> SegmentAvailabilityResult:
         pref = request.seat_preferences
         assert pref is not None
-        raw = segment.metadata.get("places") or []
+        raw = base.metadata.get("places") or segment.metadata.get("places") or []
         places = [self._place_from_dict(segment.provider, item, segment.transport_class) for item in raw]
-        if not places and base.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}:
-            return replace(base, seat_preferences_status=AvailabilityStatus.UNKNOWN)
-        if not places and segment.available_seats and segment.available_seats > 0:
-            places = [RailwayPlace(provider=segment.provider, place_number=str(i + 1), carriage_number="1", transport_class=segment.transport_class or TransportClass.SEATED, berth_position=(BerthPosition.LOWER if i % 2 == 0 else BerthPosition.UPPER), compartment_number=str(i // 4 + 1)) for i in range(segment.available_seats)]
+        if not places:
+            lower = base.metadata.get("lower_places_count")
+            if pref.berth_preference == "lower_only" and not pref.require_same_compartment and lower is not None:
+                proven = int(lower) >= request.passengers
+                status = AvailabilityStatus.CONFIRMED if proven else AvailabilityStatus.UNAVAILABLE
+                return replace(base, status=status, passengers_supported=proven, seat_preferences_status=status,
+                    metadata={**base.metadata, "lower_berths_confirmed": proven, "same_compartment_confirmed": False})
+            # Aggregate inventory proves basic availability, but never placement.
+            return replace(base, status=AvailabilityStatus.PARTIALLY_CONFIRMED if base.available_places_count is not None and base.available_places_count >= request.passengers else base.status,
+                seat_preferences_status=AvailabilityStatus.UNKNOWN,
+                metadata={**base.metadata, "lower_berths_confirmed": False, "same_compartment_confirmed": False})
         allocation = self.seat_allocator.match(places, SeatPreferences(passengers=request.passengers, prefer_lower=pref.berth_preference == "lower_only", prefer_upper=pref.berth_preference == "upper_only", require_same_compartment=pref.require_same_compartment, require_empty_compartment=pref.require_empty_compartment, require_same_carriage=pref.require_same_carriage, require_adjacent=pref.require_adjacent, exclude_side_berths=pref.exclude_side_berths, gender=GenderRestriction(pref.gender) if pref.gender else None))
+        if pref.berth_preference == "lower_only" and not all(place.berth_position == BerthPosition.LOWER for place in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно подтвержденных нижних мест"))
+        if pref.berth_preference == "upper_only" and not all(place.berth_position == BerthPosition.UPPER for place in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно подтвержденных верхних мест"))
         selected = allocation.selected_places
         status = base.status if allocation.matches_preferences else (AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED)
         reasons = (*base.reasons, *allocation.reasons)
-        return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=tuple(dict.fromkeys(reason for reason in reasons if reason)))
+        return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=tuple(dict.fromkeys(reason for reason in reasons if reason)), metadata={**base.metadata, "lower_berths_confirmed": allocation.matches_preferences and pref.berth_preference == "lower_only", "same_compartment_confirmed": allocation.matches_preferences and pref.require_same_compartment})
 
     def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass | None) -> RailwayPlace:
         return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number")), carriage_number=str(item.get("carriage_number") or item.get("carriage") or "1"), transport_class=TransportClass(item.get("transport_class") or fallback_class or TransportClass.SEATED), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)))

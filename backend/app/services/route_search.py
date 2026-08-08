@@ -95,6 +95,12 @@ class RouteSearchService:
                             checked_at=result.checked_at,
                             source=result.provider,
                             carriages=list(result.metadata.get("carriages") or []),
+                            selected_places=list(result.selected_places),
+                            selected_carriages=list(result.selected_carriages),
+                            selected_compartments=list(result.selected_compartments),
+                            seat_preferences_status=result.seat_preferences_status.value,
+                            lower_berths_confirmed=bool(result.metadata.get("lower_berths_confirmed")),
+                            same_compartment_confirmed=bool(result.metadata.get("same_compartment_confirmed")),
                             reason=", ".join(result.reasons) or None,
                             warnings=list(dict.fromkeys(result.warnings)),
                             is_stale=result.is_stale,
@@ -151,6 +157,9 @@ class RouteSearchService:
                 item.selected_places = list(result.selected_places)
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
+                item.seat_preferences_status = result.seat_preferences_status.value
+                item.lower_berths_confirmed = bool(result.metadata.get("lower_berths_confirmed"))
+                item.same_compartment_confirmed = bool(result.metadata.get("same_compartment_confirmed"))
                 item.carriages = list(result.metadata.get("carriages") or [])
                 item.min_price = result.metadata.get("min_price")
                 item.price_semantics = result.metadata.get("price_semantics") if item.min_price is not None else None

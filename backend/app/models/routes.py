@@ -65,6 +65,9 @@ class RouteSegment(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
+    seat_preferences_status: str | None = None
+    lower_berths_confirmed: bool = False
+    same_compartment_confirmed: bool = False
     availability_message: str | None = None
     carriages: list[dict[str, Any]] = Field(default_factory=list)
     min_price: float | None = None
@@ -84,6 +87,9 @@ class SegmentAvailability(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
+    seat_preferences_status: str | None = None
+    lower_berths_confirmed: bool = False
+    same_compartment_confirmed: bool = False
     availability_message: str | None = None
     carriages: list[dict[str, Any]] = Field(default_factory=list)
     requested_passengers: int
@@ -144,6 +150,7 @@ class SearchSummary(BaseModel):
     segments_loaded: int = 0
     candidate_journeys: int = 0
     availability_checks: int = 0
+    skipped_due_to_budget: int = 0
     confirmed_routes: int = 0
     partially_confirmed_routes: int = 0
     rejected_routes: int = 0

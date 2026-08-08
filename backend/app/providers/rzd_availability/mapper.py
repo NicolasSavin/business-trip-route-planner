@@ -54,9 +54,11 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
         or raw.get("num")
         or ""
     )
-    carriages = _items(raw, "cars", "carriages", "lst")
+    carriages = _items(raw, "cars", "carriages", "car_groups", "carGroups", "lst")
     seats: list[RZDSeat] = []
     total = 0
+    lower_total = upper_total = 0
+    lower_known = upper_known = False
     for carriage in carriages:
         car_number = str(
             carriage.get("number")
@@ -70,16 +72,19 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
             or carriage.get("class")
             or "unknown"
         )
-        raw_seats = _items(carriage, "seats", "places", "freePlaces")
+        raw_seats = _items(carriage, "seats", "places", "freePlaces", "available_places", "availablePlaces")
         for seat in raw_seats:
             available = bool(seat.get("available", seat.get("isAvailable", True)))
             if available:
+                number = str(seat.get("number") or seat.get("place") or seat.get("placeNumber") or seat.get("place_number") or "")
+                berth = str(seat.get("berth_position") or seat.get("berthPosition") or seat.get("placeType") or "unknown").lower()
                 seats.append(
                     RZDSeat(
-                        str(seat.get("number") or seat.get("place") or ""),
+                        number,
                         car_number,
                         car_type,
-                        str(seat.get("compartment") or "") or None,
+                        str(seat.get("compartment") or seat.get("compartmentNumber") or seat.get("compartment_number") or "") or None,
+                        berth,
                     )
                 )
         count = (
@@ -89,6 +94,7 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
             or carriage.get("availablePlaces")
             or carriage.get("placeQuantity")
             or carriage.get("place_quantity")
+            or carriage.get("PlaceQuantity")
         )
         total += int(
             count
@@ -100,6 +106,16 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
                 ]
             )
         )
+        lower = carriage.get("lower_place_quantity")
+        if lower is None:
+            lower = carriage.get("LowerPlaceQuantity")
+        upper = carriage.get("upper_place_quantity")
+        if upper is None:
+            upper = carriage.get("UpperPlaceQuantity")
+        if lower is not None:
+            lower_known, lower_total = True, lower_total + int(lower)
+        if upper is not None:
+            upper_known, upper_total = True, upper_total + int(upper)
     total = int(
         raw.get("available_seats")
         or raw.get("availableSeats")
@@ -114,6 +130,8 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
         tuple(carriages),
         float(price) if price is not None else None,
         raw,
+        lower_total if lower_known else None,
+        upper_total if upper_known else None,
     )
 
 
@@ -168,5 +186,7 @@ def to_segment_result(
             "min_price": train.min_price,
             "price_per_passenger": train.min_price,
             "price_semantics": "per_passenger",
+            "lower_places_count": train.lower_seats,
+            "upper_places_count": train.upper_seats,
         },
     )

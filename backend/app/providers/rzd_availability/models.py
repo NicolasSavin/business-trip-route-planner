@@ -16,6 +16,7 @@ class RZDSeat:
     carriage_number: str
     carriage_type: str = "unknown"
     compartment_number: str | None = None
+    berth_position: str = "unknown"
     is_available: bool = True
 
 
@@ -27,6 +28,8 @@ class RZDTrainAvailability:
     carriages: tuple[dict[str, Any], ...] = ()
     min_price: float | None = None
     raw: Any = field(default=None, repr=False, compare=False)
+    lower_seats: int | None = None
+    upper_seats: int | None = None
 
 
 @dataclass(frozen=True)

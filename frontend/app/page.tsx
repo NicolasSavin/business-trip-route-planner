@@ -923,8 +923,8 @@ export default function Home() {
                                 {segment.availability_status === "confirmed" && <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Наличие мест подтверждено</span>}
                                 {(!segment.availability_status || ["unconfirmed", "unknown", "partially_confirmed"].includes(segment.availability_status)) && <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">Наличие мест не проверено</span>}
                                 {segment.availability_status === "provider_error" && <span className="rounded-full bg-rose-50 px-2 py-1 text-rose-700">Проверка временно недоступна</span>}
-                                {segment.availability_status === "confirmed" && formState.lower_only && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места подтверждены</span>}
-                                {segment.availability_status === "confirmed" && formState.same_compartment && segment.selected_compartments?.length === 1 && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Одно купе подтверждено</span>}
+                                {segment.lower_berths_confirmed && formState.lower_only && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места подтверждены</span>}
+                                {segment.same_compartment_confirmed && formState.same_compartment && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Одно купе подтверждено</span>}
                               </div>
                             </div>
                           </div>
