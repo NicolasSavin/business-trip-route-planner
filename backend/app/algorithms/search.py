@@ -1,6 +1,7 @@
 from app.domain import Route, Transfer, TransportSegment
 from app.graph.builder import TransportGraph
 from app.intelligence.transfers import TransferEngine
+from app.intelligence.stations import canonical_city_name, city_names_match
 
 
 class GraphRouteSearch:
@@ -28,7 +29,12 @@ class GraphRouteSearch:
         if origin_station_id:
             starts = [station for station in graph.stations.values() if station.id == origin_station_id or station.id.lower() == origin_station_id.lower()]
         else:
-            starts = [station for station in graph.stations.values() if station.city.name in origin_cities]
+            start_ids = {
+                station_id
+                for city in origin_cities
+                for station_id in graph.station_ids_by_city.get(canonical_city_name(city), [])
+            }
+            starts = [graph.stations[station_id] for station_id in start_ids if station_id in graph.stations]
         for station in starts:
             self._dfs(graph, station.id, destination_cities, passengers, max_segments, minimum_transfer_minutes, maximum_transfer_minutes, maximum_total_duration_minutes, allow_overnight_transfer, [], routes, destination_station_id, set())
         return routes
@@ -39,15 +45,15 @@ class GraphRouteSearch:
         visited_cities = visited_cities or set()
         candidate_station_ids = [station_id]
         if path:
-            candidate_station_ids = graph.station_ids_by_city.get(path[-1].destination_city.name, [station_id])
+            candidate_station_ids = graph.station_ids_by_city.get(canonical_city_name(path[-1].destination_city.name), [station_id])
         for candidate_station_id in candidate_station_ids:
             for segment in graph.adjacency.get(candidate_station_id, []):
-                if segment in path or segment.destination_city.name in visited_cities:
+                if segment in path or canonical_city_name(segment.destination_city.name) in visited_cities:
                     continue
                 if path and not self._can_transfer(path[-1], segment, min_transfer, max_transfer, allow_overnight_transfer):
                     continue
                 new_path = [*path, segment]
-                destination_matches = segment.destination_city.name in destination_city
+                destination_matches = any(city_names_match(segment.destination_city.name, city) for city in destination_city)
                 if destination_station_id:
                     destination_matches = segment.destination_station.id == destination_station_id or segment.destination_station.id.lower() == destination_station_id.lower()
                 if max_total_duration is not None and new_path:
@@ -57,12 +63,12 @@ class GraphRouteSearch:
                 if destination_matches:
                     route = self._build_route(new_path)
                     routes.append(route)
-                next_visited = {*visited_cities, segment.origin_city.name}
+                next_visited = {*visited_cities, canonical_city_name(segment.origin_city.name)}
                 self._dfs(graph, segment.destination_station.id, destination_city, passengers, max_segments, min_transfer, max_transfer, max_total_duration, allow_overnight_transfer, new_path, routes, destination_station_id, next_visited)
 
     def _can_transfer(self, first: TransportSegment, second: TransportSegment, minimum_transfer_minutes: int, maximum_transfer_minutes: int = 360, allow_overnight_transfer: bool = True) -> bool:
-        same_city = first.destination_city.name == second.origin_city.name
-        stations_same_city = first.destination_station.city.name == second.origin_station.city.name
+        same_city = city_names_match(first.destination_city.name, second.origin_city.name)
+        stations_same_city = city_names_match(first.destination_station.city.name, second.origin_station.city.name)
         if not (same_city or stations_same_city):
             return False
         transfer_minutes = int((second.departure_datetime - first.arrival_datetime).total_seconds() // 60)

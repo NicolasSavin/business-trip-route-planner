@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from app.domain import Station, TransportSegment
+from app.intelligence.stations import canonical_city_name
 
 
 @dataclass
@@ -22,8 +23,8 @@ class GraphBuilder:
             stations[segment.origin_station.id] = segment.origin_station
             stations[segment.destination_station.id] = segment.destination_station
             adjacency[segment.origin_station.id].append(segment)
-            station_ids_by_city[segment.origin_city.name].add(segment.origin_station.id)
-            station_ids_by_city[segment.destination_city.name].add(segment.destination_station.id)
+            station_ids_by_city[canonical_city_name(segment.origin_city.name)].add(segment.origin_station.id)
+            station_ids_by_city[canonical_city_name(segment.destination_city.name)].add(segment.destination_station.id)
         for edges in adjacency.values():
             edges.sort(key=lambda segment: segment.departure_datetime)
         return TransportGraph(adjacency=dict(adjacency), stations=stations, station_ids_by_city={city: sorted(ids) for city, ids in station_ids_by_city.items()})

@@ -5,7 +5,7 @@ from app.availability import AvailabilityEngine, AvailabilityPolicy
 from app.domain import Route, TransportProvider, TransportSegment, TransportType
 from app.graph.builder import GraphBuilder
 from app.intelligence import NearbyCityResolver, RouteComparator, StationResolver, TransferEngine
-from app.intelligence.stations import normalize_location_name
+from app.intelligence.stations import city_names_match
 from app.scoring.service import ScoringService
 from app.validators.validation import ValidationService
 
@@ -211,8 +211,7 @@ class RouteEngine:
         return routes, rejected, decisions
 
     def _location_matches(self, segment_city: str, resolved_cities) -> bool:
-        normalized_segment_city = normalize_location_name(segment_city)
-        return any(normalize_location_name(city) == normalized_segment_city for city in resolved_cities)
+        return any(city_names_match(segment_city, city) for city in resolved_cities)
 
     def _dedupe_routes(self, routes):
         output, seen = [], set()

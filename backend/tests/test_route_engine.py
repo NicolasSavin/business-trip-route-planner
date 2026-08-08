@@ -4,6 +4,7 @@ import pytest
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
 from app.engine import RouteEngine
 from app.graph.builder import GraphBuilder
+from app.intelligence.stations import canonical_city_name, city_names_match
 from app.scoring.service import ScoringService
 from app.providers.yandex.mapper import YandexRaspMapper
 from app.validators.validation import ValidationService
@@ -121,11 +122,13 @@ def test_transfer_requires_minimum_wait_in_same_city():
 
 def yandex_moscow_petersburg_segment():
     payload = {"segments": [{
-        "from": {"code": "s2000009", "title": "Москва Октябрьская", "settlement": {"title": "Москва"}},
-        "to": {"code": "s2004001", "title": "Санкт-Петербург-Главн.", "settlement": {"title": "Санкт-Петербург"}},
+        # Production responses can omit settlement entirely even for valid
+        # direct trains.  The station display title is not the city identity.
+        "from": {"code": "s2000009", "title": "Москва (Ленинградский вокзал)"},
+        "to": {"code": "s2004001", "title": "Санкт-Петербург (Московский вокзал)"},
         "departure": "2026-08-10T00:25:00+03:00",
         "arrival": "2026-08-10T08:53:00+03:00",
-        "thread": {"uid": "022A", "number": "022А", "title": "Москва — Санкт-Петербург", "transport_type": "train"},
+        "thread": {"uid": "754A", "number": "754А", "title": "Москва — Санкт-Петербург", "transport_type": "train"},
     }]}
     return YandexRaspMapper().to_segments(payload)[0]
 
@@ -146,11 +149,11 @@ def test_yandex_direct_city_route_matches_hyphen_variant_and_ranks_first(max_tra
         destination_location_type="city", include_unavailable=True,
     )
 
-    assert routes[0].route.segments[0].vehicle_number == "022А"
+    assert routes[0].route.segments[0].vehicle_number == "754А"
     assert routes[0].route.transfers_count == 0
-    assert any(item["train_number"] == "022А" for item in engine.last_diagnostics["raw_direct_candidates"])
-    assert any(item["train_number"] == "022А" for item in engine.last_diagnostics["filtered_direct_candidates"])
-    assert any(item["train_numbers"] == ["022А"] for item in engine.last_diagnostics["ranked_candidates"])
+    assert any(item["train_number"] == "754А" for item in engine.last_diagnostics["raw_direct_candidates"])
+    assert any(item["train_number"] == "754А" for item in engine.last_diagnostics["filtered_direct_candidates"])
+    assert any(item["train_numbers"] == ["754А"] for item in engine.last_diagnostics["ranked_candidates"])
     assert engine.last_diagnostics["direct_candidate_source"] == {
         "collection": "provider_segments",
         "total_segment_count": 3,
@@ -159,7 +162,7 @@ def test_yandex_direct_city_route_matches_hyphen_variant_and_ranks_first(max_tra
     if max_transfers == 1:
         assert any(route.route.transfers_count == 1 and route.route.total_duration_minutes == 14 * 60 for route in routes)
 
-    decision = next(item for item in engine.last_diagnostics["direct_match_decisions"] if item["candidate"]["train_number"] == "022А")
+    decision = next(item for item in engine.last_diagnostics["direct_match_decisions"] if item["candidate"]["train_number"] == "754А")
     assert decision["segment_origin_city"] == "Москва"
     assert decision["segment_destination_city"] == "Санкт-Петербург"
     assert decision["station_matching"] == {
@@ -174,7 +177,7 @@ def test_yandex_direct_station_search_resolves_settlement_and_enforces_station_i
     engine = RouteEngine(Provider([direct]))
 
     routes = engine.search(
-        DAY, "Москва Октябрьская", "Санкт-Петербург-Главн.", 1,
+        DAY, "Москва (Ленинградский вокзал)", "Санкт-Петербург (Московский вокзал)", 1,
         [TransportType.TRAIN], 0, 30, origin_provider_code="s2000009",
         destination_provider_code="s2004001", origin_location_type="railway_station",
         destination_location_type="station", include_unavailable=True,
@@ -186,3 +189,37 @@ def test_yandex_direct_station_search_resolves_settlement_and_enforces_station_i
     assert decision["resolved_destination_cities"] == ["Санкт-Петербург"]
     assert decision["station_matching"]["origin_enforced"] is True
     assert decision["station_matching"]["destination_enforced"] is True
+
+
+def test_city_identity_is_conservative_and_normalizes_spelling():
+    assert canonical_city_name(" Москва (Ленинградский вокзал) ") == "москва"
+    assert city_names_match("Санкт-Петербург", "Санкт–Петербург (Московский вокзал)")
+    assert city_names_match("Орёл", "Орел")
+    assert not city_names_match("Москва", "Москва-Сити")
+    assert not city_names_match("Ростов", "Ростов-на-Дону")
+    assert not city_names_match("Пушкин", "Пушкин (город)")
+
+
+def test_graph_transfer_matches_station_qualified_city_identity():
+    routes = RouteEngine(Provider([
+        seg("ab", "Москва (Казанский вокзал)", "Рязань (Рязань-1 вокзал)", dt(7), dt(9)),
+        seg("bc", "Рязань", "Санкт-Петербург (Московский вокзал)", dt(10), dt(14)),
+    ])).search(DAY, "Москва", "Санкт-Петербург", 1, [TransportType.TRAIN], 1, 30)
+
+    assert len(routes) == 1
+    assert routes[0].route.transfers_count == 1
+
+
+def test_explicit_station_code_does_not_broaden_to_city():
+    direct = yandex_moscow_petersburg_segment()
+    engine = RouteEngine(Provider([direct]))
+
+    routes = engine.search(
+        DAY, "Москва", "Санкт-Петербург", 1, [TransportType.TRAIN], 0, 30,
+        origin_provider_code="s-other-moscow-station",
+        destination_provider_code="s2004001", origin_location_type="station",
+        destination_location_type="station", include_unavailable=True,
+    )
+
+    assert routes == []
+    assert "origin_station_mismatch" in engine.last_diagnostics["direct_match_decisions"][0]["rejection_reason"]

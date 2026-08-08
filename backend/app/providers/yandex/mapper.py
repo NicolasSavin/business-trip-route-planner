@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
+from app.intelligence.stations import city_name_without_station_qualifier
 
 
 class YandexRaspMapper:
@@ -55,8 +56,14 @@ class YandexRaspMapper:
             from_settlement = {}
         if not isinstance(to_settlement, dict):
             to_settlement = {}
-        origin_city = City(from_settlement.get("title") or from_obj.get("title") or "")
-        destination_city = City(to_settlement.get("title") or to_obj.get("title") or "")
+        # Settlement is authoritative when Yandex supplies it.  Some valid
+        # responses omit it and put a station-qualified city label in `title`;
+        # retain that full title on Station while deriving only a conservative
+        # city identity for City.
+        origin_city_title = from_settlement.get("title")
+        destination_city_title = to_settlement.get("title")
+        origin_city = City(origin_city_title or city_name_without_station_qualifier(from_obj.get("title") or ""))
+        destination_city = City(destination_city_title or city_name_without_station_qualifier(to_obj.get("title") or ""))
         uid = thread.get("uid") or f"{from_obj.get('code')}-{to_obj.get('code')}-{departure}"
         return TransportSegment(
             id=f"yandex-{uid}-{departure}",
