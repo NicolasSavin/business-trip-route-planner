@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 import logging
+import os
+import re
 
 import httpx
 
@@ -25,6 +27,25 @@ YANDEX_TRANSPORT_TYPES = {
 SUBURBAN_TRANSPORT_TYPE = "suburban"
 BODY_PREVIEW_CHARS = 1000
 logger = logging.getLogger("uvicorn.error")
+
+
+def _sanitize_diagnostic_text(value: str, api_key: str | None = None) -> str:
+    """Redact credentials from provider-controlled text before it is exposed."""
+    secrets = {secret for secret in (api_key, os.getenv("YANDEX_RASP_API_KEY")) if secret}
+    sanitized = value
+    for secret in secrets:
+        sanitized = sanitized.replace(secret, "***redacted***")
+    sanitized = re.sub(
+        r"(?i)(\bapikey\s*=\s*)[^&\s\"'<>]+",
+        r"\1***redacted***",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)(\bauthorization(?:\s*['\"]?\s*[:=]\s*['\"]?)\s*(?:bearer|basic|token)?\s*)[^\s,;\"'<>]+",
+        r"\1***redacted***",
+        sanitized,
+    )
+    return sanitized
 
 
 class YandexRaspClient:
@@ -115,7 +136,10 @@ class YandexRaspClient:
         return parsed_json
 
     def _unexpected_content_type_details(self, request: httpx.Request, response: httpx.Response) -> dict:
-        text = response.text[:BODY_PREVIEW_CHARS]
+        text = _sanitize_diagnostic_text(
+            response.text[:BODY_PREVIEW_CHARS], self.config.api_key
+        )[:BODY_PREVIEW_CHARS]
+        history = response.history
         return {
             "status_code": response.status_code,
             "content_type": response.headers.get("content-type", ""),
@@ -123,5 +147,13 @@ class YandexRaspClient:
             "request_path": request.url.path,
             "request_url": str(request.url).split("?", 1)[0],
             "final_response_url": str(response.url).split("?", 1)[0],
+            "response_final_host": response.url.host,
+            "response_final_path": response.url.path,
+            "redirect_history_status_codes": [item.status_code for item in history],
+            "redirect_history_hosts": [item.url.host for item in history],
+            "server_header": response.headers.get("server"),
+            "location_header": _sanitize_diagnostic_text(response.headers["location"], self.config.api_key)
+            if "location" in response.headers
+            else None,
             "body_preview": text,
         }
