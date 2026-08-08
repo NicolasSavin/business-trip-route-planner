@@ -11,6 +11,16 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
+      - key: HOTELS_USERS_JSON
+        sync: false
+      - key: HOTELS_ADMIN_SURNAME
+        sync: false
+      - key: HOTELS_SESSION_SECRET
+        generateValue: true
+      # Render's free filesystem is ephemeral. Attach a persistent disk and set
+      # HOTELS_DATA_PATH to its mount path before enabling admin editing in production.
+      - key: HOTELS_DATA_PATH
+        value: /tmp/business-trip-hotels.json
       - key: FRONTEND_HOSTNAME
         fromService:
           type: web

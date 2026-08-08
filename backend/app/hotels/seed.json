@@ -1,0 +1,842 @@
+[
+  {
+    "id": 1,
+    "name": "У Моста",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 2,
+    "name": "Шайба",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 3,
+    "name": "Голландия",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 4,
+    "name": "Юмья",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 5,
+    "name": "900км, УЮТ",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3900,
+    "actual_price": null,
+    "notes": "с Москвы правая сторона"
+  },
+  {
+    "id": 6,
+    "name": "900 км на Москву правая сторона",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 7,
+    "name": "Милеш (Исаково)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 8,
+    "name": "Причал (Мамадыш)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 9,
+    "name": "Чибис (Мамадыш)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 10,
+    "name": "Дубай",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 11,
+    "name": "Астория",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 12,
+    "name": "Кугеси Тракдом",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 13,
+    "name": "Соло (Пыра)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 14,
+    "name": "Слобода",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3900,
+    "actual_price": null,
+    "notes": "3.9 +100 / 4.0"
+  },
+  {
+    "id": 15,
+    "name": "Воротынец",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 16,
+    "name": "Вертолет",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 17,
+    "name": "Глобус",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 18,
+    "name": "Львово",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 19,
+    "name": "ЯТь",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 20,
+    "name": "Уют (Ярослав)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 21,
+    "name": "Вязники",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 22,
+    "name": "Вязники (Сытый Гость)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": "3.5 +100"
+  },
+  {
+    "id": 23,
+    "name": "Дубрава",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 24,
+    "name": "Ямская Слобода",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": "4.0 +100"
+  },
+  {
+    "id": 25,
+    "name": "Коурково",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 26,
+    "name": "УЮТ (объездная Перми)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 27,
+    "name": "59 регион (Очер)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 28,
+    "name": "У Озера",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 29,
+    "name": "Барабинск (На Посту)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 30,
+    "name": "Тюкалинск (Берлога)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 31,
+    "name": "Караван (Омск)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 32,
+    "name": "ИП Авагян 943 км (Омская обл.)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 33,
+    "name": "Ольга (Омская обл., 545 км.)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 34,
+    "name": "Кунгур (Вираж)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 35,
+    "name": "Дилижанс",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 36,
+    "name": "Аврора",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 37,
+    "name": "Синявино",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 38,
+    "name": "Заячья гора",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 39,
+    "name": "Заячья гора Любава",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3900,
+    "actual_price": null,
+    "notes": "3.9 +100 / 4.0"
+  },
+  {
+    "id": 40,
+    "name": "Курское",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 41,
+    "name": "Курское (Солнечная горка)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3600,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 42,
+    "name": "Изумрудный город",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 43,
+    "name": "Агрострой",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 44,
+    "name": "Эберс",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 45,
+    "name": "Итель",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": "3.5 +100 / 3.6"
+  },
+  {
+    "id": 46,
+    "name": "Орловский родник",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 47,
+    "name": "Терса",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4100,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 48,
+    "name": "Прага",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4100,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 49,
+    "name": "Тихий Дон",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 50,
+    "name": "Абацкая слобода",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 51,
+    "name": "Караван (Сызрань)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 52,
+    "name": "Алекс",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 53,
+    "name": "Каспий",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 54,
+    "name": "Саквояж",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 55,
+    "name": "Юрья",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 56,
+    "name": "Йошкар-Ола",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 57,
+    "name": "Пермь",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 58,
+    "name": "Тейково",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 59,
+    "name": "Дивное место",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 60,
+    "name": "Коломна",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 61,
+    "name": "Муром",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 62,
+    "name": "Фемели",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 63,
+    "name": "320 км",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 3900,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 64,
+    "name": "Шахты (Дуэт)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 65,
+    "name": "Бийск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 66,
+    "name": "Новоалтайск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 67,
+    "name": "Дзержинский (экодомик)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 68,
+    "name": "Мурманск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 69,
+    "name": "Дружинино",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 70,
+    "name": "Екатеринбург (отель Свердлова 27)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 5500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 71,
+    "name": "Нижняя Тура",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 72,
+    "name": "Саратов",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 73,
+    "name": "Новосибирск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 74,
+    "name": "Владимир",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 75,
+    "name": "Дивеево",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 76,
+    "name": "С-Посад (ИП Тимчук)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 77,
+    "name": "С-Посад, УЮТ",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4700,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 78,
+    "name": "Волгоград",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 79,
+    "name": "Плесецк (Ласточкино гнездо)",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4000,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 80,
+    "name": "Мирный",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 81,
+    "name": "Знаменск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 82,
+    "name": "Северодвинск",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 4500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 83,
+    "name": "Москва",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 5500,
+    "actual_price": null,
+    "notes": ""
+  },
+  {
+    "id": 84,
+    "name": "С-Петербург",
+    "locality": "",
+    "address": "",
+    "photo_url": "",
+    "report_amount": 5500,
+    "actual_price": null,
+    "notes": ""
+  }
+]

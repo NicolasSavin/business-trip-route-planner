@@ -4,12 +4,19 @@ services:
       context: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
+      HOTELS_USERS_JSON: ${HOTELS_USERS_JSON:-[]}
+      HOTELS_ADMIN_SURNAME: ${HOTELS_ADMIN_SURNAME:-}
+      HOTELS_SESSION_SECRET: ${HOTELS_SESSION_SECRET:-local-development-secret}
+      HOTELS_COOKIE_SECURE: "false"
+      HOTELS_DATA_PATH: /data/hotels.json
       TUTU_PLAYWRIGHT_ENABLED: "false"
       TUTU_PLAYWRIGHT_SERVICE_URL: http://tutu-playwright-service:8000
       TUTU_PLAYWRIGHT_SERVICE_TOKEN: ${SERVICE_API_TOKEN:-local-dev-token}
       TUTU_PLAYWRIGHT_REQUEST_TIMEOUT_SECONDS: "40"
       TUTU_ENRICHMENT_TOTAL_TIMEOUT_SECONDS: "50"
       TUTU_MAX_JOURNEYS_TO_ENRICH: "3"
+    volumes:
+      - hotels-data:/data
     ports:
       - "8000:8000"
     depends_on:
@@ -48,3 +55,5 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+volumes:
+  hotels-data:

@@ -521,6 +521,9 @@ export default function Home() {
           </div>
         </div>
         <nav className="flex items-center gap-2">
+          <a href="/hotels" className="rounded-full border border-line bg-white px-4 py-2 text-sm font-semibold text-ink">
+            Гостиницы
+          </a>
           <button
             onClick={() => setViewMode("search")}
             className={`rounded-full px-4 py-2 text-sm font-semibold ${viewMode === "search" ? "bg-ink text-white" : "border border-line bg-white text-ink"}`}
