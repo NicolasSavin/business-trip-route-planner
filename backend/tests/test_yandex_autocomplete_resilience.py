@@ -118,7 +118,11 @@ def test_first_startup_downloads_directory_when_cache_and_sqlite_are_absent(tmp_
         requests += 1
         assert request.url.path.endswith("/stations_list/")
         assert request.url.params["apikey"] == "configured-api-key"
-        return httpx.Response(200, json=complete_directory())
+        return httpx.Response(
+            200,
+            json=complete_directory(),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
 
     # Reproduce a freshly booted host.  A monotonic value below the retry
     # cooldown must not be mistaken for a recent synchronization failure.
