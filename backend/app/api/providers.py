@@ -24,7 +24,7 @@ def _provider_health_payload(provider: ProviderRegistration) -> dict:
         configured = bool(provider.metadata.get("configured"))
     ready = bool(provider.metadata.get("ready", configured))
     caps = provider.capabilities
-    return {
+    payload = {
         "id": provider.id,
         "name": provider.name,
         "enabled": provider.enabled,
@@ -41,6 +41,10 @@ def _provider_health_payload(provider: ProviderRegistration) -> dict:
         "supports_train": TransportType.TRAIN in caps.supported_transport,
         "supports_bus": TransportType.BUS in caps.supported_transport,
     }
+    if provider.id == "yandex_rasp":
+        from app.providers.yandex.location_service import yandex_location_resolver
+        payload["catalogue"] = yandex_location_resolver.startup_diagnostics()
+    return payload
 
 def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
