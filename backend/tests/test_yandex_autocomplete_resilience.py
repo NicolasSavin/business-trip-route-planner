@@ -197,6 +197,30 @@ def test_startup_diagnostics_identify_malformed_response(tmp_path):
     assert "startup-super-secret" not in str(diagnostics)
 
 
+def test_startup_diagnostics_propagate_safe_html_response_details(tmp_path, caplog):
+    secret = "startup-super-secret"
+    resolver = resolver_for_yandex_response(
+        tmp_path,
+        lambda request: httpx.Response(
+            200,
+            text=f"<html>{secret} apikey=another-secret Authorization: Bearer token-secret</html>",
+            headers={"content-type": "text/html", "server": "Yandex-gateway"},
+            request=request,
+        ),
+        secret,
+    )
+
+    assert resolver.ensure_index_ready() is False
+    diagnostics = resolver.startup_diagnostics()
+    assert diagnostics["response_final_host"] == "api.rasp.yandex-net.ru"
+    assert diagnostics["response_final_path"] == "/v3.0/stations_list/"
+    assert diagnostics["server_header"] == "Yandex-gateway"
+    assert diagnostics["body_preview"].startswith("<html>***redacted***")
+    for credential in (secret, "another-secret", "token-secret"):
+        assert credential not in str(diagnostics)
+        assert credential not in caplog.text
+
+
 def test_corrupt_index_can_be_rebuilt(tmp_path):
     path = tmp_path / "stations.json"
     resolver = YandexLocationResolver(directory_loader=complete_directory, cache_path=path)

@@ -475,6 +475,11 @@ def test_yandex_stations_list_canonical_html_raises_safe_error_and_does_not_retr
     assert details["request_path"] == "/v3.0/stations_list/"
     assert details["status_code"] == 200
     assert details["content_type"].startswith("text/html")
+    assert details["body_preview"] == "<html>bad</html>"
+    assert details["response_final_host"] == "api.rasp.yandex-net.ru"
+    assert details["response_final_path"] == "/v3.0/stations_list/"
+    assert details["redirect_history_status_codes"] == []
+    assert details["redirect_history_hosts"] == []
     assert "top-secret-key" not in str(details)
     assert "top-secret-key" not in caplog.text
 
@@ -547,6 +552,41 @@ def test_yandex_client_api_key_is_not_in_unexpected_content_type_diagnostics():
         raise AssertionError("expected unexpected content type")
 
     assert "top-secret-key" not in __import__("json").dumps(error, ensure_ascii=False)
+
+
+def test_yandex_client_redacts_credentials_from_html_preview_headers_and_logs(caplog):
+    secret = "top-secret-key"
+    body = (
+        '<html>top-secret-key apikey=query-secret '
+        'Authorization: Bearer bearer-secret '
+        '"authorization":"Basic basic-secret"</html>'
+    )
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            text=body,
+            headers={
+                "content-type": "text/html",
+                "server": "Yandex-gateway",
+                "location": f"https://example.test/error?apikey={secret}",
+            },
+            request=request,
+        )
+
+    client = YandexRaspClient(YandexRaspConfiguration(secret, enabled=True), httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.rasp.yandex-net.ru/v3.0/"))
+
+    with pytest.raises(YandexRaspUnexpectedContentTypeError) as raised:
+        client.stations_list()
+
+    details = raised.value.to_error()["details"]
+    serialized = __import__("json").dumps(details, ensure_ascii=False)
+    for credential in (secret, "query-secret", "bearer-secret", "basic-secret"):
+        assert credential not in details["body_preview"]
+        assert credential not in serialized
+        assert credential not in caplog.text
+    assert details["server_header"] == "Yandex-gateway"
+    assert details["location_header"] == "https://example.test/error?apikey=***redacted***"
 
 
 def test_yandex_provider_uses_provider_codes_without_string_resolve():
