@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from time import monotonic
 from typing import Any
 
 from app.domain import TransportSegment, TransportType
@@ -27,7 +28,7 @@ class YandexRaspProvider(TransportProvider):
         self.last_error_payload: dict | None = None
         self.last_diagnostics: dict = {}
 
-    def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None, origin_provider_code: str | None = None, destination_provider_code: str | None = None, **_kwargs) -> list[TransportSegment]:
+    def get_segments(self, departure_date: date, allowed_transport: list[TransportType], origin: str | None = None, destination: str | None = None, origin_provider_code: str | None = None, destination_provider_code: str | None = None, max_transfers: int = 1, **_kwargs) -> list[TransportSegment]:
         logger.info("route_search.yandex_provider_enter\norigin=%r\ndestination=%r\ndate=%s", origin, destination, departure_date)
         if not self.config.enabled:
             return []
@@ -39,6 +40,10 @@ class YandexRaspProvider(TransportProvider):
             raw_direct_segment_count = 0
             direct_candidate_ids: set[str] = set()
             direct_candidate_count = 0
+            started_at = monotonic()
+            deadline = started_at + self.config.route_search_total_timeout_seconds
+            requests_made = direct_requests = transfer_requests = 0
+            fanout_limited = deadline_exceeded = False
             for origin_name, destination_name in pairs:
                 origin_resolution = self._resolve_location(origin_name or "", origin_provider_code)
                 destination_resolution = self._resolve_location(destination_name or "", destination_provider_code)
@@ -61,8 +66,53 @@ class YandexRaspProvider(TransportProvider):
                     diagnostics["reason"] = "missing_station_code"
                     pair_errors.append(diagnostics)
                     continue
-                request_pairs = [(o, d, transfers) for o in origin_codes for d in destination_codes for transfers in (False, True)]
-                for attempt, (origin_code, destination_code, transfers) in enumerate(request_pairs, start=1):
+                primary_pair = (origin_codes[0], destination_codes[0])
+                fallback_pairs = [
+                    (o, d) for o in origin_codes for d in destination_codes
+                    if (o, d) != primary_pair
+                ]
+                direct_pairs = [primary_pair, *fallback_pairs]
+                if len(direct_pairs) > self.config.max_direct_requests_per_search:
+                    fanout_limited = True
+                    direct_pairs = direct_pairs[:self.config.max_direct_requests_per_search]
+                request_pairs = [(o, d, False) for o, d in direct_pairs]
+                # Transfer schedules are useful only when the caller permits them.
+                # Keep their independent budget hard-bounded as well.
+                if max_transfers > 0:
+                    transfer_pairs = [primary_pair, *fallback_pairs]
+                    if len(transfer_pairs) > self.config.max_transfer_requests_per_search:
+                        fanout_limited = True
+                    request_pairs += [
+                        (o, d, True)
+                        for o, d in transfer_pairs[:self.config.max_transfer_requests_per_search]
+                    ]
+                city_direct_satisfied = False
+                for origin_code, destination_code, transfers in request_pairs:
+                    if transfers and city_direct_satisfied:
+                        # Still ask once for city-level transfer options, but never
+                        # fan out through station pairs after a successful city query.
+                        if (origin_code, destination_code) != primary_pair:
+                            continue
+                    if not transfers and city_direct_satisfied:
+                        continue
+                    if monotonic() >= deadline:
+                        deadline_exceeded = True
+                        diagnostics.setdefault("warnings", []).append(
+                            "Yandex schedule search deadline reached; returning schedules already collected."
+                        )
+                        break
+                    if transfers:
+                        if transfer_requests >= self.config.max_transfer_requests_per_search:
+                            fanout_limited = True
+                            continue
+                        transfer_requests += 1
+                    else:
+                        if direct_requests >= self.config.max_direct_requests_per_search:
+                            fanout_limited = True
+                            continue
+                        direct_requests += 1
+                    requests_made += 1
+                    attempt = requests_made
                     attempt_diag = self._attempt_diagnostics(origin_code, destination_code, attempt)
                     attempt_diag["candidate_kind"] = "transfer" if transfers else "direct"
                     diagnostics["attempts"].append(attempt_diag)
@@ -73,6 +123,11 @@ class YandexRaspProvider(TransportProvider):
                             [item.value for item in allowed_transport], attempt,
                         )
                         payload = self.client.search(origin_code=origin_code, destination_code=destination_code, departure_date=departure_date, allowed_transport=allowed_transport, transfers=transfers)
+                        if monotonic() >= deadline:
+                            deadline_exceeded = True
+                            diagnostics.setdefault("warnings", []).append(
+                                "Yandex schedule search deadline reached; returning schedules already collected."
+                            )
                         attempt_diag["request_params"] = getattr(self.client, "last_request_params", None)
                         self._validate_payload(payload, diagnostics)
                         raw_segments = payload["segments"]
@@ -108,6 +163,15 @@ class YandexRaspProvider(TransportProvider):
                             direct_candidate_count += len(mapped_segments)
                             direct_candidate_ids.update(segment.id for segment in mapped_segments)
                             diagnostics["raw_direct_candidates"].extend(self._describe_direct(segment) for segment in mapped_segments)
+                            usable_direct = any(
+                                segment.transport_type in allowed_transport
+                                for segment in mapped_segments
+                            ) and any(
+                                isinstance(item, dict) and not item.get("has_transfers")
+                                for item in raw_segments
+                            )
+                            if (origin_code, destination_code) == primary_pair and usable_direct:
+                                city_direct_satisfied = True
                             for segment in mapped_segments:
                                 if self._is_moscow_to_saint_petersburg(segment):
                                     logger.info(
@@ -145,6 +209,8 @@ class YandexRaspProvider(TransportProvider):
                                     "route_search.yandex_direct_accepted origin_code=%s destination_code=%s segment=%s",
                                     origin_code, destination_code, self._describe_direct(segment),
                                 )
+                        if deadline_exceeded:
+                            break
                     except YandexRaspError as exc:
                         attempt_diag["error"] = exc.to_error()
                         logger.info(
@@ -164,6 +230,19 @@ class YandexRaspProvider(TransportProvider):
                 )
                 self.last_diagnostics = diagnostics
                 pair_errors.extend(item for item in diagnostics["attempts"] if item.get("error"))
+            self.last_diagnostics.update({
+                "yandex_requests_made": requests_made,
+                "yandex_direct_requests_made": direct_requests,
+                "yandex_transfer_requests_made": transfer_requests,
+                "yandex_candidate_origin_codes": list(origin_codes) if pairs else [],
+                "yandex_candidate_destination_codes": list(destination_codes) if pairs else [],
+                "yandex_fanout_limited": fanout_limited,
+                "yandex_search_deadline_exceeded": deadline_exceeded,
+            })
+            logger.info(
+                "route_search.yandex_budget requests_made=%s direct_requests=%s transfer_requests=%s fanout_limited=%s deadline_exceeded=%s",
+                requests_made, direct_requests, transfer_requests, fanout_limited, deadline_exceeded,
+            )
             direct_candidates_passed = sum(segment.id in direct_candidate_ids for segment in segments)
             logger.info("route_search.yandex_segments_total count=%s", yandex_segment_count)
             returned_direct = [self._describe_direct(segment) for segment in segments if segment.id in direct_candidate_ids]
@@ -242,12 +321,13 @@ class YandexRaspProvider(TransportProvider):
         return {"endpoint": "/search/", "origin_code": origin_code, "destination_code": destination_code, "request_attempt": attempt}
 
     def _empty_details(self, origin: str | None, destination: str | None, departure_date: date, pair_errors: list[dict[str, Any]]) -> dict[str, Any]:
-        details = {"origin": origin, "destination": destination, "date": departure_date.isoformat(), "resolved_origin_codes": self.last_diagnostics.get("resolved_origin_codes", []), "resolved_destination_codes": self.last_diagnostics.get("resolved_destination_codes", []), "pair_errors": pair_errors}
-        for item in pair_errors:
-            error_details = (item.get("error") or {}).get("details")
-            if error_details:
-                return error_details
-        return details
+        return {
+            **self.last_diagnostics,
+            "origin": origin,
+            "destination": destination,
+            "date": departure_date.isoformat(),
+            "pair_errors": pair_errors,
+        }
 
     def _codes_for_transport(self, match: YandexLocationMatch, allowed_transport: list[TransportType]) -> tuple[str, ...]:
         allowed = {item.value for item in allowed_transport}
@@ -255,7 +335,27 @@ class YandexRaspProvider(TransportProvider):
             allowed.add("suburban")
         if match.type == "station":
             return (match.code,) if match.code else ()
-        return tuple(station.code for station in match.stations if station.code and (not station.transport_types or set(station.transport_types) & allowed)) or tuple(code for code in match.station_codes if code)
+        train_only = allowed <= {"train", "suburban"}
+        stations = [
+            station for station in match.stations
+            if station.code and (
+                set(station.transport_types) & allowed
+                or (not train_only and not station.transport_types)
+            )
+        ]
+        if train_only:
+            stations = [station for station in stations if set(station.transport_types) <= {"train", "suburban"}]
+        stations.sort(key=self._station_rank)
+        codes = [match.code, *(station.code for station in stations[:self.config.max_stations_per_city])]
+        return tuple(dict.fromkeys(code for code in codes if code))
+
+    @staticmethod
+    def _station_rank(station) -> tuple[int, int, str]:
+        station_type = (station.type or "").casefold()
+        title = (station.title or "").casefold()
+        exact_railway = station_type in {"railway_station", "train_station"}
+        named_station = "вокзал" in title or "станция" in title
+        return (0 if exact_railway else 1, 0 if named_station else 1, title)
 
     def _record_error(self, exc: YandexRaspError) -> None:
         self.last_error = exc.message
