@@ -97,6 +97,12 @@ jobs:
               echo
               exit 0
             fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null)" != "true" ]]; then
+              echo "::error::Backend container exited before the health check became ready."
+              echo "Container logs:"
+              docker logs "$container_id" || true
+              exit 1
+            fi
             sleep 1
           done
           echo "::error::Backend health check did not become ready within 30 seconds."
