@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ CACHE_TTL_SECONDS = int(os.getenv("YANDEX_STATIONS_CACHE_TTL_SECONDS", str(7 * 2
 CACHE_PATH = Path(os.getenv("YANDEX_STATIONS_CACHE_PATH", "/tmp/business-trip-route-planner/yandex_stations_list.json"))
 SQLITE_PATH = Path(os.getenv("YANDEX_STATIONS_SQLITE_PATH", "/tmp/business-trip-route-planner/yandex_stations.sqlite3"))
 YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "false").lower() in {"1", "true", "yes", "on"}
+SYNC_RETRY_COOLDOWN_SECONDS = int(os.getenv("YANDEX_STATIONS_SYNC_RETRY_COOLDOWN_SECONDS", "300"))
 logger = logging.getLogger(__name__)
 
 STOP_WORDS = {"вокзал", "станция", "ст", "жд", "ж д", "железнодорожный", "железнодорожная"}
@@ -143,10 +145,12 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
             rows = list(con.execute("""
                 SELECT *,
                     CASE
-                        WHEN normalized_title=? OR code=? OR normalized_settlement=? OR aliases LIKE ? THEN 0
-                        WHEN point_type='city' AND (normalized_title LIKE ? OR normalized_settlement LIKE ?) THEN 1
-                        WHEN normalized_title LIKE ? OR normalized_settlement LIKE ? THEN 2
-                        WHEN point_type='city' AND (normalized_title LIKE ? OR normalized_settlement LIKE ?) THEN 3
+                        WHEN point_type='city' AND (normalized_title=? OR normalized_settlement=?) THEN 0
+                        WHEN point_type='station' AND normalized_title=? THEN 1
+                        WHEN code=? OR aliases LIKE ? THEN 1
+                        WHEN point_type='city' AND (normalized_title LIKE ? OR normalized_settlement LIKE ?) THEN 2
+                        WHEN point_type='station' AND normalized_title LIKE ? THEN 3
+                        WHEN normalized_settlement LIKE ? THEN 3
                         WHEN normalized_title LIKE ? OR normalized_settlement LIKE ? THEN 4
                         ELSE 5
                     END AS rank
@@ -154,9 +158,11 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
                 WHERE normalized_title=? OR code=? OR normalized_settlement=? OR aliases LIKE ?
                    OR normalized_title LIKE ? OR normalized_settlement LIKE ?
                    OR normalized_title LIKE ? OR normalized_settlement LIKE ?
+                   OR (normalized_settlement || ' ' || normalized_title) LIKE ?
                 ORDER BY rank, CASE point_type WHEN 'city' THEN 0 ELSE 1 END, title
                 LIMIT 50
-            """, (key, query, key, alias_pattern, prefix, prefix, prefix, prefix, contains, contains, contains, contains, key, query, key, alias_pattern, prefix, prefix, contains, contains)))
+            """, (key, key, key, query, alias_pattern, prefix, prefix, prefix, prefix,
+                  contains, contains, key, query, key, alias_pattern, prefix, prefix, contains, contains, contains)))
         return self._dedupe([self._row_to_match(r) for r in rows if self._transport_ok(r, transport_types)])[:20]
     def _dedupe(self, matches):
         return _dedupe_location_matches(matches)
@@ -179,7 +185,6 @@ class SQLiteYandexStationsRepository(YandexStationsRepository):
         try:
             con=sqlite3.connect(tmp)
             con.executescript("CREATE TABLE locations(code TEXT PRIMARY KEY,title TEXT NOT NULL,normalized_title TEXT NOT NULL,point_type TEXT NOT NULL,settlement TEXT,normalized_settlement TEXT,region TEXT,country TEXT,station_type TEXT,transport_types TEXT,latitude REAL,longitude REAL,aliases TEXT); CREATE INDEX idx_locations_normalized_title ON locations(normalized_title); CREATE INDEX idx_locations_code ON locations(code); CREATE INDEX idx_locations_settlement ON locations(normalized_settlement); CREATE INDEX idx_locations_region ON locations(region);")
-            for m in LOCAL_POINTS: count += self._insert_match(con, m)
             for country in directory.get("countries", []):
                 country_title=country.get("title")
                 for region in country.get("regions", []):
@@ -218,9 +223,33 @@ class YandexStationsCache:
         try: return time.time()-self.path.stat().st_mtime
         except FileNotFoundError: return None
     def load(self, *, force=False):
-        if not force: return None
-        if not self.loader: return None
-        return self.loader()
+        # An ephemeral container may still have a directory JSON even when its
+        # derived SQLite file disappeared.  Reusing it avoids an upstream call.
+        if not force and self.path.exists():
+            with self.path.open(encoding="utf-8") as stream:
+                self.last_source = "cache"
+                return json.load(stream)
+        if not self.loader:
+            return None
+        try:
+            data = self.loader()
+        except Exception as exc:
+            self.last_error = str(exc) or exc.__class__.__name__
+            if not self.path.exists():
+                raise
+            with self.path.open(encoding="utf-8") as stream:
+                self.last_source = "cache"
+                return json.load(stream)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False)
+            os.replace(name, self.path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+        self.last_source = "remote"
+        return data
 
 class YandexLocationResolver:
     def __init__(self, directory_loader=None, repository: LocationRepository | None = None, cache_path: Path = CACHE_PATH, ttl_seconds: int = CACHE_TTL_SECONDS, stations_repository: YandexStationsRepository | None = None):
@@ -229,13 +258,16 @@ class YandexLocationResolver:
         sqlite_path = cache_path.with_suffix(".sqlite3") if cache_path != CACHE_PATH else SQLITE_PATH
         self._stations_repository = stations_repository or SQLiteYandexStationsRepository(path=sqlite_path, loader=directory_loader)
         self._cache: dict[str, list[YandexLocationMatch]] = {}; self._last_diag: dict[str, Any] = {}; self._initialized=False
+        self._sync_lock = threading.Lock()
+        self._syncing = False
+        self._last_sync_failure = 0.0
     normalize = staticmethod(normalize)
     def resolve(self, query: str) -> YandexLocationMatch:
         matches=self.resolve_all(query)
         if not matches: raise YandexRaspUnknownCityError(f"Неизвестный город или станция для Яндекс Расписаний: {query}")
         return matches[0]
     def resolve_code(self, code: str, fallback_title: str | None = None) -> YandexLocationMatch:
-        self._maybe_seed_repository()
+        self.ensure_index_ready()
         match = self._stations_repository.get_by_code(code)
         if match:
             return match
@@ -249,30 +281,80 @@ class YandexLocationResolver:
         title = fallback_title or code
         return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
-        self._maybe_seed_repository()
+        ready = self.ensure_index_ready()
         self._initialized=True; key=normalize(query)
         if key in self._cache: return [self._with_cache_hit(m) for m in self._cache[key]]
-        matches=self._stations_repository.resolve(query) or self._local(query) or self._fallback_repository(query)
-        self._cache[key]=matches; self._last_diag={"source":self._directory_cache.last_source if self._directory_cache.last_source != "fallback" else ("cache" if self._stations_repository.cache_info().get("locations", 0) else "sqlite"),"cache_info":self._stations_repository.cache_info(),"selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1}
+        matches=self._stations_repository.resolve(query) if ready else self._fallback_repository(query)
+        self._cache[key]=matches; self._last_diag={"source": self._directory_cache.last_source, "selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1, "index_ready": ready}
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
-    def _maybe_seed_repository(self):
-        info = self._stations_repository.cache_info()
-        if info.get("locations", 0) == 0 and self._directory_cache.loader:
-            try:
-                self._stations_repository.refresh()
-                self._directory_cache.last_source = "remote"
-            except Exception as exc:
-                self._directory_cache.last_error = str(exc) or exc.__class__.__name__
-    def refresh(self):
+    def ensure_index_ready(self) -> bool:
+        """Ensure a usable index exists, with one builder and failure cooldown."""
+        try:
+            if self._stations_repository.cache_info().get("locations", 0) > 0:
+                if self._directory_cache.path.exists():
+                    self._directory_cache.last_source = "cache"
+                return True
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
+        with self._sync_lock:
+            if self._syncing:
+                return False
+            if time.monotonic() - self._last_sync_failure < SYNC_RETRY_COOLDOWN_SECONDS:
+                return False
+            self._syncing = True
+        try:
+            data = self._directory_cache.load()
+            if data is None:
+                raise RuntimeError("Yandex stations directory loader is not configured")
+            self._stations_repository.rebuild_from_directory(data)
+            self._cache.clear()
+            self._last_sync_failure = 0.0
+            return True
+        except Exception as exc:
+            self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+            self._last_sync_failure = time.monotonic()
+            logger.warning("Yandex stations index initialization failed: %s", exc)
+            return False
+        finally:
+            with self._sync_lock:
+                self._syncing = False
+
+    def mark_index_failed(self, exc: BaseException) -> None:
+        """Quarantine a corrupt ephemeral index so a later request can rebuild."""
         self._cache.clear()
-        stats = self._stations_repository.refresh()
+        self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+        repository = self._stations_repository
+        path = getattr(repository, "path", None)
+        if path:
+            try:
+                Path(path).replace(Path(f"{path}.corrupt"))
+                repository._initialized = False
+            except OSError:
+                pass
+    def refresh(self):
+        data = self._directory_cache.load(force=True)
+        if data is None:
+            raise RuntimeError("Yandex stations loader is not configured")
+        stats = self._stations_repository.rebuild_from_directory(data)
+        self._cache.clear()
         self._directory_cache.last_source = "remote"
         return stats | {"total_points": stats.get("locations", 0)}
-    def warm_from_existing_cache(self): self._stations_repository.cache_info()
+    def warm_from_existing_cache(self):
+        try: return self._stations_repository.cache_info()
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
+            return {"locations": 0, "error": str(exc)}
     def startup_refresh_background(self):
-        if YANDEX_STATIONS_AUTO_SYNC: logger.warning("YANDEX_STATIONS_AUTO_SYNC is enabled; prefer build-job sync in production")
-    def stats(self): return self._stations_repository.cache_info() | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
+        thread = threading.Thread(target=self.ensure_index_ready, name="yandex-stations-init", daemon=True)
+        thread.start()
+    def stats(self):
+        try:
+            info = self._stations_repository.cache_info()
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
+            info = {"storage": "sqlite", "locations": 0, "error": str(exc) or exc.__class__.__name__}
+        return info | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
     def _local(self, query):
         key=normalize(query); ranked=[]
         if len(key) < 2:
