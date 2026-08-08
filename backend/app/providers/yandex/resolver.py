@@ -26,6 +26,21 @@ YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "false").lowe
 SYNC_RETRY_COOLDOWN_SECONDS = int(os.getenv("YANDEX_STATIONS_SYNC_RETRY_COOLDOWN_SECONDS", "300"))
 logger = logging.getLogger(__name__)
 
+
+def _safe_error_message(exc: BaseException, *secrets: str | None) -> str:
+    """Return useful exception text with credentials and auth headers removed."""
+    message = str(exc) or exc.__class__.__name__
+    for secret in (os.getenv("YANDEX_RASP_API_KEY"), *secrets):
+        if secret:
+            message = message.replace(secret, "***redacted***")
+    message = re.sub(r"(?i)(apikey(?:%3[dD]|=))[^&\s]+", r"\1***redacted***", message)
+    message = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^,;\s]+",
+        r"\1***redacted***",
+        message,
+    )
+    return message
+
 STOP_WORDS = {"вокзал", "станция", "ст", "жд", "ж д", "железнодорожный", "железнодорожная"}
 ALIASES = {"спб": "санкт петербург", "питер": "санкт петербург", "мск": "москва", "екб": "екатеринбург", "нск": "новосибирск", "moscow": "москва"}
 
@@ -269,10 +284,15 @@ class YandexLocationResolver:
         sqlite_path = cache_path.with_suffix(".sqlite3") if cache_path != CACHE_PATH else SQLITE_PATH
         self._stations_repository = stations_repository or SQLiteYandexStationsRepository(path=sqlite_path, loader=directory_loader)
         self._cache: dict[str, list[YandexLocationMatch]] = {}; self._last_diag: dict[str, Any] = {}; self._initialized=False
+        self._last_exception_type: str | None = None
         self._sync_lock = threading.Lock()
         self._syncing = False
         self._last_sync_failure = 0.0
     normalize = staticmethod(normalize)
+    def _safe_failure_message(self, exc: BaseException) -> str:
+        loader_owner = getattr(self._directory_cache.loader, "__self__", None)
+        config = getattr(loader_owner, "config", None)
+        return _safe_error_message(exc, getattr(config, "api_key", None))
     def resolve(self, query: str) -> YandexLocationMatch:
         matches=self.resolve_all(query)
         if not matches: raise YandexRaspUnknownCityError(f"Неизвестный город или станция для Яндекс Расписаний: {query}")
@@ -334,9 +354,14 @@ class YandexLocationResolver:
                 self._last_sync_failure = 0.0
                 return True
             except Exception as exc:
-                self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+                self._last_exception_type = exc.__class__.__name__
+                self._directory_cache.last_error = self._safe_failure_message(exc)
                 self._last_sync_failure = time.monotonic()
-                logger.warning("Yandex stations index initialization failed: %s", exc)
+                logger.warning(
+                    "Yandex stations index initialization failed: %s: %s",
+                    self._last_exception_type,
+                    self._directory_cache.last_error,
+                )
                 return False
             finally:
                 self._syncing = False
@@ -344,7 +369,8 @@ class YandexLocationResolver:
     def mark_index_failed(self, exc: BaseException) -> None:
         """Quarantine a corrupt ephemeral index so a later request can rebuild."""
         self._cache.clear()
-        self._directory_cache.last_error = str(exc) or exc.__class__.__name__
+        self._last_exception_type = exc.__class__.__name__
+        self._directory_cache.last_error = self._safe_failure_message(exc)
         repository = self._stations_repository
         path = getattr(repository, "path", None)
         if path:
@@ -386,6 +412,24 @@ class YandexLocationResolver:
             self.mark_index_failed(exc)
             info = {"storage": "sqlite", "locations": 0, "error": str(exc) or exc.__class__.__name__}
         return info | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
+    def startup_diagnostics(self) -> dict[str, Any]:
+        """Expose a deliberately small, credential-free startup failure summary."""
+        loader_owner = getattr(self._directory_cache.loader, "__self__", None)
+        client_diagnostics = getattr(loader_owner, "last_response_diagnostics", None) or {}
+        config = getattr(loader_owner, "config", None)
+        api_key_configured = bool(getattr(config, "api_key", None) or os.getenv("YANDEX_RASP_API_KEY"))
+        repository_path = getattr(self._stations_repository, "path", None)
+        return {
+            "exception_class": self._last_exception_type,
+            "http_status": client_diagnostics.get("status_code"),
+            "endpoint": "stations_list",
+            "content_type": client_diagnostics.get("content_type"),
+            "api_key_configured": api_key_configured,
+            "cache_path_exists": self._directory_cache.path.exists(),
+            "sqlite_path_exists": bool(repository_path and Path(repository_path).exists()),
+            "last_source": self._directory_cache.last_source,
+            "last_error": self._directory_cache.last_error,
+        }
     def _local(self, query):
         key=normalize(query); ranked=[]
         if len(key) < 2:

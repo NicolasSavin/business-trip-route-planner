@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from importlib.metadata import version
@@ -62,10 +63,12 @@ async def log_browser_startup_diagnostics() -> None:
     )
     yandex_location_resolver.warm_from_existing_cache()
     if not yandex_location_resolver.ensure_index_ready():
-        raise RuntimeError(
-            "Yandex stations catalogue is unavailable; configure YANDEX_RASP_API_KEY "
-            "or provide YANDEX_STATIONS_CACHE_PATH before starting the API"
+        diagnostics = yandex_location_resolver.startup_diagnostics()
+        message = "Yandex stations catalogue initialization failed: " + json.dumps(
+            diagnostics, ensure_ascii=False, sort_keys=True
         )
+        logger.error(message)
+        raise RuntimeError(message)
     log_memory("after Yandex directory metadata")
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
     log_memory("after Yandex indexes")

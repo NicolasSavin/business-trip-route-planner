@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,20 @@ from app.main import app
 from app.providers.yandex.client import YandexRaspClient
 from app.providers.yandex.config import YandexRaspConfiguration
 from app.providers.yandex.resolver import YandexLocationResolver
+
+
+def resolver_for_yandex_response(tmp_path, handler, api_key="startup-super-secret"):
+    client = YandexRaspClient(
+        YandexRaspConfiguration(api_key, enabled=True),
+        httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.rasp.yandex.net/v3.0/",
+        ),
+    )
+    return YandexLocationResolver(
+        directory_loader=client.stations_list,
+        cache_path=tmp_path / "stations.json",
+    )
 
 
 def complete_directory():
@@ -107,6 +122,50 @@ def test_failed_sync_observes_cooldown(tmp_path):
     assert resolver.resolve_all("Ижевск") == []  # absent from emergency defaults
     assert resolver.resolve_all("Пермь") == []
     assert calls == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_startup_diagnostics_identify_invalid_api_key_without_exposing_it(tmp_path, status):
+    secret = "startup-super-secret"
+    resolver = resolver_for_yandex_response(
+        tmp_path,
+        lambda request: httpx.Response(status, json={"error": secret}),
+        secret,
+    )
+
+    assert resolver.ensure_index_ready() is False
+    diagnostics = resolver.startup_diagnostics()
+    assert diagnostics["exception_class"] == "YandexRaspAuthError"
+    assert diagnostics["http_status"] == status
+    assert diagnostics["endpoint"] == "stations_list"
+    assert diagnostics["api_key_configured"] is True
+    assert secret not in str(diagnostics)
+
+
+def test_startup_diagnostics_identify_timeout(tmp_path):
+    def timeout(request):
+        raise httpx.ReadTimeout("request timed out", request=request)
+
+    resolver = resolver_for_yandex_response(tmp_path, timeout)
+    assert resolver.ensure_index_ready() is False
+    assert resolver.startup_diagnostics()["exception_class"] == "YandexRaspTimeoutError"
+
+
+def test_startup_diagnostics_identify_malformed_response(tmp_path):
+    resolver = resolver_for_yandex_response(
+        tmp_path,
+        lambda request: httpx.Response(
+            200,
+            text="not-json startup-super-secret",
+            headers={"content-type": "application/json"},
+        ),
+    )
+
+    assert resolver.ensure_index_ready() is False
+    diagnostics = resolver.startup_diagnostics()
+    assert diagnostics["exception_class"] == "YandexRaspInvalidResponseError"
+    assert diagnostics["content_type"] == "application/json"
+    assert "startup-super-secret" not in str(diagnostics)
 
 
 def test_corrupt_index_can_be_rebuilt(tmp_path):
