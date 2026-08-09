@@ -1,17 +1,19 @@
 "use client";
 
-import { KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Building2, Loader2, MapPin, TrainFront, X } from "lucide-react";
 import { suggestLocations } from "@/lib/api";
 import type { LocationSuggestion } from "@/lib/types";
 import type { SelectedLocation } from "@/lib/locationPayload";
+import { canRequestSuggestions, nextActiveSuggestion, selectedLocationFromSuggestion, suggestionAccessibleLabel } from "@/lib/locationAutocompleteModel";
 
 const typeLabels: Record<LocationSuggestion["type"], string> = {
-  city: "Город",
-  settlement: "Город",
-  railway_station: "ЖД вокзал",
-  bus_station: "Автовокзал",
-  station: "Станция",
+  city: "город",
+  settlement: "город",
+  railway_station: "ж/д вокзал",
+  bus_station: "автовокзал",
+  station: "станция",
 };
 
 function LocationIcon({ type }: { type: LocationSuggestion["type"] }) {
@@ -36,103 +38,132 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   required?: boolean;
 }) {
   const baseId = useId();
-  const rootRef = useRef<HTMLLabelElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const requestRef = useRef(0);
+  const focusedRef = useRef(false);
   const [items, setItems] = useState<LocationSuggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [active, setActive] = useState(-1);
-  const showHint = value.trim().length > 0 && !selected;
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+  const query = value.trim();
+  const canSuggest = canRequestSuggestions(query, selected);
+  const showHint = query.length > 0 && !selected;
 
-  useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+  const positionDropdown = useCallback(() => {
+    const rect = inputRef.current?.getBoundingClientRect();
+    if (rect) setDropdownStyle({ left: rect.left, top: rect.bottom + 8, width: rect.width });
   }, []);
 
   useEffect(() => {
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !dropdownRef.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsidePointer);
+    return () => document.removeEventListener("mousedown", closeOnOutsidePointer);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    positionDropdown();
+    window.addEventListener("resize", positionDropdown);
+    window.addEventListener("scroll", positionDropdown, true);
+    return () => {
+      window.removeEventListener("resize", positionDropdown);
+      window.removeEventListener("scroll", positionDropdown, true);
+    };
+  }, [open, positionDropdown]);
+
+  useEffect(() => {
+    const requestId = ++requestRef.current;
     abortRef.current?.abort();
     setError(false);
     setHasSearched(false);
     setActive(-1);
-    if (value.trim().length < 2) {
+
+    if (!canSuggest) {
       setItems([]);
       setLoading(false);
+      setOpen(false);
       return;
     }
+
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
+    if (focusedRef.current) setOpen(true);
     const timer = window.setTimeout(async () => {
       try {
-        const response = await suggestLocations(value, 8, controller.signal);
+        const response = await suggestLocations(query, 8, controller.signal);
+        if (requestRef.current !== requestId || controller.signal.aborted) return;
         setItems(response.items);
         setHasSearched(true);
-        setOpen(true);
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          setItems([]);
-          setHasSearched(true);
-          setError(true);
-          setOpen(true);
-        }
+        if (focusedRef.current) setOpen(true);
+      } catch {
+        if (requestRef.current !== requestId || controller.signal.aborted) return;
+        setItems([]);
+        setHasSearched(true);
+        setError(true);
+        if (focusedRef.current) setOpen(true);
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (requestRef.current === requestId && !controller.signal.aborted) setLoading(false);
       }
     }, 300);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [value]);
+  }, [canSuggest, query]);
 
   function pick(item: LocationSuggestion) {
-    onSelect({ id: item.id, provider_code: item.provider_code, type: item.type, title: item.name, displayLabel: item.display_name }, item.display_name);
+    onSelect(selectedLocationFromSuggestion(item), item.display_name);
+    setItems([]);
     setOpen(false);
+    setActive(-1);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") { setOpen(false); return; }
-    if (event.key === "Tab") { setOpen(false); return; }
-    if (!open && (event.key === "ArrowDown" || event.key === "ArrowUp")) setOpen(true);
-    if (event.key === "ArrowDown") { event.preventDefault(); setActive((current) => Math.min(current + 1, items.length - 1)); }
-    if (event.key === "ArrowUp") { event.preventDefault(); setActive((current) => Math.max(current - 1, 0)); }
-    if (event.key === "Enter" && active >= 0 && items[active]) { event.preventDefault(); pick(items[active]); }
+    if (event.key === "Escape" || event.key === "Tab") { setOpen(false); return; }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (canSuggest) setOpen(true);
+      setActive((current) => nextActiveSuggestion(current, items.length, event.key === "ArrowDown" ? 1 : -1));
+    }
+    if (event.key === "Enter" && open && active >= 0 && items[active]) { event.preventDefault(); pick(items[active]); }
   }
 
-  const stateText = value.trim().length < 2 ? "Начните вводить название города или станции" : loading || !hasSearched ? "Ищем варианты…" : error ? "Сервис подсказок временно недоступен" : items.length ? "Выберите город, регион и конкретную станцию" : "Ничего не найдено";
+  const stateText = loading || !hasSearched ? "Ищем варианты…" : error ? "Не удалось получить подсказки. Попробуйте ещё раз" : items.length ? "Выберите город или станцию" : "Ничего не найдено";
+  const dropdown = open && canSuggest ? (
+    <div ref={dropdownRef} id={`${baseId}-listbox`} role="listbox" style={dropdownStyle} className="fixed z-[100] max-h-80 overflow-y-auto rounded-2xl border border-line bg-white shadow-card">
+      <div role="status" className="border-b border-line px-4 py-2 text-xs font-semibold text-muted">{stateText}</div>
+      {!loading && !error && items.map((item, index) => (
+        <button key={item.id} id={`${baseId}-option-${index}`} role="option" aria-selected={active === index} type="button" onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActive(index)} onClick={() => pick(item)} className={`flex w-full items-start gap-3 px-4 py-3 text-left transition ${active === index ? "bg-sky-50" : "hover:bg-cloud"}`}>
+          <LocationIcon type={item.type} />
+          <span className="font-semibold text-ink" aria-label={suggestionAccessibleLabel(item, typeLabels[item.type])}><Highlight text={item.display_name} query={query} />{item.region ? ` · ${item.region}` : ""} · {typeLabels[item.type]}</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   return (
-    <label ref={rootRef} className="relative space-y-2 text-sm font-semibold text-ink">
-      {label}
+    <div ref={rootRef} className="relative space-y-2 text-sm font-semibold text-ink">
+      <label htmlFor={`${baseId}-input`}>{label}</label>
       <div className="relative">
-        <input
-          className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 pr-10 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10"
-          value={value}
-          onChange={(e) => { onChange(e.target.value); onSelect(null, e.target.value); }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={onKeyDown}
-          required={required}
-          role="combobox"
-          aria-expanded={open}
-          aria-controls={`${baseId}-listbox`}
-          aria-activedescendant={active >= 0 ? `${baseId}-option-${active}` : undefined}
-          aria-autocomplete="list"
-        />
-        {loading ? <Loader2 className="absolute right-3 top-3.5 animate-spin text-muted" size={18} /> : value ? <button type="button" aria-label="Очистить поле" onClick={() => { onSelect(null, ""); onChange(""); }} className="absolute right-3 top-3.5 text-muted hover:text-ink"><X size={18} /></button> : null}
+        <input ref={inputRef} id={`${baseId}-input`} className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 pr-10 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10" value={value}
+          onChange={(event) => { onChange(event.target.value); if (selected) onSelect(null, event.target.value); }}
+          onFocus={() => { focusedRef.current = true; if (canSuggest) setOpen(true); }}
+          onBlur={(event) => { focusedRef.current = false; if (!dropdownRef.current?.contains(event.relatedTarget as Node)) window.setTimeout(() => setOpen(false), 0); }}
+          onKeyDown={onKeyDown} required={required} role="combobox" aria-expanded={open && canSuggest} aria-controls={`${baseId}-listbox`} aria-activedescendant={active >= 0 ? `${baseId}-option-${active}` : undefined} aria-autocomplete="list" />
+        {loading ? <Loader2 className="absolute right-3 top-3.5 animate-spin text-muted" size={18} /> : value ? <button type="button" aria-label="Очистить поле" onClick={() => { onSelect(null, ""); onChange(""); inputRef.current?.focus(); }} className="absolute right-3 top-3.5 text-muted hover:text-ink"><X size={18} /></button> : null}
       </div>
       {showHint && <p className="text-xs font-medium text-muted">Выберите вариант из списка для более точного поиска</p>}
-      {open && <div id={`${baseId}-listbox`} role="listbox" className="absolute z-30 mt-2 w-full overflow-hidden rounded-2xl border border-line bg-white shadow-card">
-        <div className="border-b border-line px-4 py-2 text-xs font-semibold text-muted">{stateText}</div>
-        {!loading && !error && items.map((item, index) => <button key={item.id} id={`${baseId}-option-${index}`} role="option" aria-selected={active === index} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(item)} className={`flex w-full items-start gap-3 px-4 py-3 text-left transition ${active === index ? "bg-sky-50" : "hover:bg-cloud"}`}>
-          <LocationIcon type={item.type} />
-          <span><span className="block font-semibold text-ink"><Highlight text={item.display_name} query={value} /></span><span className="text-xs font-medium text-muted">{typeLabels[item.type]}{item.region ? ` · ${item.region}` : ""}{item.provider_code ? ` · ${item.provider_code}` : ""}</span></span>
-        </button>)}
-      </div>}
-    </label>
+      {typeof document !== "undefined" && dropdown ? createPortal(dropdown, document.body) : null}
+    </div>
   );
 }
