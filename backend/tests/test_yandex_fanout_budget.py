@@ -80,6 +80,17 @@ def test_explicit_stations_are_used_directly_first():
     assert len(client.calls) == 1
 
 
+def test_mixed_train_bus_search_preserves_explicit_city_code():
+    provider = make_provider(Client())
+    city = YandexLocationMatch("c213", "Москва", "city", stations=(
+        YandexStation("s-train", "Вокзал", "railway_station", ("train",)),
+        YandexStation("s-bus", "Автовокзал", "bus_station", ("bus",)),
+    ), source="provider_code")
+    codes = provider._codes_for_transport(city, [TransportType.TRAIN, TransportType.BUS])
+    assert codes[0] == "c213"
+    assert {"s-train", "s-bus"} <= set(codes)
+
+
 def test_empty_city_response_uses_only_bounded_train_station_fallback():
     client = Client(lambda kwargs: {"segments": [schedule()]} if kwargs["origin_code"] == "s-train-a" else {"segments": []})
     provider = make_provider(client, max_stations_per_city=2, max_direct_requests_per_search=3)

@@ -68,6 +68,7 @@ def test_complete_directory_cities_and_stations(tmp_path):
 
 def test_suggest_endpoint_searches_built_station_index(tmp_path, monkeypatch):
     resolver = YandexLocationResolver(directory_loader=complete_directory, cache_path=tmp_path / "stations.json")
+    assert resolver.ensure_index_ready()
     monkeypatch.setattr("app.api.locations.yandex_location_resolver", resolver)
 
     client = TestClient(app)

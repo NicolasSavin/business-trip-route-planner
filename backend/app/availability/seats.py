@@ -49,6 +49,7 @@ class RailwayPlace:
     is_side: bool = False
     gender_restriction: GenderRestriction = GenderRestriction.UNKNOWN
     is_available: bool = True
+    explicitly_confirmed: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,21 +81,19 @@ class SeatAllocationService:
             candidates = [p for p in candidates if not p.is_side]
         if preferences.gender is not None:
             candidates = [p for p in candidates if p.gender_restriction in {GenderRestriction.UNKNOWN, GenderRestriction.MIXED, preferences.gender}]
-        if preferences.require_same_carriage:
-            candidates = self._largest_group(candidates, lambda p: p.carriage_number)
-        if preferences.require_same_compartment:
-            candidates = self._largest_group([p for p in candidates if p.compartment_number is not None], lambda p: (p.carriage_number, p.compartment_number))
         if preferences.require_empty_compartment:
             occupied = {(p.carriage_number, p.compartment_number) for p in places if not p.is_available and p.compartment_number is not None}
             candidates = [p for p in candidates if p.compartment_number is not None and (p.carriage_number, p.compartment_number) not in occupied]
         if preferences.prefer_lower:
-            lower = [p for p in candidates if p.berth_position == BerthPosition.LOWER]
-            if len(lower) >= preferences.passengers:
-                candidates = lower
+            candidates = [p for p in candidates if p.berth_position == BerthPosition.LOWER]
         if preferences.prefer_upper:
-            upper = [p for p in candidates if p.berth_position == BerthPosition.UPPER]
-            if len(upper) >= preferences.passengers:
-                candidates = upper
+            candidates = [p for p in candidates if p.berth_position == BerthPosition.UPPER]
+        # Group only after all per-place evidence filters. Otherwise an
+        # incompatible large group can hide a smaller valid group.
+        if preferences.require_same_carriage:
+            candidates = self._largest_group(candidates, lambda p: p.carriage_number)
+        if preferences.require_same_compartment:
+            candidates = self._largest_group([p for p in candidates if p.compartment_number is not None], lambda p: (p.carriage_number, p.compartment_number))
         candidates = sorted(candidates, key=lambda p: (p.carriage_number, p.compartment_number or "", int(p.place_number) if p.place_number.isdigit() else 10_000, p.place_number))
         if preferences.require_adjacent:
             candidates = self._adjacent(candidates, preferences.passengers)

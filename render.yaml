@@ -32,8 +32,6 @@ services:
         value: 1
       - key: YANDEX_STATIONS_LAZY_LOAD
         value: true
-      - key: YANDEX_STATIONS_STORAGE
-        value: sqlite
       - key: YANDEX_STATIONS_AUTO_SYNC
         value: true
       - key: YANDEX_RASP_API_KEY

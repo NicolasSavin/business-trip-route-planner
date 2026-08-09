@@ -25,13 +25,18 @@ export type RouteSegment = {
   selected_places?: string[];
   selected_carriages?: string[];
   selected_compartments?: string[];
-  selected_place_evidence?: Array<{ carriage_number: string; compartment_number: string; place_number: string; berth_position: string; source: string }>;
+  selected_place_evidence?: PlaceEvidence[];
+  lower_berths_check?: RequirementCheck | null;
+  same_compartment_check?: RequirementCheck | null;
   seat_preferences_status?: string | null;
   lower_berths_confirmed?: boolean;
   same_compartment_confirmed?: boolean;
   availability_message?: string | null;
   carriages?: CarriageAvailability[];
 };
+export type RequirementStatus = "confirmed" | "rejected" | "unknown" | "not_applicable";
+export type PlaceEvidence = { train_number: string; departure_datetime: string; carriage_number: string; carriage_type?: string | null; service_class?: string | null; place_number: string; place_type?: string | null; berth_position: "lower" | "upper" | "side" | "seated" | "unknown"; compartment_number?: string | null; source: string; explicitly_confirmed: boolean };
+export type RequirementCheck = { status: RequirementStatus; message: string; evidence: PlaceEvidence[] };
 export type CarriageAvailability = {
   car_type?: string | null;
   min_price?: number | null;
@@ -69,7 +74,9 @@ export type SegmentAvailability = {
   selected_places?: string[];
   selected_carriages?: string[];
   selected_compartments?: string[];
-  selected_place_evidence?: Array<{ carriage_number: string; compartment_number: string; place_number: string; berth_position: string; source: string }>;
+  selected_place_evidence?: PlaceEvidence[];
+  lower_berths_check?: RequirementCheck | null;
+  same_compartment_check?: RequirementCheck | null;
   seat_preferences_status?: string | null;
   lower_berths_confirmed?: boolean;
   same_compartment_confirmed?: boolean;

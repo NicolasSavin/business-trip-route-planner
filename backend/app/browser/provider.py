@@ -16,7 +16,8 @@ class BrowserAutomationProvider:
         health = self.manager.health()
         return {
             "enabled": health.enabled,
-            "configured": health.configured,
+            "configured": health.enabled,
+            "playwright_installed": health.configured,
             "healthy": health.healthy,
             "status": health.status.value,
             "message": health.message,

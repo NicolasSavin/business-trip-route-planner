@@ -9,7 +9,7 @@ from app.domain import TransportSegment, TransportType
 from app.providers.base import TransportProvider
 from app.providers.yandex.client import YandexRaspClient
 from app.providers.yandex.config import YandexRaspConfiguration
-from app.providers.yandex.exceptions import YandexRaspEmptyResponseError, YandexRaspError, YandexRaspInvalidResponseError, YandexRaspUnexpectedContentTypeError, YandexRaspUnknownCityError
+from app.providers.yandex.exceptions import YandexRaspAuthError, YandexRaspEmptyResponseError, YandexRaspError, YandexRaspInvalidResponseError, YandexRaspUnexpectedContentTypeError, YandexRaspUnknownCityError
 from app.providers.yandex.mapper import YandexRaspMapper
 from app.providers.yandex.resolver import YandexLocationMatch, YandexLocationResolver
 
@@ -32,6 +32,10 @@ class YandexRaspProvider(TransportProvider):
         logger.info("route_search.yandex_provider_enter\norigin=%r\ndestination=%r\ndate=%s", origin, destination, departure_date)
         if not self.config.enabled:
             return []
+        if not self.config.api_key:
+            error = YandexRaspAuthError("YANDEX_RASP_API_KEY is not configured")
+            self._record_error(error)
+            raise error
         try:
             pairs = [(origin, destination)] if origin and destination else [("Москва", "Санкт-Петербург")]
             segments: list[TransportSegment] = []
@@ -79,7 +83,11 @@ class YandexRaspProvider(TransportProvider):
                 # Transfer schedules are useful only when the caller permits them.
                 # Keep their independent budget hard-bounded as well.
                 if max_transfers > 0:
-                    transfer_pairs = [primary_pair, *fallback_pairs]
+                    # A single destination city code with bounded origin-station
+                    # fallbacks covers transfer discovery without a cartesian
+                    # station explosion.
+                    transfer_pairs = ([primary_pair, *((o, primary_pair[1]) for o in origin_codes[1:])]
+                        if set(allowed_transport) == {TransportType.TRAIN} else [primary_pair, *fallback_pairs])
                     if len(transfer_pairs) > self.config.max_transfer_requests_per_search:
                         fanout_limited = True
                     request_pairs += [
@@ -88,12 +96,7 @@ class YandexRaspProvider(TransportProvider):
                     ]
                 city_direct_satisfied = False
                 for origin_code, destination_code, transfers in request_pairs:
-                    if transfers and city_direct_satisfied:
-                        # Still ask once for city-level transfer options, but never
-                        # fan out through station pairs after a successful city query.
-                        if (origin_code, destination_code) != primary_pair:
-                            continue
-                    if not transfers and city_direct_satisfied:
+                    if city_direct_satisfied and not transfers and (origin_code, destination_code) != primary_pair:
                         continue
                     if monotonic() >= deadline:
                         deadline_exceeded = True
@@ -229,6 +232,7 @@ class YandexRaspProvider(TransportProvider):
                     [item["train_number"] for item in diagnostics["raw_direct_candidates"]],
                 )
                 self.last_diagnostics = diagnostics
+                diagnostics["attempts"].sort(key=lambda item: 0 if item.get("error") else 1)
                 pair_errors.extend(item for item in diagnostics["attempts"] if item.get("error"))
             self.last_diagnostics.update({
                 "yandex_requests_made": requests_made,
@@ -269,6 +273,7 @@ class YandexRaspProvider(TransportProvider):
                 self.last_error_payload = None
                 return segments
             details = self._empty_details(origin, destination, departure_date, pair_errors)
+            self.last_diagnostics["pair_errors"] = pair_errors
             if pair_errors:
                 first_error = pair_errors[0].get("error") or {}
                 if first_error.get("code") == "unexpected_content_type":
@@ -321,6 +326,14 @@ class YandexRaspProvider(TransportProvider):
         return {"endpoint": "/search/", "origin_code": origin_code, "destination_code": destination_code, "request_attempt": attempt}
 
     def _empty_details(self, origin: str | None, destination: str | None, departure_date: date, pair_errors: list[dict[str, Any]]) -> dict[str, Any]:
+        if pair_errors:
+            # The client diagnostics are already redacted and size-capped. Keep
+            # their public shape instead of wrapping all fan-out attempts (which
+            # both hid expected fields and could exceed the API response limit).
+            first_error = pair_errors[-1].get("error") or {}
+            first_details = first_error.get("details")
+            if isinstance(first_details, dict):
+                return first_details
         return {
             **self.last_diagnostics,
             "origin": origin,
@@ -346,7 +359,15 @@ class YandexRaspProvider(TransportProvider):
         if train_only:
             stations = [station for station in stations if set(station.transport_types) <= {"train", "suburban"}]
         stations.sort(key=self._station_rank)
-        codes = [match.code, *(station.code for station in stations[:self.config.max_stations_per_city])]
+        # For rail searches a city code is not an Express/station code. Prefer
+        # concrete station codes and fall back to the city only when the
+        # catalogue genuinely has no station mapping.
+        station_codes = [station.code for station in stations[:self.config.max_stations_per_city]]
+        # Mixed train+bus searches must retain the settlement code: it is valid
+        # for Yandex's multimodal search and may cover bus endpoints not present
+        # in the railway station subset. Explicit city codes are expanded to
+        # station-only values only for a train-only request.
+        codes = station_codes if match.source == "provider_code" and train_only and station_codes else [match.code, *station_codes]
         return tuple(dict.fromkeys(code for code in codes if code))
 
     @staticmethod
@@ -360,7 +381,8 @@ class YandexRaspProvider(TransportProvider):
     def _record_error(self, exc: YandexRaspError) -> None:
         self.last_error = exc.message
         self.last_error_payload = exc.to_error()
-        self.last_diagnostics = exc.diagnostics or self.last_diagnostics
+        if not self.last_diagnostics:
+            self.last_diagnostics = exc.diagnostics or {}
 
     def _describe_direct(self, segment: TransportSegment) -> dict[str, Any]:
         return {

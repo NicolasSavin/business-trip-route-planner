@@ -4,8 +4,9 @@ import types
 
 import pytest
 
-httpx_stub = types.SimpleNamespace(Client=object, TimeoutException=TimeoutError)
-sys.modules.setdefault("httpx", httpx_stub)
+# httpx is a backend runtime dependency. Import the real module so collecting
+# this file cannot poison every FastAPI test through ``sys.modules``.
+import httpx  # noqa: F401
 
 from app.browser import BrowserAutomationProvider, BrowserConfiguration, BrowserManager, BrowserMetrics, BrowserPool, BrowserStatus
 from app.browser.exceptions import BrowserPoolExhaustedError
@@ -113,12 +114,26 @@ def test_browser_manager_health_uses_live_browser_connection():
 
 
 def test_browser_provider_status_boundary_is_safe():
-    provider = BrowserAutomationProvider(BrowserManager(BrowserConfiguration(playwright_enabled=False)))
+    manager = BrowserManager(BrowserConfiguration(playwright_enabled=False))
+    manager._installed = True
+    provider = BrowserAutomationProvider(manager)
     status = provider.status()
     assert status["enabled"] is False
     assert status["configured"] is False
+    assert status["playwright_installed"] is True
     assert status["healthy"] is True
     assert provider.get_segments() == []
+
+
+def test_browser_installation_and_enablement_are_independent():
+    disabled_installed = BrowserManager(BrowserConfiguration(playwright_enabled=False))
+    disabled_installed._installed = True
+    enabled_missing = BrowserManager(BrowserConfiguration(playwright_enabled=True))
+    enabled_missing._installed = False
+    assert disabled_installed.health().enabled is False
+    assert disabled_installed.health().configured is True
+    assert enabled_missing.health().enabled is True
+    assert enabled_missing.health().configured is False
 
 
 def test_provider_registry_exposes_browser_infrastructure():

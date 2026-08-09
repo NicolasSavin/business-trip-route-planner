@@ -48,6 +48,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
   const [active, setActive] = useState(-1);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
@@ -119,7 +120,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [canSuggest, query]);
+  }, [canSuggest, query, retryNonce]);
 
   function pick(item: LocationSuggestion) {
     onSelect(selectedLocationFromSuggestion(item), item.display_name);
@@ -142,6 +143,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
   const dropdown = open && canSuggest ? (
     <div ref={dropdownRef} id={`${baseId}-listbox`} role="listbox" style={dropdownStyle} className="fixed z-[100] max-h-80 overflow-y-auto rounded-2xl border border-line bg-white shadow-card">
       <div role="status" className="border-b border-line px-4 py-2 text-xs font-semibold text-muted">{stateText}</div>
+      {error && <button type="button" className="w-full px-4 py-3 text-left text-sm font-semibold text-brand hover:bg-cloud" onMouseDown={(event) => event.preventDefault()} onClick={() => setRetryNonce((value) => value + 1)}>Повторить запрос</button>}
       {!loading && !error && items.map((item, index) => (
         <button key={item.id} id={`${baseId}-option-${index}`} role="option" aria-selected={active === index} type="button" onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActive(index)} onClick={() => pick(item)} className={`flex w-full items-start gap-3 px-4 py-3 text-left transition ${active === index ? "bg-sky-50" : "hover:bg-cloud"}`}>
           <LocationIcon type={item.type} />
@@ -156,6 +158,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
       <label htmlFor={`${baseId}-input`}>{label}</label>
       <div className="relative">
         <input ref={inputRef} id={`${baseId}-input`} className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 pr-10 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10" value={value}
+          data-selected-provider-code={selected?.provider_code ?? ""}
           onChange={(event) => { onChange(event.target.value); if (selected) onSelect(null, event.target.value); }}
           onFocus={() => { focusedRef.current = true; if (canSuggest) setOpen(true); }}
           onBlur={(event) => { focusedRef.current = false; if (!dropdownRef.current?.contains(event.relatedTarget as Node)) window.setTimeout(() => setOpen(false), 0); }}

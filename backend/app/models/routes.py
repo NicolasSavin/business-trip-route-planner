@@ -18,6 +18,26 @@ class SeatPreferencesRequest(BaseModel):
     strict_preferences: bool = True
 
 
+class PlaceEvidence(BaseModel):
+    train_number: str
+    departure_datetime: datetime
+    carriage_number: str
+    carriage_type: str | None = None
+    service_class: str | None = None
+    place_number: str
+    place_type: str | None = None
+    berth_position: Literal["lower", "upper", "side", "seated", "unknown"]
+    compartment_number: str | None = None
+    source: str
+    explicitly_confirmed: bool = True
+
+
+class RequirementCheckResponse(BaseModel):
+    status: Literal["confirmed", "rejected", "unknown", "not_applicable"]
+    message: str
+    evidence: list[PlaceEvidence] = Field(default_factory=list)
+
+
 class RouteSearchRequest(BaseModel):
     origin: str
     destination: str
@@ -65,7 +85,9 @@ class RouteSegment(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
-    selected_place_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    selected_place_evidence: list[PlaceEvidence] = Field(default_factory=list)
+    lower_berths_check: RequirementCheckResponse | None = None
+    same_compartment_check: RequirementCheckResponse | None = None
     seat_preferences_status: str | None = None
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False
@@ -88,7 +110,9 @@ class SegmentAvailability(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
-    selected_place_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    selected_place_evidence: list[PlaceEvidence] = Field(default_factory=list)
+    lower_berths_check: RequirementCheckResponse | None = None
+    same_compartment_check: RequirementCheckResponse | None = None
     seat_preferences_status: str | None = None
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False

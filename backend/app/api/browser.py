@@ -67,12 +67,11 @@ def browser_health() -> dict[str, Any]:
     else:
         status = "running" if running else "stopped"
     return {
-        "configured": health.enabled,
-        "installed": installed,
-        "running": running,
-        "healthy_if_running": health.healthy if running else None,
+        "playwright_installed": installed,
+        "browser_running": running,
         "status": status,
         "browser_version": health.version,
+        "healthy": health.healthy,
     }
 
 
