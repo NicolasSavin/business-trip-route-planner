@@ -1,12 +1,13 @@
+from dataclasses import replace
 from datetime import date, datetime
 
 from fastapi.testclient import TestClient
 
 from app.api import routes as routes_api
-from app.availability.journey import AvailabilityStatus, SegmentAvailabilityResult
+from app.availability.journey import AvailabilityStatus, RequirementCheck, RequirementStatus, SegmentAvailabilityResult
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment
 from app.main import app
-from app.models.routes import RouteAvailability, RouteSearchRequest, SegmentAvailability, TransportType
+from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteSearchRequest, SegmentAvailability, TransportType
 from app.providers.mock import MockTransportProvider
 from app.services.route_search import RouteSearchService
 
@@ -170,6 +171,137 @@ def post_search_with_service(monkeypatch, service):
             "strict_availability": False,
         },
     )
+
+
+def test_requirement_check_response_serializes_place_evidence():
+    evidence = {
+        "train_number": "008С",
+        "departure_datetime": "2026-08-10T08:00:00",
+        "carriage_number": "07",
+        "carriage_type": "coupe",
+        "place_number": "11",
+        "berth_position": "lower",
+        "compartment_number": "3",
+        "source": "rzd_explicit_place_details",
+    }
+
+    response = RouteSearchService._to_requirement_check_response(
+        RequirementCheck(RequirementStatus.CONFIRMED, "Подтверждено", (evidence,))
+    )
+
+    assert isinstance(response, RequirementCheckResponse)
+    assert isinstance(response.evidence[0], PlaceEvidence)
+    assert response.model_dump(mode="json") == {
+        **{"status": "confirmed", "message": "Подтверждено"},
+        "evidence": [{
+            **evidence,
+            "service_class": None,
+            "place_type": None,
+            "explicitly_confirmed": True,
+        }],
+    }
+
+
+def _post_seat_requirement_search(monkeypatch, preferences, *, places=(), transport_class=TransportClass.COUPE, title=None):
+    direct = segment("008С", "A", "C", dt(8), dt(12))
+    direct = replace(
+        direct,
+        transport_class=transport_class,
+        metadata={**direct.metadata, **({"train_title": title} if title else {})},
+    )
+    service = RouteSearchService(Provider([direct]))
+    service.planner.tutu_playwright = TutuClient({
+        direct.id: SegmentAvailabilityResult(
+            segment_id=direct.id,
+            provider="rzd",
+            status=AvailabilityStatus.CONFIRMED,
+            schedule_confirmed=True,
+            seats_confirmed=True,
+            passengers_supported=True,
+            available_places_count=2,
+            seat_preferences_status=AvailabilityStatus.CONFIRMED,
+            metadata={"places": list(places)},
+        )
+    })
+    monkeypatch.setattr(routes_api, "service", service)
+    return TestClient(app, raise_server_exceptions=False).post("/api/v1/routes/search", json={
+        "origin": "A",
+        "destination": "C",
+        "departure_date": DAY.isoformat(),
+        "passengers": 2,
+        "allowed_transport": ["train"],
+        "max_transfers": 0,
+        "strict_availability": False,
+        "seat_preferences": preferences,
+    })
+
+
+def _explicit_places():
+    return [
+        {"place_number": number, "carriage_number": "07", "transport_class": "coupe",
+         "berth_position": "lower", "compartment_number": "3", "is_available": True,
+         "explicitly_confirmed": True, "source": "rzd_explicit_place_details"}
+        for number in ("11", "13")
+    ]
+
+
+def test_api_search_serializes_lower_only_requirement(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"berth_preference": "lower_only"}, places=_explicit_places()
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    for check in (route["segments"][0]["lower_berths_check"], route["availability"]["segment_results"][0]["lower_berths_check"]):
+        assert check["status"] == "confirmed"
+        assert check["evidence"][0]["place_number"] == "11"
+
+
+def test_api_search_serializes_same_compartment_requirement(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"require_same_compartment": True}, places=_explicit_places()
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    assert route["segments"][0]["same_compartment_check"]["status"] == "confirmed"
+    assert route["availability"]["segment_results"][0]["same_compartment_check"]["evidence"][0]["compartment_number"] == "3"
+
+
+def test_api_search_serializes_both_seat_requirements(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch,
+        {"berth_preference": "lower_only", "require_same_compartment": True},
+        places=_explicit_places(),
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "confirmed"
+        assert container["same_compartment_check"]["status"] == "confirmed"
+
+
+def test_api_search_serializes_not_applicable_for_sapsan(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch,
+        {"berth_preference": "lower_only", "require_same_compartment": True, "strict_preferences": False},
+        transport_class=TransportClass.EXPRESS,
+        title="Сапсан",
+    )
+    assert response.status_code == 200
+    route = response.json()["partially_confirmed_routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "not_applicable"
+        assert container["same_compartment_check"]["status"] == "not_applicable"
+
+
+def test_api_search_serializes_unknown_without_explicit_place_numbers(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"berth_preference": "lower_only", "require_same_compartment": True}
+    )
+    assert response.status_code == 200
+    route = response.json()["partially_confirmed_routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "unknown"
+        assert container["same_compartment_check"]["status"] == "unknown"
 
 
 def test_route_availability_allows_unknown_and_api_serializes_null(monkeypatch):

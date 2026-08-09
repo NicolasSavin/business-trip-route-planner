@@ -2,8 +2,8 @@ import logging
 
 from app.domain import RouteOption as DomainRouteOption
 from app.engine import RouteEngine
-from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult
-from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability
+from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult, RequirementCheck
+from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability
 from app.providers.base import TransportProvider
 from app.services.multimodal_journey_planner import MultimodalJourneyPlanner
 
@@ -55,6 +55,16 @@ class RouteSearchService:
             logger.exception("JourneyResponse serialization failed")
             raise
 
+    @staticmethod
+    def _to_requirement_check_response(check: RequirementCheck | None) -> RequirementCheckResponse | None:
+        if check is None:
+            return None
+        return RequirementCheckResponse(
+            status=check.status.value,
+            message=check.message,
+            evidence=list(check.evidence),
+        )
+
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
         segments = [
@@ -85,6 +95,8 @@ class RouteSearchService:
                 segment_results = []
                 for result in option.availability.segment_results:
                     segment_availability_by_id[result.segment_id] = result
+                    lower_berths_check = self._to_requirement_check_response(result.lower_berths_check)
+                    same_compartment_check = self._to_requirement_check_response(result.same_compartment_check)
                     segment_results.append(
                         SegmentAvailability(
                             segment_id=result.segment_id,
@@ -99,8 +111,8 @@ class RouteSearchService:
                             selected_carriages=list(result.selected_carriages),
                             selected_compartments=list(result.selected_compartments),
                             selected_place_evidence=list(result.metadata.get("selected_place_evidence") or []),
-                            lower_berths_check=result.lower_berths_check,
-                            same_compartment_check=result.same_compartment_check,
+                            lower_berths_check=lower_berths_check,
+                            same_compartment_check=same_compartment_check,
                             seat_preferences_status=result.seat_preferences_status.value,
                             lower_berths_confirmed=bool(result.metadata.get("lower_berths_confirmed")),
                             same_compartment_confirmed=bool(result.metadata.get("same_compartment_confirmed")),
@@ -160,9 +172,12 @@ class RouteSearchService:
                 item.selected_places = list(result.selected_places)
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
-                item.selected_place_evidence = list(result.metadata.get("selected_place_evidence") or [])
-                item.lower_berths_check = result.lower_berths_check
-                item.same_compartment_check = result.same_compartment_check
+                item.selected_place_evidence = [
+                    PlaceEvidence.model_validate(evidence)
+                    for evidence in result.metadata.get("selected_place_evidence") or []
+                ]
+                item.lower_berths_check = self._to_requirement_check_response(result.lower_berths_check)
+                item.same_compartment_check = self._to_requirement_check_response(result.same_compartment_check)
                 item.seat_preferences_status = result.seat_preferences_status.value
                 item.lower_berths_confirmed = bool(result.metadata.get("lower_berths_confirmed"))
                 item.same_compartment_confirmed = bool(result.metadata.get("same_compartment_confirmed"))
