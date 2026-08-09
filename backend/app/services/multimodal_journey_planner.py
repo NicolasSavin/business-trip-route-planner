@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from time import monotonic
 
 from app.availability import AvailabilityEngine, AvailabilityPolicy
-from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache, SegmentAvailabilityResult, aggregate_journey_availability
+from app.availability.journey import AvailabilityStatus, RequirementCheck, RequirementStatus, SegmentAvailabilityCache, SegmentAvailabilityResult, aggregate_journey_availability
 from app.availability.seats import BerthPosition, GenderRestriction, RailwayPlace, SeatAllocationService, SeatPreferences
 from app.domain import RouteOption as DomainRouteOption, TransportClass, TransportSegment, TransportType
 from app.engine import RouteEngine
@@ -455,41 +455,134 @@ class MultimodalJourneyPlanner:
         return SegmentAvailabilityResult(segment_id=segment.id, provider=provider, status=AvailabilityStatus.UNCONFIRMED, schedule_confirmed=True, seats_confirmed=False, passengers_supported=False, available_places_count=None, seat_preferences_status=AvailabilityStatus.UNKNOWN, reasons=(f"Расписание найдено, проверка мест через {label} не выполнена",), warnings=(f"Расписание найдено, проверка мест через {label} не выполнена",), metadata={"provider_error": {"code": "availability_enrichment_failed", "message": f"{provider} enrichment total timeout exceeded", "error_type": "TimeoutError", "details": {"segment_id": segment.id}}})
 
     def _apply_railway_preferences(self, segment: TransportSegment, request: RouteSearchRequest, base: SegmentAvailabilityResult) -> SegmentAvailabilityResult:
+        """Evaluate each requested placement rule from normalized RZD places.
+
+        The two checks are intentionally independent: explicit lower berths can
+        be confirmed even when RZD omitted their physical compartment number.
+        """
         pref = request.seat_preferences
         assert pref is not None
-        raw = base.metadata.get("places") or segment.metadata.get("places") or []
-        places = [self._place_from_dict(segment.provider, item, segment.transport_class) for item in raw]
-        if not places:
-            # Aggregate inventory proves basic availability, but never placement.
-            placement_warnings = []
-            source_label = "РЖД" if base.provider == "rzd" else "Источник мест"
-            if pref.berth_preference == "lower_only":
-                placement_warnings.append(f"{source_label} не предоставил номера и явное подтверждение двух нижних мест.")
-            if pref.require_same_compartment:
-                placement_warnings.append(f"{source_label} не предоставил номер вагона и купе для размещения всех сотрудников вместе.")
-            return replace(base, status=AvailabilityStatus.PARTIALLY_CONFIRMED if base.available_places_count is not None and base.available_places_count >= request.passengers else base.status,
-                seat_preferences_status=AvailabilityStatus.UNKNOWN,
-                warnings=tuple(dict.fromkeys((*base.warnings, *placement_warnings))),
+        raw = base.metadata.get("places") or []
+        places = [self._place_from_dict(base.provider, item, segment.transport_class) for item in raw]
+        train_name = f"{segment.vehicle_number} {segment.metadata.get('train_title', '')}".lower()
+        seated = segment.transport_class in {TransportClass.SEATED, TransportClass.EXPRESS} or "сапсан" in train_name
+        if seated and (pref.berth_preference == "lower_only" or pref.require_same_compartment):
+            lower = RequirementCheck(RequirementStatus.NOT_APPLICABLE, "В поезде только сидячие места — требование нижних мест неприменимо") if pref.berth_preference == "lower_only" else None
+            compartment = RequirementCheck(RequirementStatus.NOT_APPLICABLE, "Неприменимо: сидячая компоновка не имеет обычных купе") if pref.require_same_compartment else None
+            rejected_status = AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED
+            return replace(base, status=rejected_status, seats_confirmed=False, passengers_supported=False,
+                seat_preferences_status=rejected_status, lower_berths_check=lower,
+                same_compartment_check=compartment, reasons=tuple(dict.fromkeys((*base.reasons, "Для сидячего поезда требования к спальным местам неприменимы"))),
                 metadata={**base.metadata, "lower_berths_confirmed": False, "same_compartment_confirmed": False})
-        allocation = self.seat_allocator.match(places, SeatPreferences(passengers=request.passengers, prefer_lower=pref.berth_preference == "lower_only", prefer_upper=pref.berth_preference == "upper_only", require_same_compartment=pref.require_same_compartment, require_empty_compartment=pref.require_empty_compartment, require_same_carriage=pref.require_same_carriage, require_adjacent=pref.require_adjacent, exclude_side_berths=pref.exclude_side_berths, gender=GenderRestriction(pref.gender) if pref.gender else None))
-        if pref.berth_preference == "lower_only" and not all(place.berth_position == BerthPosition.LOWER for place in allocation.selected_places):
-            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно подтвержденных нижних мест"))
-        if pref.berth_preference == "upper_only" and not all(place.berth_position == BerthPosition.UPPER for place in allocation.selected_places):
-            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно подтвержденных верхних мест"))
-        selected = allocation.selected_places
-        status = AvailabilityStatus.CONFIRMED if allocation.matches_preferences else (AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED)
-        reasons = (*base.reasons, *allocation.reasons)
-        evidence = tuple({
-            "carriage_number": p.carriage_number,
-            "compartment_number": p.compartment_number,
-            "place_number": p.place_number,
-            "berth_position": p.berth_position.value,
-            "source": "rzd_explicit_place_details" if base.provider == "rzd" else base.provider,
-        } for p in selected) if allocation.matches_preferences else ()
-        return replace(base, status=status, seats_confirmed=allocation.matches_preferences, passengers_supported=allocation.matches_preferences, seat_preferences_status=status, selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})), selected_compartments=tuple(sorted({p.compartment_number or "" for p in selected if p.compartment_number})), reasons=tuple(dict.fromkeys(reason for reason in reasons if reason)), metadata={**base.metadata, "selected_place_evidence": evidence, "lower_berths_confirmed": allocation.matches_preferences and pref.berth_preference == "lower_only", "same_compartment_confirmed": allocation.matches_preferences and pref.require_same_compartment})
+
+        # Only the RZD mapper may set this marker after reading concrete response
+        # fields. Arbitrary schedule metadata and other providers are never
+        # promoted to explicit placement evidence here.
+        trusted_explicit = [p for p in places if base.provider == "rzd" and p.explicitly_confirmed and p.place_number and p.carriage_number]
+        explicit = trusted_explicit
+        if pref.preferred_classes:
+            explicit = [p for p in explicit if p.transport_class in pref.preferred_classes]
+        available_explicit = [p for p in explicit if p.is_available]
+        lower_places = [p for p in available_explicit if p.berth_position == BerthPosition.LOWER]
+        required = request.passengers
+
+        lower_check = None
+        source_label = "РЖД" if base.provider == "rzd" else "Источник мест"
+        if pref.berth_preference == "lower_only":
+            if len(lower_places) >= required:
+                lower_check = RequirementCheck(RequirementStatus.CONFIRMED, "Подтверждено: найдены отдельные нижние места")
+            elif trusted_explicit:
+                lower_check = RequirementCheck(RequirementStatus.REJECTED, "Не подходит: недостаточно явно подтверждённых нижних мест")
+            else:
+                lower_check = RequirementCheck(RequirementStatus.UNKNOWN, f"Не подтверждено: {source_label} не передал явные данные о местах")
+
+        compartment_check = None
+        selected_group: list[RailwayPlace] = []
+        if pref.require_same_compartment:
+            candidates = lower_places if pref.berth_preference == "lower_only" else available_explicit
+            groups: dict[tuple[str, str], list[RailwayPlace]] = {}
+            for place in candidates:
+                if place.compartment_number:
+                    groups.setdefault((place.carriage_number, place.compartment_number), []).append(place)
+            selected_group = next((group for group in groups.values() if len(group) >= required), [])
+            if selected_group:
+                compartment_check = RequirementCheck(RequirementStatus.CONFIRMED, "Подтверждено: сотрудники размещаются в одном вагоне и физическом купе")
+            elif any(not place.compartment_number for place in candidates) or not explicit:
+                compartment_check = RequirementCheck(RequirementStatus.UNKNOWN, f"Не подтверждено: {source_label} не передал номер купе для достаточной группы мест")
+            else:
+                compartment_check = RequirementCheck(RequirementStatus.REJECTED, "Не подходит: подтверждённые места находятся в разных вагонах или купе")
+
+        allocation = self.seat_allocator.match(explicit, SeatPreferences(
+            passengers=required,
+            prefer_lower=pref.berth_preference == "lower_only",
+            prefer_upper=pref.berth_preference == "upper_only",
+            require_same_compartment=pref.require_same_compartment,
+            require_empty_compartment=pref.require_empty_compartment,
+            require_same_carriage=pref.require_same_carriage and not pref.allow_split_group,
+            require_adjacent=pref.require_adjacent,
+            exclude_side_berths=pref.exclude_side_berths,
+            gender=GenderRestriction(pref.gender) if pref.gender else None,
+        ))
+        if allocation.matches_preferences and pref.berth_preference == "lower_only" and not all(p.berth_position == BerthPosition.LOWER for p in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно явно подтверждённых нижних мест"))
+        if allocation.matches_preferences and pref.berth_preference == "upper_only" and not all(p.berth_position == BerthPosition.UPPER for p in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно явно подтверждённых верхних мест"))
+        if allocation.matches_preferences and pref.maximum_compartments is not None:
+            compartments = {(p.carriage_number, p.compartment_number) for p in allocation.selected_places if p.compartment_number}
+            if len(compartments) > pref.maximum_compartments:
+                allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Превышено допустимое количество купе"))
+
+        active_checks = [check for check in (lower_check, compartment_check) if check is not None]
+        checks_confirmed = all(check.status == RequirementStatus.CONFIRMED for check in active_checks)
+        all_confirmed = bool(explicit) and allocation.matches_preferences and checks_confirmed
+        any_rejected = bool(trusted_explicit) and (not allocation.matches_preferences or any(check.status in {RequirementStatus.REJECTED, RequirementStatus.NOT_APPLICABLE} for check in active_checks))
+        status = (AvailabilityStatus.CONFIRMED if all_confirmed else
+            AvailabilityStatus.UNAVAILABLE if any_rejected and pref.strict_preferences else
+            AvailabilityStatus.PARTIALLY_CONFIRMED if any_rejected else
+            (base.status if base.status in {AvailabilityStatus.UNCONFIRMED, AvailabilityStatus.PROVIDER_ERROR} else AvailabilityStatus.PARTIALLY_CONFIRMED))
+        # ``selected_*`` is a bookable allocation, not partial diagnostic
+        # evidence. Never expose places which fail any active constraint.
+        selected = list(allocation.selected_places) if all_confirmed else []
+
+        def evidence_for(items: list[RailwayPlace]) -> tuple[dict, ...]:
+            return tuple({
+                "train_number": segment.vehicle_number, "departure_datetime": segment.departure_datetime.isoformat(),
+                "carriage_number": p.carriage_number, "carriage_type": p.transport_class.value,
+                "service_class": p.metadata.get("service_class"), "compartment_number": p.compartment_number,
+                "place_number": p.place_number, "place_type": p.place_type,
+                "berth_position": p.berth_position.value, "source": str(p.metadata.get("source") or "rzd_explicit_place_details"),
+                "explicitly_confirmed": p.explicitly_confirmed,
+            } for p in items)
+
+        evidence = evidence_for(selected) if all_confirmed else ()
+        if lower_check and lower_check.status == RequirementStatus.CONFIRMED:
+            lower_evidence = evidence_for(lower_places[:required])
+            lower_check = replace(lower_check, message=f"Подтверждено: нижние места {', '.join(p.place_number for p in lower_places[:required])}", evidence=lower_evidence)
+        if compartment_check and compartment_check.status == RequirementStatus.CONFIRMED:
+            compartment_evidence = evidence_for(selected_group[:required])
+            compartment_check = replace(compartment_check, message=f"Подтверждено: вагон {selected_group[0].carriage_number}, купе {selected_group[0].compartment_number}, места {', '.join(p.place_number for p in selected_group[:required])}", evidence=compartment_evidence)
+        warnings = () if all_confirmed else tuple(check.message for check in active_checks if check.status == RequirementStatus.UNKNOWN)
+        if lower_check and lower_check.status == RequirementStatus.UNKNOWN:
+            warnings = (*warnings, f"{source_label} не предоставил номера и явное подтверждение двух нижних мест.")
+        if compartment_check and compartment_check.status == RequirementStatus.UNKNOWN:
+            warnings = (*warnings, f"{source_label} не предоставил номер вагона и купе для размещения всех сотрудников вместе.")
+        return replace(base, status=status, seats_confirmed=all_confirmed, passengers_supported=all_confirmed,
+            seat_preferences_status=AvailabilityStatus.CONFIRMED if all_confirmed else AvailabilityStatus.UNAVAILABLE if any_rejected and pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED if any_rejected else AvailabilityStatus.UNKNOWN,
+            lower_berths_check=lower_check, same_compartment_check=compartment_check,
+            selected_places=tuple(p.place_number for p in selected), selected_carriages=tuple(sorted({p.carriage_number for p in selected})),
+            selected_compartments=tuple(sorted({p.compartment_number for p in selected if p.compartment_number})),
+            reasons=tuple(dict.fromkeys((*base.reasons, *allocation.reasons))),
+            warnings=tuple(dict.fromkeys((*base.warnings, *warnings))),
+            metadata={**base.metadata, "selected_place_evidence": evidence,
+                "lower_berths_confirmed": bool(lower_check and lower_check.status == RequirementStatus.CONFIRMED),
+                "same_compartment_confirmed": bool(compartment_check and compartment_check.status == RequirementStatus.CONFIRMED)})
 
     def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass | None) -> RailwayPlace:
-        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number")), carriage_number=str(item.get("carriage_number") or item.get("carriage") or "1"), transport_class=TransportClass(item.get("transport_class") or fallback_class or TransportClass.SEATED), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)))
+        raw_class = str(item.get("transport_class") or item.get("carriage_type") or "").casefold()
+        class_by_provider_value = {"coupe": TransportClass.COUPE, "купе": TransportClass.COUPE, "platzkart": TransportClass.PLATZKART, "плацкарт": TransportClass.PLATZKART, "sleeper": TransportClass.SLEEPER, "св": TransportClass.SLEEPER, "seated": TransportClass.SEATED, "сидячий": TransportClass.SEATED}
+        transport_class = class_by_provider_value.get(raw_class, fallback_class or TransportClass.SEATED)
+        gender = str(item.get("gender") or item.get("gender_restriction") or "unknown").casefold()
+        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number") or ""), carriage_number=str(item.get("carriage_number") or item.get("carriage") or ""), transport_class=transport_class, place_type=str(item.get("place_type") or "unknown"), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), gender_restriction=GenderRestriction(gender) if gender in {item.value for item in GenderRestriction} else GenderRestriction.UNKNOWN, is_available=bool(item.get("is_available", True)), explicitly_confirmed=bool(item.get("explicitly_confirmed", False)), metadata={"service_class": item.get("service_class"), "source": item.get("source")})
 
     def _preferred_classes(self, request: RouteSearchRequest):
         if request.seat_preferences and request.seat_preferences.preferred_classes:

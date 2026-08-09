@@ -922,6 +922,8 @@ export default function Home() {
                                 {segment.lower_berths_confirmed && formState.lower_only && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Нижние места подтверждены</span>}
                                 {segment.same_compartment_confirmed && formState.same_compartment && <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">Одно купе подтверждено</span>}
                               </div>
+                              {formState.lower_only && segment.lower_berths_check && <p className={`mt-2 text-xs font-semibold ${segment.lower_berths_check.status === "confirmed" ? "text-emerald-700" : segment.lower_berths_check.status === "unknown" ? "text-amber-700" : "text-rose-700"}`}>Нижние места · {segment.lower_berths_check.message}</p>}
+                              {formState.same_compartment && segment.same_compartment_check && <p className={`mt-1 text-xs font-semibold ${segment.same_compartment_check.status === "confirmed" ? "text-emerald-700" : segment.same_compartment_check.status === "unknown" ? "text-amber-700" : "text-rose-700"}`}>Одно купе · {segment.same_compartment_check.message}</p>}
                             </div>
                           </div>
                         );

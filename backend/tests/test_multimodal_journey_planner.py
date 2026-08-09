@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache, SegmentAvailabilityResult
+from app.availability.seats import BerthPosition, RailwayPlace, SeatAllocationService, SeatPreferences
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest, SeatPreferencesRequest
 from app.providers.yandex.mapper import YandexRaspMapper
@@ -60,12 +61,17 @@ def test_midnight_transfer_is_supported_when_allowed():
     assert planner.search(req(allow_overnight_transfer=False))[0] == []
 
 def test_lower_berths_same_compartment_required_on_every_train():
-    places_one = [{"place_number":"1","carriage_number":"1","berth_position":"lower","compartment_number":"1"},{"place_number":"3","carriage_number":"1","berth_position":"lower","compartment_number":"1"}]
-    places_bad = [{"place_number":"1","carriage_number":"1","berth_position":"lower","compartment_number":"1"},{"place_number":"5","carriage_number":"1","berth_position":"lower","compartment_number":"2"}]
-    planner = MultimodalJourneyPlanner(Provider([seg("ab", "A", "B", dt(8), dt(9), places=places_one), seg("bc", "B", "C", dt(10), dt(12), places=places_bad)]))
-    routes, _, rejected, _ = planner.search(req(seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True, require_same_carriage=True, strict_preferences=True)))
-    assert routes == []
-    assert rejected[0].availability.status == AvailabilityStatus.UNAVAILABLE
+    def explicit(items): return [{**item, "explicitly_confirmed": True, "source": "rzd_explicit_place_details"} for item in items]
+    places_one = explicit([{"place_number":"1","carriage_number":"1","berth_position":"lower","compartment_number":"1"},{"place_number":"3","carriage_number":"1","berth_position":"lower","compartment_number":"1"}])
+    places_bad = explicit([{"place_number":"1","carriage_number":"1","berth_position":"lower","compartment_number":"1"},{"place_number":"5","carriage_number":"1","berth_position":"lower","compartment_number":"2"}])
+    segments = [seg("ab", "A", "B", dt(8), dt(9)), seg("bc", "B", "C", dt(10), dt(12))]
+    planner = MultimodalJourneyPlanner(Provider(segments))
+    request = req(seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True, require_same_carriage=True, strict_preferences=True))
+    results = tuple(planner._apply_railway_preferences(segment, request, SegmentAvailabilityResult(segment_id=segment.id, provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata={"places": places})) for segment, places in zip(segments, (places_one, places_bad)))
+    from app.availability.journey import aggregate_journey_availability
+    assert results[0].status == AvailabilityStatus.CONFIRMED
+    assert results[1].status == AvailabilityStatus.UNAVAILABLE
+    assert aggregate_journey_availability(results).status == AvailabilityStatus.UNAVAILABLE
 
 
 def test_aggregate_lower_quantity_does_not_confirm_concrete_lower_places():
@@ -100,8 +106,8 @@ def test_two_explicit_lower_places_in_one_rzd_compartment_are_confirmed_with_evi
         berth_preference="lower_only", require_same_compartment=True, require_same_carriage=True
     ))
     places = [
-        {"place_number": "11", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower"},
-        {"place_number": "13", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower"},
+        {"place_number": "11", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower", "explicitly_confirmed": True, "source": "rzd_explicit_place_details"},
+        {"place_number": "13", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower", "explicitly_confirmed": True, "source": "rzd_explicit_place_details"},
     ]
     provider_result = SegmentAvailabilityResult(
         segment_id=segment.id, provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED,
@@ -116,10 +122,212 @@ def test_two_explicit_lower_places_in_one_rzd_compartment_are_confirmed_with_evi
     assert result.selected_places == ("11", "13")
     assert result.selected_carriages == ("07",)
     assert result.selected_compartments == ("3",)
-    assert result.metadata["selected_place_evidence"] == (
-        {"carriage_number": "07", "compartment_number": "3", "place_number": "11", "berth_position": "lower", "source": "rzd_explicit_place_details"},
-        {"carriage_number": "07", "compartment_number": "3", "place_number": "13", "berth_position": "lower", "source": "rzd_explicit_place_details"},
-    )
+    assert [item["place_number"] for item in result.metadata["selected_place_evidence"]] == ["11", "13"]
+    assert all(item["train_number"] == "ac" and item["explicitly_confirmed"] for item in result.metadata["selected_place_evidence"])
+    assert result.lower_berths_check.status.value == "confirmed"
+    assert result.same_compartment_check.status.value == "confirmed"
+
+
+def test_missing_compartment_is_unknown_not_confirmed():
+    segment = seg("ac", "A", "C", dt(8), dt(12), places=[
+        {"place_number": "1", "carriage_number": "07", "berth_position": "lower"},
+        {"place_number": "3", "carriage_number": "07", "berth_position": "lower"},
+    ])
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), SegmentAvailabilityResult(segment_id="ac", provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata=segment.metadata))
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.same_compartment_check.status.value == "unknown"
+
+
+def test_seated_sapsan_requirements_are_not_applicable():
+    segment = seg("sap", "A", "C", dt(8), dt(12), klass=TransportClass.SEATED, number="Сапсан")
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), SegmentAvailabilityResult(segment_id="sap", provider="rzd", status=AvailabilityStatus.CONFIRMED, available_places_count=10))
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+    assert result.lower_berths_check.status.value == "not_applicable"
+    assert result.same_compartment_check.status.value == "not_applicable"
+
+
+def test_non_strict_seated_sapsan_is_partial_but_requirements_stay_not_applicable():
+    segment = seg("sap", "A", "C", dt(8), dt(12), klass=TransportClass.SEATED, number="Сапсан")
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(
+        berth_preference="lower_only", require_same_compartment=True, strict_preferences=False)),
+        SegmentAvailabilityResult(segment_id="sap", provider="rzd", status=AvailabilityStatus.CONFIRMED, available_places_count=10))
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.seat_preferences_status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.lower_berths_check.status.value == "not_applicable"
+    assert result.same_compartment_check.status.value == "not_applicable"
+
+
+def test_general_allocator_keeps_lower_and_upper_preferences_advisory_when_inventory_is_insufficient():
+    places = [
+        RailwayPlace("rzd", "1", "1", TransportClass.COUPE, berth_position=BerthPosition.LOWER),
+        RailwayPlace("rzd", "2", "1", TransportClass.COUPE, berth_position=BerthPosition.UPPER),
+    ]
+    lower = SeatAllocationService().match(places, SeatPreferences(passengers=2, prefer_lower=True))
+    upper = SeatAllocationService().match(places, SeatPreferences(passengers=2, prefer_upper=True))
+    assert lower.matches_preferences and {p.place_number for p in lower.selected_places} == {"1", "2"}
+    assert upper.matches_preferences and {p.place_number for p in upper.selected_places} == {"1", "2"}
+
+
+def placement_result(places, passengers=2, provider="rzd", lower=True, compartment=True, **preference_overrides):
+    segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    normalized = [{**place, "explicitly_confirmed": True, "source": "rzd_explicit_place_details"} for place in places]
+    preferences = {"berth_preference": "lower_only" if lower else "any", "require_same_compartment": compartment}
+    preferences.update(preference_overrides)
+    request = req(max_transfers=0, passengers=passengers, seat_preferences=SeatPreferencesRequest(**preferences))
+    return planner._apply_railway_preferences(segment, request, SegmentAvailabilityResult(
+        segment_id="ac", provider=provider, status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata={"places": normalized}))
+
+
+@pytest.mark.parametrize("places", [
+    [{"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"}, {"place_number":"3","carriage_number":"1","compartment_number":"2","berth_position":"lower"}],
+    [{"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"}, {"place_number":"3","carriage_number":"2","compartment_number":"1","berth_position":"lower"}],
+    [{"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"}, {"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper"}],
+])
+def test_concrete_places_reject_different_compartments_carriages_or_upper(places):
+    result = placement_result(places)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+    assert not result.seats_confirmed
+
+
+def test_not_enough_lower_places_is_rejected():
+    result = placement_result([{"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"}], compartment=False)
+    assert result.lower_berths_check.status.value == "rejected"
+
+
+def test_valid_group_ignores_unrelated_place_without_compartment():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"9","carriage_number":"1","compartment_number":None,"berth_position":"upper"},
+    ])
+    assert result.status == AvailabilityStatus.CONFIRMED
+
+
+def test_lower_confirmed_while_compartment_is_unknown():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":None,"berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":None,"berth_position":"lower"},
+    ])
+    assert result.lower_berths_check.status.value == "confirmed"
+    assert result.same_compartment_check.status.value == "unknown"
+
+
+def test_arbitrary_metadata_and_non_rzd_places_are_not_explicit_evidence():
+    raw = [{"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"}, {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"}]
+    segment = seg("ac", "A", "C", dt(8), dt(12), places=raw)
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(max_transfers=0, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True))
+    arbitrary = planner._apply_railway_preferences(segment, request, SegmentAvailabilityResult(segment_id="ac", provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata={"places": raw}))
+    other = placement_result(raw, provider="tutu")
+    assert arbitrary.lower_berths_check.status.value == "unknown"
+    assert other.lower_berths_check.status.value == "unknown"
+    assert other.metadata["selected_place_evidence"] == ()
+
+
+def test_upper_only_selects_only_explicit_upper_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper"},
+        {"place_number":"4","carriage_number":"1","compartment_number":"1","berth_position":"upper"},
+    ], lower=False, compartment=False, berth_preference="upper_only")
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.selected_places == ("2", "4")
+
+
+def test_require_empty_compartment_rejects_explicitly_occupied_compartment():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper", "is_available":False},
+    ], require_empty_compartment=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_require_adjacent_rejects_non_adjacent_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+    ], lower=False, compartment=False, require_adjacent=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_exclude_side_berths_rejects_side_only_inventory():
+    result = placement_result([
+        {"place_number":"37","carriage_number":"1","compartment_number":"1","berth_position":"lower", "is_side":True},
+        {"place_number":"39","carriage_number":"1","compartment_number":"1","berth_position":"lower", "is_side":True},
+    ], exclude_side_berths=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_gender_restriction_rejects_incompatible_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower", "gender":"male"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower", "gender":"male"},
+    ], gender="female")
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_standalone_same_carriage_is_enforced_and_can_be_disabled():
+    places = [
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"2","compartment_number":"1","berth_position":"lower"},
+    ]
+    rejected = placement_result(places, lower=False, compartment=False, require_same_carriage=True)
+    confirmed = placement_result(places, lower=False, compartment=False, require_same_carriage=False)
+    assert rejected.status == AvailabilityStatus.UNAVAILABLE
+    assert confirmed.status == AvailabilityStatus.CONFIRMED
+
+
+def test_non_strict_rejected_preferences_are_partially_confirmed():
+    places = [{"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper"}]
+    strict = placement_result(places, passengers=2, compartment=False, strict_preferences=True)
+    advisory = placement_result(places, passengers=2, compartment=False, strict_preferences=False)
+    assert strict.status == AvailabilityStatus.UNAVAILABLE
+    assert strict.selected_places == ()
+    assert strict.metadata["selected_place_evidence"] == ()
+    assert advisory.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert advisory.seat_preferences_status == AvailabilityStatus.PARTIALLY_CONFIRMED
+
+
+def test_preferred_class_and_allow_split_group_are_applied():
+    places = [
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower", "carriage_type":"coupe"},
+        {"place_number":"3","carriage_number":"2","compartment_number":"1","berth_position":"lower", "carriage_type":"coupe"},
+    ]
+    wrong_class = placement_result(places, lower=False, compartment=False, preferred_classes=["platzkart"], require_same_carriage=False)
+    split = placement_result(places, lower=False, compartment=False, preferred_classes=["coupe"], require_same_carriage=True, allow_split_group=True)
+    assert wrong_class.status == AvailabilityStatus.UNAVAILABLE
+    assert wrong_class.seat_preferences_status == AvailabilityStatus.UNAVAILABLE
+    assert split.status == AvailabilityStatus.CONFIRMED
+
+
+def test_maximum_compartments_is_enforced():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"5","carriage_number":"1","compartment_number":"2","berth_position":"lower"},
+    ], lower=False, compartment=False, require_same_carriage=True, maximum_compartments=1)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_yandex_schedule_enriched_by_rzd_confirms_coupe_lower_group():
+    from app.providers.rzd_availability.mapper import map_train, to_segment_result
+    schedule = yandex_moscow_petersburg_schedule()
+    train = map_train({"number": "022А", "carriages": [{"number": "07", "type": "coupe", "places": [
+        {"number": "11", "berthPosition": "lower", "compartmentNumber": "3"},
+        {"number": "13", "berthPosition": "lower", "compartmentNumber": "3"},
+    ]}]})
+    base = to_segment_result(schedule, train, passengers=2, preferences_requested=True)
+    planner = MultimodalJourneyPlanner(Provider([schedule]))
+    result = planner._apply_railway_preferences(schedule, req(
+        origin="Москва", destination="Санкт-Петербург", max_transfers=0, passengers=2,
+        seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), base)
+    assert result.lower_berths_check.status.value == "confirmed"
+    assert result.same_compartment_check.status.value == "confirmed"
+    assert {item["carriage_type"] for item in result.metadata["selected_place_evidence"]} == {"coupe"}
 
 
 def test_aggregate_lower_quantity_cannot_confirm_same_compartment():

@@ -31,6 +31,11 @@ class Station:
     name: str
     city: City
 
+    @property
+    def code(self) -> str:
+        """Backward-compatible provider station identifier."""
+        return self.id
+
 
 @dataclass(frozen=True)
 class Carrier:

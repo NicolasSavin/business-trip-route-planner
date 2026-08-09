@@ -86,6 +86,26 @@ def test_background_refresh_replaces_degraded_local_catalogue(tmp_path):
     assert diagnostics["cache_source"] == "remote"
 
 
+def test_suggest_does_not_wait_for_background_catalogue(tmp_path):
+    import threading
+    release = threading.Event()
+    started = threading.Event()
+    def slow_loader():
+        started.set()
+        release.wait(2)
+        return _directory()
+    resolver = YandexLocationResolver(slow_loader, cache_path=tmp_path / "stations.json")
+    resolver.initialize_for_startup()
+    thread = resolver.startup_refresh_background()
+    assert started.wait(1)
+    before = time.monotonic()
+    assert resolver.lookup_cached("Казань")[0].code == "c43"
+    assert time.monotonic() - before < .2
+    assert resolver.startup_refresh_background() is None
+    release.set()
+    _wait(thread)
+
+
 def test_background_failure_cooldown_prevents_repeated_calls(tmp_path):
     calls = 0
 

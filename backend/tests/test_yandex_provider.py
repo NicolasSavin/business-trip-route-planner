@@ -90,7 +90,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     assert "origin_station='Москва'" in segment_message
     assert "destination_station='Санкт-Петербург'" in segment_message
     assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
-    assert "route_search.yandex_segments_total count=4" in messages
+    assert "route_search.yandex_segments_total count=7" in messages
     assert any(message.startswith("route_search.yandex_provider_output total_count=1 direct_count=1") for message in messages)
     assert any(message.startswith("route_search.yandex_response") for message in messages)
     assert any(message.startswith("route_search.yandex_direct_schedules") for message in messages)
@@ -184,7 +184,14 @@ def test_bus_segment_is_supported():
 
 
 def test_multiple_transfer_details_are_mapped_for_route_engine():
-    payload = {"segments": [{"has_transfers": True, "details": [segment("train", "001А", "Москва", "Казань"), segment("bus", "К-2", "Казань", "Санкт-Петербург")]}]}
+    first = segment("train", "001А", "Москва", "Казань")
+    first["arrival"] = "2026-08-10T10:00:00+03:00"
+    second = segment("bus", "К-2", "Казань", "Санкт-Петербург")
+    second["departure"] = "2026-08-10T11:00:00+03:00"
+    second["arrival"] = "2026-08-10T15:00:00+03:00"
+    first["to"]["code"] = "s-kazan"
+    second["from"]["code"] = "s-kazan"
+    payload = {"segments": [{"has_transfers": True, "details": [first, second]}]}
     provider, _ = provider_with_payload(payload)
     routes = RouteEngine(provider).search(DAY, "Москва", "Санкт-Петербург", 1, [TransportType.TRAIN, TransportType.BUS], 1, 30)
     assert routes and routes[0].route.transfers_count == 1

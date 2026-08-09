@@ -63,14 +63,18 @@ def test_unified_merge_deduplicates_repeated_schedule_from_same_provider():
     assert len(unified.last_diagnostics["direct_segments_after_dedup"]) == 1
 
 
-def test_unified_health_marks_failed_provider_degraded_or_offline():
+def test_unified_health_keeps_provider_after_one_temporary_failure_then_opens_circuit():
     registry = ProviderRegistry()
     registry.register(Provider(fail=True), id="broken", name="Broken", priority=ProviderPriority.HIGH, capabilities=caps())
     registry.register(Provider([seg("ok", "ok")]), id="ok", name="Ok", priority=ProviderPriority.LOW, capabilities=caps())
     segments = UnifiedTransportProvider(registry).get_segments(DAY, [TransportType.TRAIN])
     assert [s.id for s in segments] == ["ok"]
-    assert registry.get("broken").health == ProviderHealth.OFFLINE
+    assert registry.get("broken").health == ProviderHealth.DEGRADED
     assert registry.get("ok").health == ProviderHealth.HEALTHY
+    registry.mark_error("broken", RuntimeError("temporary failure 2"))
+    assert registry.get("broken").health == ProviderHealth.DEGRADED
+    registry.mark_error("broken", RuntimeError("temporary failure 3"))
+    assert registry.get("broken").health == ProviderHealth.OFFLINE
 
 
 def test_registry_filters_unsupported_transport():

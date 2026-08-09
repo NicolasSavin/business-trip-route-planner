@@ -94,5 +94,9 @@ class ProviderRegistry:
             count = self._consecutive_network_errors.get(provider_id, 0) + 1
             self._consecutive_network_errors[provider_id] = count
             return ProviderHealth.OFFLINE if count >= 3 else ProviderHealth.DEGRADED
-        self._consecutive_network_errors[provider_id] = 0
-        return ProviderHealth.DEGRADED
+        # Unknown failures can still be temporary (transport reset, malformed
+        # upstream response, etc.). Do not disable a provider after one event;
+        # apply the same three-strike circuit-breaker semantics.
+        count = self._consecutive_network_errors.get(provider_id, 0) + 1
+        self._consecutive_network_errors[provider_id] = count
+        return ProviderHealth.OFFLINE if count >= 3 else ProviderHealth.DEGRADED

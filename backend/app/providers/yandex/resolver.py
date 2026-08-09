@@ -22,7 +22,8 @@ YandexPointType = Literal["city", "station"]
 CACHE_TTL_SECONDS = int(os.getenv("YANDEX_STATIONS_CACHE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 CACHE_PATH = Path(os.getenv("YANDEX_STATIONS_CACHE_PATH", "/tmp/business-trip-route-planner/yandex_stations_list.json"))
 SQLITE_PATH = Path(os.getenv("YANDEX_STATIONS_SQLITE_PATH", "/tmp/business-trip-route-planner/yandex_stations.sqlite3"))
-YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "false").lower() in {"1", "true", "yes", "on"}
+YANDEX_STATIONS_LAZY_LOAD = os.getenv("YANDEX_STATIONS_LAZY_LOAD", "true").lower() in {"1", "true", "yes", "on"}
+YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "true").lower() in {"1", "true", "yes", "on"}
 SYNC_RETRY_COOLDOWN_SECONDS = int(os.getenv("YANDEX_STATIONS_SYNC_RETRY_COOLDOWN_SECONDS", "300"))
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,10 @@ LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c213", "Москва", "city", ("train", "bus"), (YandexStation("s2000003", "Москва Казанская", "railway_station", ("train",), settlement="Москва"), YandexStation("s2006004", "Москва Ленинградская", "railway_station", ("train",), settlement="Москва")), aliases_used=("мск", "moscow"), region="Москва", settlement="Москва"),
     YandexLocationMatch("c2", "Санкт-Петербург", "city", ("train", "bus"), (YandexStation("s9602494", "Санкт-Петербург-Главн.", "railway_station", ("train",), settlement="Санкт-Петербург"),), aliases_used=("спб", "питер", "санкт петербург", "санкт-петербург"), region="Санкт-Петербург", settlement="Санкт-Петербург"),
     YandexLocationMatch("c42", "Сарапул", "city", ("train", "bus"), (YandexStation("s9612363", "Сарапул", "railway_station", ("train",), settlement="Сарапул"), YandexStation("s9635668", "Автовокзал Сарапул", "bus_station", ("bus",), settlement="Сарапул")), region="Удмуртия", settlement="Сарапул"),
-    YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"),), region="Алтайский край", settlement="Бийск"),
+    YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"), YandexStation("s9657040", "Автовокзал Бийск", "bus_station", ("bus",), settlement="Бийск")), region="Алтайский край", settlement="Бийск"),
     YandexLocationMatch("c54", "Екатеринбург", "city", ("train", "bus"), region="Свердловская область", settlement="Екатеринбург"),
     YandexLocationMatch("c65", "Новосибирск", "city", ("train", "bus"), (YandexStation("s9610189", "Новосибирск-главный", "railway_station", ("train",), settlement="Новосибирск"),), region="Новосибирская область", settlement="Новосибирск"),
+    YandexLocationMatch("c43", "Казань", "city", ("train", "bus"), (YandexStation("s9602195", "Казань-Пасс.", "railway_station", ("train",), settlement="Казань"),), region="Республика Татарстан", settlement="Казань"),
 )
 
 class YandexStationsRepository:
@@ -329,10 +331,10 @@ class YandexLocationResolver:
         self.ensure_index_ready()
         match = self._stations_repository.get_by_code(code)
         if match:
-            return match
+            return YandexLocationMatch(**{**match.__dict__, "source": "provider_code"})
         for item in LOCAL_POINTS:
             if item.code == code:
-                return item
+                return YandexLocationMatch(**{**item.__dict__, "source": "provider_code"})
             for station in item.stations:
                 if station.code == code:
                     return YandexLocationMatch(station.code, station.title, "station", station.transport_types, (station,), station.latitude, station.longitude, country=station.country, region=station.region, settlement=station.settlement, station_type=station.type)
@@ -340,10 +342,31 @@ class YandexLocationResolver:
         title = fallback_title or code
         return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
-        ready = self.ensure_index_ready()
+        """Resolve for lifecycle/provider callers, ensuring the full index first."""
+        if self._directory_cache.loader is not None:
+            self.ensure_index_ready()
+        return self.lookup_cached(query)
+
+    def lookup_cached(self, query: str) -> list[YandexLocationMatch]:
+        """Resolve only from local state; this method deliberately never syncs.
+
+        Building ``stations_list`` is a lifecycle/background concern.  Keeping it
+        out of this path is what guarantees that a cold autocomplete request does
+        not inherit the provider's (often ten second) latency.
+        """
+        ready = False
+        try:
+            ready = self._stations_repository.cache_info().get("locations", 0) > 0
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
         self._initialized=True; key=normalize(query)
         if key in self._cache: return [self._with_cache_hit(m) for m in self._cache[key]]
-        matches=self._stations_repository.resolve(query) if ready else self._fallback_repository(query)
+        try:
+            matches=self._stations_repository.resolve(query) if ready else self._fallback_repository(query)
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
+            ready = False
+            matches = self._fallback_repository(query)
         self._cache[key]=matches; self._last_diag={"source": self._directory_cache.last_source, "selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1, "index_ready": ready}
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
@@ -502,7 +525,7 @@ class YandexLocationResolver:
         except sqlite3.DatabaseError as exc:
             self.mark_index_failed(exc)
             info = {"storage": "sqlite", "locations": 0, "error": str(exc) or exc.__class__.__name__}
-        return info | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
+        return info | {"lazy_load": YANDEX_STATIONS_LAZY_LOAD, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
     def startup_diagnostics(self) -> dict[str, Any]:
         """Expose a deliberately small, credential-free startup failure summary."""
         loader_owner = getattr(self._directory_cache.loader, "__self__", None)
@@ -557,7 +580,8 @@ class YandexLocationResolver:
                 ranked.append((score, 0 if m.type == "city" else 1, m.title, m))
         return self._dedupe([m for *_ignore, m in sorted(ranked)])
     def _fallback_repository(self, query):
-        matches=[]
+        key = normalize(query)
+        matches=[item for item in LOCAL_POINTS if key and (normalize(item.title).startswith(key) or key in {normalize(alias) for alias in item.aliases_used})]
         for item in self._repository.suggest(query, 10):
             if item.provider_code:
                 pt: YandexPointType = "city" if item.type in {"city", "settlement"} else "station"

@@ -20,6 +20,8 @@ class AvailabilityEngine:
         known_counts = [result.available_seats for result in results if result.available_seats is not None]
         minimum = min(known_counts) if known_counts else None
         reasons = [result.reason for result in results if result.reason]
+        if any(result.available_seats is None for result in results):
+            reasons.append("Данные о местах недоступны")
         warnings = [warning for result in results for warning in result.warnings]
         if policy.require_same_class_for_all_segments and results:
             classes = {result.transport_class for result in results}
