@@ -344,15 +344,24 @@ class RZDClient:
             try:
                 items = raw if isinstance(raw, list) else raw.outbound
                 for item in items:
-                    snapshot = (
-                        asdict(item) if is_dataclass(item) else dict(item.raw or {})
-                    )
+                    if is_dataclass(item):
+                        sdk_fields = asdict(item)
+                        raw_fields = sdk_fields.pop("raw", None)
+                        snapshot = {
+                            **(raw_fields if isinstance(raw_fields, dict) else {}),
+                            **sdk_fields,
+                        }
+                    else:
+                        snapshot = dict(item.raw or {})
+                    # Keep detailed ``cars``/``carriages`` from the raw RZD
+                    # response.  ``car_groups`` is aggregate inventory and must
+                    # not overwrite concrete place evidence.
                     snapshot.update(
                         number=item.number,
                         departure_time=item.departure_time,
                         arrival_time=item.arrival_time,
                         min_price=item.min_price,
-                        carriages=[
+                        car_groups=[
                             asdict(group) if is_dataclass(group) else group
                             for group in item.car_groups
                         ],

@@ -17,6 +17,28 @@ export function availableSeatsForSegment(route: RouteOption, segment: RouteSegme
   return candidates.length ? Math.max(...candidates) : null;
 }
 
+export function minimumAvailableSeats(route: RouteOption): number | null {
+  if (route.availability?.minimum_available_seats != null) {
+    return route.availability.minimum_available_seats;
+  }
+  const counts = route.segments
+    .map((segment) => availableSeatsForSegment(route, segment))
+    .filter((count): count is number => count !== null);
+  return counts.length ? Math.min(...counts) : null;
+}
+
+export function sortRoutesForPresentation(routes: RouteOption[]): RouteOption[] {
+  return [...routes].sort((left, right) =>
+    (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER)
+    || left.total_duration_minutes - right.total_duration_minutes
+  );
+}
+
+export function selectedSeatEvidenceLabel(segment: RouteSegment): string {
+  if (!segment.selected_places?.length) return "";
+  return ` · вагон ${segment.selected_carriages?.join(", ")} · купе ${segment.selected_compartments?.join(", ")} · места ${segment.selected_places.join(", ")}`;
+}
+
 export function routesVisibleForStrictState(data: RouteSearchResponse, strictAvailability: boolean): RouteOption[] {
   if (!strictAvailability && data.routes.length === 0 && (data.partially_confirmed_routes?.length ?? 0) > 0) {
     return data.partially_confirmed_routes ?? [];

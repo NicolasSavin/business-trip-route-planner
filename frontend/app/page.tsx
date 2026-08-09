@@ -43,7 +43,7 @@ import {
   apiBaseUrl,
 } from "@/lib/api";
 import type { DecisionCompareResponse, DecisionSummary, MonitoringHistory, Notification, RouteOption, RouteSearchPayload, RouteSearchResponse, SavedSearch, TransportType } from "@/lib/types";
-import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "@/lib/routePresentation";
+import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, minimumAvailableSeats, routeSearchNotice, routesVisibleForStrictState, selectedSeatEvidenceLabel, sortRoutesForPresentation } from "@/lib/routePresentation";
 
 const transportLabels: Record<TransportType, string> = {
   train: "Поезд",
@@ -117,8 +117,7 @@ function routeLabel(route: RouteOption, index: number) {
 }
 
 function minSeats(route: RouteOption) {
-  const knownSeats = route.segments.map((segment) => availableSeatsForSegment(route, segment)).filter((value): value is number => value !== null);
-  return knownSeats.length ? Math.min(...knownSeats) : null;
+  return minimumAvailableSeats(route);
 }
 
 function seatCountLabel(value: number | null) {
@@ -225,10 +224,7 @@ export default function Home() {
   const [comparison, setComparison] = useState<DecisionCompareResponse | null>(null);
   const unreadNotifications = notifications.filter((item) => !item.is_read).length;
   const sortedRoutes = useMemo(
-    () =>
-      [...routes].sort(
-        (a, b) => a.total_duration_minutes - b.total_duration_minutes,
-      ),
+    () => sortRoutesForPresentation(routes),
     [routes],
   );
 
@@ -916,7 +912,7 @@ export default function Home() {
                               </p>
                               <p className="mt-1 text-xs font-medium text-aqua">
                                 {segment.availability_message || (availableSeatsForSegment(route, segment) === null ? "Наличие мест не подтверждено" : `${availableSeatsForSegment(route, segment)} мест`)}
-                                {segment.selected_places?.length ? ` · места ${segment.selected_places.join(", ")}` : ""}
+                                {selectedSeatEvidenceLabel(segment)}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-1 text-[11px] font-semibold">
                                 <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Расписание найдено</span>

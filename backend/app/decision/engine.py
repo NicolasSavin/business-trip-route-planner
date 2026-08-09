@@ -72,7 +72,13 @@ class DecisionEngine:
         return DecisionSummary(route_id=route.id,total_duration_minutes=route.total_duration_minutes,transfer_wait_minutes=wait,transfers_count=route.transfers_count,has_available_seats=route.is_available_for_group is True,minimum_available_seats=min_seats,score=round(score,2),rating=rating,explanation=explanation,advantages=adv,disadvantages=dis,warnings=warn,recommendations=rec)
 
     def _wait(self, route): return route.transfer_duration_minutes or 0
-    def _min_seats(self, route): return min([s.available_seats for s in route.segments if s.available_seats is not None], default=0)
+    def _min_seats(self, route):
+        """Read the final, enriched route inventory before legacy segment data."""
+        availability = getattr(route, "availability", None)
+        enriched_minimum = getattr(availability, "minimum_available_seats", None)
+        if enriched_minimum is not None:
+            return enriched_minimum
+        return min([s.available_seats for s in route.segments if s.available_seats is not None], default=0)
     def _r(self, code, message, kind, weight=0): return DecisionReason(code=code,message=message,kind=DecisionReasonKind(kind),weight=weight)
     def _explanation(self, adv, warn, dis):
         if adv: return adv[0].message

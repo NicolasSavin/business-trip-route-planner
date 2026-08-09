@@ -43,6 +43,10 @@ def _items(value: Any, *keys: str) -> list[dict[str, Any]]:
         for key in keys:
             if isinstance(value.get(key), list):
                 return [item for item in value[key] if isinstance(item, dict)]
+            if isinstance(value.get(key), dict):
+                nested = _items(value[key], "items", "lst", "cars", "places")
+                if nested:
+                    return nested
     return []
 
 
@@ -78,12 +82,18 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
             if available:
                 number = str(seat.get("number") or seat.get("place") or seat.get("placeNumber") or seat.get("place_number") or "")
                 berth = str(seat.get("berth_position") or seat.get("berthPosition") or seat.get("placeType") or "unknown").lower()
+                compartment = str(seat.get("compartment") or seat.get("compartmentNumber") or seat.get("compartment_number") or "") or None
+                # A selectable place is evidence only when RZD explicitly sent
+                # all fields required by the placement policy.  Never derive
+                # berth or compartment from the numeric place identifier.
+                if not number or not car_number or not compartment or berth not in {"lower", "upper"}:
+                    continue
                 seats.append(
                     RZDSeat(
                         number,
                         car_number,
                         car_type,
-                        str(seat.get("compartment") or seat.get("compartmentNumber") or seat.get("compartment_number") or "") or None,
+                        compartment,
                         berth,
                     )
                 )
@@ -182,6 +192,16 @@ def to_segment_result(
             "origin_station_id": segment.origin_station.id,
             "destination_station_id": segment.destination_station.id,
             "places": [seat.__dict__ for seat in train.seats],
+            "seat_evidence": [
+                {
+                    "carriage_number": seat.carriage_number,
+                    "compartment_number": seat.compartment_number,
+                    "place_number": seat.number,
+                    "berth_position": seat.berth_position,
+                    "source": "rzd_explicit_place_details",
+                }
+                for seat in train.seats
+            ],
             "carriages": list(train.carriages),
             "min_price": train.min_price,
             "price_per_passenger": train.min_price,
