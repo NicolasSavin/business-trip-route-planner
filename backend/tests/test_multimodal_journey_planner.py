@@ -147,12 +147,13 @@ def test_seated_sapsan_requirements_are_not_applicable():
     assert result.same_compartment_check.status.value == "not_applicable"
 
 
-def placement_result(places, passengers=2, provider="rzd", lower=True, compartment=True):
+def placement_result(places, passengers=2, provider="rzd", lower=True, compartment=True, **preference_overrides):
     segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
     planner = MultimodalJourneyPlanner(Provider([segment]))
     normalized = [{**place, "explicitly_confirmed": True, "source": "rzd_explicit_place_details"} for place in places]
-    request = req(max_transfers=0, passengers=passengers, seat_preferences=SeatPreferencesRequest(
-        berth_preference="lower_only" if lower else "any", require_same_compartment=compartment))
+    preferences = {"berth_preference": "lower_only" if lower else "any", "require_same_compartment": compartment}
+    preferences.update(preference_overrides)
+    request = req(max_transfers=0, passengers=passengers, seat_preferences=SeatPreferencesRequest(**preferences))
     return planner._apply_railway_preferences(segment, request, SegmentAvailabilityResult(
         segment_id="ac", provider=provider, status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata={"places": normalized}))
 
@@ -201,6 +202,89 @@ def test_arbitrary_metadata_and_non_rzd_places_are_not_explicit_evidence():
     assert arbitrary.lower_berths_check.status.value == "unknown"
     assert other.lower_berths_check.status.value == "unknown"
     assert other.metadata["selected_place_evidence"] == ()
+
+
+def test_upper_only_selects_only_explicit_upper_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper"},
+        {"place_number":"4","carriage_number":"1","compartment_number":"1","berth_position":"upper"},
+    ], lower=False, compartment=False, berth_preference="upper_only")
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.selected_places == ("2", "4")
+
+
+def test_require_empty_compartment_rejects_explicitly_occupied_compartment():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper", "is_available":False},
+    ], require_empty_compartment=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_require_adjacent_rejects_non_adjacent_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+    ], lower=False, compartment=False, require_adjacent=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_exclude_side_berths_rejects_side_only_inventory():
+    result = placement_result([
+        {"place_number":"37","carriage_number":"1","compartment_number":"1","berth_position":"lower", "is_side":True},
+        {"place_number":"39","carriage_number":"1","compartment_number":"1","berth_position":"lower", "is_side":True},
+    ], exclude_side_berths=True)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_gender_restriction_rejects_incompatible_places():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower", "gender":"male"},
+        {"place_number":"3","carriage_number":"1","compartment_number":"1","berth_position":"lower", "gender":"male"},
+    ], gender="female")
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+
+
+def test_standalone_same_carriage_is_enforced_and_can_be_disabled():
+    places = [
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"3","carriage_number":"2","compartment_number":"1","berth_position":"lower"},
+    ]
+    rejected = placement_result(places, lower=False, compartment=False, require_same_carriage=True)
+    confirmed = placement_result(places, lower=False, compartment=False, require_same_carriage=False)
+    assert rejected.status == AvailabilityStatus.UNAVAILABLE
+    assert confirmed.status == AvailabilityStatus.CONFIRMED
+
+
+def test_non_strict_rejected_preferences_are_partially_confirmed():
+    places = [{"place_number":"2","carriage_number":"1","compartment_number":"1","berth_position":"upper"}]
+    strict = placement_result(places, passengers=2, compartment=False, strict_preferences=True)
+    advisory = placement_result(places, passengers=2, compartment=False, strict_preferences=False)
+    assert strict.status == AvailabilityStatus.UNAVAILABLE
+    assert advisory.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert advisory.seat_preferences_status == AvailabilityStatus.PARTIALLY_CONFIRMED
+
+
+def test_preferred_class_and_allow_split_group_are_applied():
+    places = [
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower", "carriage_type":"coupe"},
+        {"place_number":"3","carriage_number":"2","compartment_number":"1","berth_position":"lower", "carriage_type":"coupe"},
+    ]
+    wrong_class = placement_result(places, lower=False, compartment=False, preferred_classes=["platzkart"], require_same_carriage=False)
+    split = placement_result(places, lower=False, compartment=False, preferred_classes=["coupe"], require_same_carriage=True, allow_split_group=True)
+    assert wrong_class.status == AvailabilityStatus.PARTIALLY_CONFIRMED  # no trusted places of the requested class
+    assert wrong_class.seat_preferences_status == AvailabilityStatus.UNKNOWN
+    assert split.status == AvailabilityStatus.CONFIRMED
+
+
+def test_maximum_compartments_is_enforced():
+    result = placement_result([
+        {"place_number":"1","carriage_number":"1","compartment_number":"1","berth_position":"lower"},
+        {"place_number":"5","carriage_number":"1","compartment_number":"2","berth_position":"lower"},
+    ], lower=False, compartment=False, require_same_carriage=True, maximum_compartments=1)
+    assert result.status == AvailabilityStatus.UNAVAILABLE
 
 
 def test_yandex_schedule_enriched_by_rzd_confirms_coupe_lower_group():
