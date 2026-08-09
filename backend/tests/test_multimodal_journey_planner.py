@@ -68,7 +68,7 @@ def test_lower_berths_same_compartment_required_on_every_train():
     assert rejected[0].availability.status == AvailabilityStatus.UNAVAILABLE
 
 
-def test_aggregate_lower_quantity_confirms_lower_only_without_compartment_rule():
+def test_aggregate_lower_quantity_does_not_confirm_concrete_lower_places():
     segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
     planner = MultimodalJourneyPlanner(Provider([segment]))
     request = req(
@@ -87,10 +87,39 @@ def test_aggregate_lower_quantity_confirms_lower_only_without_compartment_rule()
 
     result = planner._apply_railway_preferences(segment, request, provider_result)
 
-    assert result.status == AvailabilityStatus.CONFIRMED
-    assert result.seat_preferences_status == AvailabilityStatus.CONFIRMED
-    assert result.metadata["lower_berths_confirmed"] is True
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.seat_preferences_status == AvailabilityStatus.UNKNOWN
+    assert result.metadata["lower_berths_confirmed"] is False
     assert result.selected_places == ()
+
+
+def test_two_explicit_lower_places_in_one_rzd_compartment_are_confirmed_with_evidence():
+    segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    request = req(max_transfers=0, seat_preferences=SeatPreferencesRequest(
+        berth_preference="lower_only", require_same_compartment=True, require_same_carriage=True
+    ))
+    places = [
+        {"place_number": "11", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower"},
+        {"place_number": "13", "carriage_number": "07", "compartment_number": "3", "berth_position": "lower"},
+    ]
+    provider_result = SegmentAvailabilityResult(
+        segment_id=segment.id, provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED,
+        available_places_count=20, metadata={"places": places},
+    )
+
+    result = planner._apply_railway_preferences(segment, request, provider_result)
+
+    assert result.status == AvailabilityStatus.CONFIRMED
+    assert result.seats_confirmed is True
+    assert result.seat_preferences_status == AvailabilityStatus.CONFIRMED
+    assert result.selected_places == ("11", "13")
+    assert result.selected_carriages == ("07",)
+    assert result.selected_compartments == ("3",)
+    assert result.metadata["selected_place_evidence"] == (
+        {"carriage_number": "07", "compartment_number": "3", "place_number": "11", "berth_position": "lower", "source": "rzd_explicit_place_details"},
+        {"carriage_number": "07", "compartment_number": "3", "place_number": "13", "berth_position": "lower", "source": "rzd_explicit_place_details"},
+    )
 
 
 def test_aggregate_lower_quantity_cannot_confirm_same_compartment():
@@ -165,6 +194,8 @@ def test_yandex_schedule_only_strict_is_not_confirmed_and_explains_unavailable_d
     assert partial[0].availability.status == AvailabilityStatus.UNCONFIRMED
     assert "нет мест" not in partial[0].explanation.lower()
     assert partial[0].explanation == "Расписание найдено, наличие мест не подтверждено."
+    assert "Источник мест не предоставил номера и явное подтверждение двух нижних мест." in partial[0].warnings
+    assert "Источник мест не предоставил номер вагона и купе для размещения всех сотрудников вместе." in partial[0].warnings
     assert "Источник расписаний не подтверждает наличие и расположение мест" in partial[0].availability.warnings
     assert summary.confirmed_routes == 0
     assert summary.partially_confirmed_routes == 1

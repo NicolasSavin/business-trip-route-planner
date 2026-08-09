@@ -25,6 +25,7 @@ export type RouteSegment = {
   selected_places?: string[];
   selected_carriages?: string[];
   selected_compartments?: string[];
+  selected_place_evidence?: Array<{ carriage_number: string; compartment_number: string; place_number: string; berth_position: string; source: string }>;
   seat_preferences_status?: string | null;
   lower_berths_confirmed?: boolean;
   same_compartment_confirmed?: boolean;
@@ -39,6 +40,7 @@ export type CarriageAvailability = {
 };
 export type RouteOption = {
   id: string;
+  provider?: string | null;
   origin: string;
   destination: string;
   segments: RouteSegment[];
@@ -50,6 +52,11 @@ export type RouteOption = {
   total_duration_minutes: number;
   transfers_count: number;
   is_available_for_group: boolean | null;
+  score?: number | null;
+  rank?: number | null;
+  explanation?: string | null;
+  warnings?: string[];
+  advantages?: string[];
   availability?: RouteAvailability | null;
 };
 export type SegmentAvailability = {
@@ -62,6 +69,7 @@ export type SegmentAvailability = {
   selected_places?: string[];
   selected_carriages?: string[];
   selected_compartments?: string[];
+  selected_place_evidence?: Array<{ carriage_number: string; compartment_number: string; place_number: string; berth_position: string; source: string }>;
   seat_preferences_status?: string | null;
   lower_berths_confirmed?: boolean;
   same_compartment_confirmed?: boolean;

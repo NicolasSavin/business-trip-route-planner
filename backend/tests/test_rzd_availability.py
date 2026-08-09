@@ -43,8 +43,27 @@ def test_numeric_place_without_explicit_berth_remains_unknown(place_number):
         }],
     })
 
-    assert train.seats[0].number == place_number
-    assert train.seats[0].berth_position == "unknown"
+    assert train.seats == ()
+
+
+def test_explicit_rzd_places_preserve_lower_same_compartment_evidence():
+    train = map_train({
+        "number": "008С",
+        "carriages": [{
+            "number": "07",
+            "places": [
+                {"number": "11", "berthPosition": "lower", "compartmentNumber": "3"},
+                {"number": "13", "berthPosition": "lower", "compartmentNumber": "3"},
+            ],
+        }],
+    })
+
+    result = to_segment_result(segment(), train, 2, preferences_requested=True)
+
+    assert [(seat.carriage_number, seat.compartment_number, seat.number, seat.berth_position) for seat in train.seats] == [
+        ("07", "3", "11", "lower"), ("07", "3", "13", "lower")
+    ]
+    assert result.metadata["seat_evidence"][0]["source"] == "rzd_explicit_place_details"
 
 
 @dataclass
@@ -94,6 +113,27 @@ async def test_client_uses_static_codes_and_caches_identical_searches():
     assert sdk.station_calls == 0
     assert sdk.search_calls == 1
     assert sdk.search_route == ("2000000", "2004000")
+
+
+@pytest.mark.asyncio
+async def test_client_does_not_overwrite_raw_rzd_place_details_with_car_groups():
+    sdk = FakeRZD()
+    detailed = TrainRoute(raw={"carriages": [{
+        "number": "07",
+        "places": [
+            {"number": "11", "berthPosition": "lower", "compartmentNumber": "3"},
+            {"number": "13", "berthPosition": "lower", "compartmentNumber": "3"},
+        ],
+    }]})
+    sdk.search_tickets = lambda *_args, **_kwargs: [detailed]
+
+    result = await RZDClient(config(), sdk_factory=lambda _: sdk).search(
+        "Москва", "Петербург", date(2026, 8, 10), 2
+    )
+
+    assert [seat.number for seat in result.trains[0].seats] == ["11", "13"]
+    assert {seat.carriage_number for seat in result.trains[0].seats} == {"07"}
+    assert {seat.compartment_number for seat in result.trains[0].seats} == {"3"}
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@ import test from "node:test";
 import { ApiError, apiBaseUrl, searchRoutes } from "./api";
 import type { RouteOption, RouteSearchPayload, RouteSearchResponse } from "./types";
 import { buildRouteSearchPayload, type RouteFormState } from "./locationPayload";
-import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, routeSearchNotice, routesVisibleForStrictState } from "./routePresentation";
+import { availableSeatsForSegment, hasHiddenUnconfirmedRoutes, minimumAvailableSeats, routeSearchNotice, routesVisibleForStrictState, selectedSeatEvidenceLabel, sortRoutesForPresentation } from "./routePresentation";
 
 const yandexBackend = "https://bba1p30liradr6hj8olf.containers.yandexcloud.net";
 
@@ -289,4 +289,21 @@ test("positive RZD carriage availability is not lost when legacy available_seats
     },
   };
   assert.equal(availableSeatsForSegment(route, route.segments[0]), 7);
+  assert.equal(minimumAvailableSeats(route), 7);
+});
+
+test("optimal label ordering follows the backend final rank", () => {
+  const first = { ...partialRoute, id: "rank-1", rank: 1, total_duration_minutes: 300 };
+  const fasterButSecond = { ...partialRoute, id: "rank-2", rank: 2, total_duration_minutes: 200 };
+
+  assert.deepEqual(sortRoutesForPresentation([fasterButSecond, first]).map((route) => route.id), ["rank-1", "rank-2"]);
+});
+
+test("confirmed placement displays carriage, compartment and concrete RZD places", () => {
+  const segment = {
+    ...partialRoute.segments[0],
+    selected_carriages: ["07"], selected_compartments: ["3"], selected_places: ["11", "13"],
+  };
+
+  assert.equal(selectedSeatEvidenceLabel(segment), " · вагон 07 · купе 3 · места 11, 13");
 });

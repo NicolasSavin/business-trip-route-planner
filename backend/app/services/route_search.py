@@ -98,6 +98,7 @@ class RouteSearchService:
                             selected_places=list(result.selected_places),
                             selected_carriages=list(result.selected_carriages),
                             selected_compartments=list(result.selected_compartments),
+                            selected_place_evidence=list(result.metadata.get("selected_place_evidence") or []),
                             seat_preferences_status=result.seat_preferences_status.value,
                             lower_berths_confirmed=bool(result.metadata.get("lower_berths_confirmed")),
                             same_compartment_confirmed=bool(result.metadata.get("same_compartment_confirmed")),
@@ -157,6 +158,7 @@ class RouteSearchService:
                 item.selected_places = list(result.selected_places)
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
+                item.selected_place_evidence = list(result.metadata.get("selected_place_evidence") or [])
                 item.seat_preferences_status = result.seat_preferences_status.value
                 item.lower_berths_confirmed = bool(result.metadata.get("lower_berths_confirmed"))
                 item.same_compartment_confirmed = bool(result.metadata.get("same_compartment_confirmed"))

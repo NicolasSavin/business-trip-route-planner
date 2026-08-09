@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from app.decision import DecisionEngine, DecisionService
 from app.decision.models import AnalyzeRequest, CompareRequest
-from app.models.routes import RouteOption, RouteSegment
+from app.models.routes import RouteAvailability, RouteOption, RouteSegment, SegmentAvailability
 from app.domain import TransportType
 
 
@@ -58,3 +58,22 @@ def test_decision_engine_shows_rzd_source_for_rzd_route():
     item.segments[0].provider = "rzd"
     summary = DecisionEngine().analyze([item], passengers=2)[0]
     assert any(reason.code == "source_rzd" and reason.message == "Источник: РЖД" for reason in summary.advantages)
+
+
+def test_confirmed_enriched_inventory_is_used_by_explanation():
+    item = route("rzd-confirmed", seats=0, available=True)
+    checked_at = datetime(2026, 8, 9)
+    result = SegmentAvailability(
+        segment_id="rzd-confirmeda", is_available=True, available_seats=394,
+        requested_passengers=2, transport_class=None, checked_at=checked_at, source="rzd",
+    )
+    item = item.model_copy(update={"availability": RouteAvailability(
+        is_available=True, requested_passengers=2, minimum_available_seats=394,
+        checked_at=checked_at, segment_results=[result],
+    )})
+
+    summary = DecisionEngine().analyze([item], passengers=2)[0]
+
+    assert summary.minimum_available_seats == 394
+    assert not any(reason.code == "unknown_availability" for reason in summary.warnings)
+    assert any(reason.code == "available" for reason in summary.advantages)

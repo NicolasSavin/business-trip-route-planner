@@ -65,6 +65,7 @@ class RouteSegment(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
+    selected_place_evidence: list[dict[str, Any]] = Field(default_factory=list)
     seat_preferences_status: str | None = None
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False
@@ -87,6 +88,7 @@ class SegmentAvailability(BaseModel):
     selected_places: list[str] = Field(default_factory=list)
     selected_carriages: list[str] = Field(default_factory=list)
     selected_compartments: list[str] = Field(default_factory=list)
+    selected_place_evidence: list[dict[str, Any]] = Field(default_factory=list)
     seat_preferences_status: str | None = None
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False
