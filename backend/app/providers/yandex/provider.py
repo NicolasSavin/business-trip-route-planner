@@ -271,9 +271,10 @@ class YandexRaspProvider(TransportProvider):
             if segments:
                 self.last_error = None
                 self.last_error_payload = None
+                self._compact_runtime_diagnostics(pair_errors)
                 return segments
             details = self._empty_details(origin, destination, departure_date, pair_errors)
-            self.last_diagnostics["pair_errors"] = pair_errors
+            self._compact_runtime_diagnostics(pair_errors)
             if pair_errors:
                 first_error = pair_errors[0].get("error") or {}
                 if first_error.get("code") == "unexpected_content_type":
@@ -341,6 +342,18 @@ class YandexRaspProvider(TransportProvider):
             "date": departure_date.isoformat(),
             "pair_errors": pair_errors,
         }
+
+    def _compact_runtime_diagnostics(self, pair_errors: list[dict[str, Any]]) -> None:
+        """Keep API summary diagnostics bounded; detailed evidence lives in last_error_payload."""
+        def compact(attempt: dict[str, Any]) -> dict[str, Any]:
+            result = {key: value for key, value in attempt.items() if key not in {"response_diagnostics", "request_params"}}
+            error = attempt.get("error")
+            if isinstance(error, dict):
+                result["error"] = {key: error[key] for key in ("code", "message") if key in error}
+            return result
+        attempts = self.last_diagnostics.get("attempts") or []
+        self.last_diagnostics["attempts"] = [compact(item) for item in attempts]
+        self.last_diagnostics["pair_errors"] = [compact(item) for item in pair_errors]
 
     def _codes_for_transport(self, match: YandexLocationMatch, allowed_transport: list[TransportType]) -> tuple[str, ...]:
         allowed = {item.value for item in allowed_transport}

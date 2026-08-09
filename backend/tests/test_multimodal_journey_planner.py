@@ -263,6 +263,8 @@ def test_non_strict_rejected_preferences_are_partially_confirmed():
     strict = placement_result(places, passengers=2, compartment=False, strict_preferences=True)
     advisory = placement_result(places, passengers=2, compartment=False, strict_preferences=False)
     assert strict.status == AvailabilityStatus.UNAVAILABLE
+    assert strict.selected_places == ()
+    assert strict.metadata["selected_place_evidence"] == ()
     assert advisory.status == AvailabilityStatus.PARTIALLY_CONFIRMED
     assert advisory.seat_preferences_status == AvailabilityStatus.PARTIALLY_CONFIRMED
 
@@ -274,8 +276,8 @@ def test_preferred_class_and_allow_split_group_are_applied():
     ]
     wrong_class = placement_result(places, lower=False, compartment=False, preferred_classes=["platzkart"], require_same_carriage=False)
     split = placement_result(places, lower=False, compartment=False, preferred_classes=["coupe"], require_same_carriage=True, allow_split_group=True)
-    assert wrong_class.status == AvailabilityStatus.PARTIALLY_CONFIRMED  # no trusted places of the requested class
-    assert wrong_class.seat_preferences_status == AvailabilityStatus.UNKNOWN
+    assert wrong_class.status == AvailabilityStatus.UNAVAILABLE
+    assert wrong_class.seat_preferences_status == AvailabilityStatus.UNAVAILABLE
     assert split.status == AvailabilityStatus.CONFIRMED
 
 

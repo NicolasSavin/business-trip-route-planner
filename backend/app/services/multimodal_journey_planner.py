@@ -477,7 +477,8 @@ class MultimodalJourneyPlanner:
         # Only the RZD mapper may set this marker after reading concrete response
         # fields. Arbitrary schedule metadata and other providers are never
         # promoted to explicit placement evidence here.
-        explicit = [p for p in places if base.provider == "rzd" and p.explicitly_confirmed and p.place_number and p.carriage_number]
+        trusted_explicit = [p for p in places if base.provider == "rzd" and p.explicitly_confirmed and p.place_number and p.carriage_number]
+        explicit = trusted_explicit
         if pref.preferred_classes:
             explicit = [p for p in explicit if p.transport_class in pref.preferred_classes]
         available_explicit = [p for p in explicit if p.is_available]
@@ -489,7 +490,7 @@ class MultimodalJourneyPlanner:
         if pref.berth_preference == "lower_only":
             if len(lower_places) >= required:
                 lower_check = RequirementCheck(RequirementStatus.CONFIRMED, "Подтверждено: найдены отдельные нижние места")
-            elif explicit:
+            elif trusted_explicit:
                 lower_check = RequirementCheck(RequirementStatus.REJECTED, "Не подходит: недостаточно явно подтверждённых нижних мест")
             else:
                 lower_check = RequirementCheck(RequirementStatus.UNKNOWN, f"Не подтверждено: {source_label} не передал явные данные о местах")
@@ -529,12 +530,14 @@ class MultimodalJourneyPlanner:
         active_checks = [check for check in (lower_check, compartment_check) if check is not None]
         checks_confirmed = all(check.status == RequirementStatus.CONFIRMED for check in active_checks)
         all_confirmed = bool(explicit) and allocation.matches_preferences and checks_confirmed
-        any_rejected = bool(explicit) and (not allocation.matches_preferences or any(check.status in {RequirementStatus.REJECTED, RequirementStatus.NOT_APPLICABLE} for check in active_checks))
+        any_rejected = bool(trusted_explicit) and (not allocation.matches_preferences or any(check.status in {RequirementStatus.REJECTED, RequirementStatus.NOT_APPLICABLE} for check in active_checks))
         status = (AvailabilityStatus.CONFIRMED if all_confirmed else
             AvailabilityStatus.UNAVAILABLE if any_rejected and pref.strict_preferences else
             AvailabilityStatus.PARTIALLY_CONFIRMED if any_rejected else
             (base.status if base.status in {AvailabilityStatus.UNCONFIRMED, AvailabilityStatus.PROVIDER_ERROR} else AvailabilityStatus.PARTIALLY_CONFIRMED))
-        selected = list(allocation.selected_places) if allocation.matches_preferences else (selected_group[:required] if selected_group else lower_places[:required] if lower_check and lower_check.status == RequirementStatus.CONFIRMED else [])
+        # ``selected_*`` is a bookable allocation, not partial diagnostic
+        # evidence. Never expose places which fail any active constraint.
+        selected = list(allocation.selected_places) if all_confirmed else []
 
         def evidence_for(items: list[RailwayPlace]) -> tuple[dict, ...]:
             return tuple({
@@ -546,11 +549,13 @@ class MultimodalJourneyPlanner:
                 "explicitly_confirmed": p.explicitly_confirmed,
             } for p in items)
 
-        evidence = evidence_for(selected) if all_confirmed or (lower_check and lower_check.status == RequirementStatus.CONFIRMED) else ()
+        evidence = evidence_for(selected) if all_confirmed else ()
         if lower_check and lower_check.status == RequirementStatus.CONFIRMED:
-            lower_check = replace(lower_check, message=f"Подтверждено: нижние места {', '.join(p.place_number for p in selected)}", evidence=evidence)
+            lower_evidence = evidence_for(lower_places[:required])
+            lower_check = replace(lower_check, message=f"Подтверждено: нижние места {', '.join(p.place_number for p in lower_places[:required])}", evidence=lower_evidence)
         if compartment_check and compartment_check.status == RequirementStatus.CONFIRMED:
-            compartment_check = replace(compartment_check, message=f"Подтверждено: вагон {selected[0].carriage_number}, купе {selected[0].compartment_number}, места {', '.join(p.place_number for p in selected)}", evidence=evidence)
+            compartment_evidence = evidence_for(selected_group[:required])
+            compartment_check = replace(compartment_check, message=f"Подтверждено: вагон {selected_group[0].carriage_number}, купе {selected_group[0].compartment_number}, места {', '.join(p.place_number for p in selected_group[:required])}", evidence=compartment_evidence)
         warnings = () if all_confirmed else tuple(check.message for check in active_checks if check.status == RequirementStatus.UNKNOWN)
         if lower_check and lower_check.status == RequirementStatus.UNKNOWN:
             warnings = (*warnings, f"{source_label} не предоставил номера и явное подтверждение двух нижних мест.")
