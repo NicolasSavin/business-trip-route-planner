@@ -14,7 +14,7 @@ def _bool(value: str | None, default: bool) -> bool:
 class BrowserConfiguration:
     playwright_enabled: bool = False
     headless: bool = True
-    pool_size: int = 2
+    pool_size: int = 1
     timeout: int = 30
     idle_timeout_seconds: int = 120
     lazy_start: bool = True
@@ -26,7 +26,7 @@ class BrowserConfiguration:
         return cls(
             playwright_enabled=_bool(os.getenv("TUTU_PLAYWRIGHT_ENABLED"), _bool(os.getenv("PLAYWRIGHT_ENABLED"), False)),
             headless=_bool(os.getenv("BROWSER_HEADLESS"), True),
-            pool_size=max(1, int(os.getenv("BROWSER_POOL_SIZE", "2"))),
+            pool_size=max(1, int(os.getenv("BROWSER_POOL_SIZE", "1"))),
             timeout=max(1, int(os.getenv("BROWSER_TIMEOUT", "30"))),
             user_agent=os.getenv("USER_AGENT", ""),
             proxy=os.getenv("PROXY", ""),

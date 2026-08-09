@@ -469,8 +469,9 @@ class MultimodalJourneyPlanner:
         if seated and (pref.berth_preference == "lower_only" or pref.require_same_compartment):
             lower = RequirementCheck(RequirementStatus.NOT_APPLICABLE, "В поезде только сидячие места — требование нижних мест неприменимо") if pref.berth_preference == "lower_only" else None
             compartment = RequirementCheck(RequirementStatus.NOT_APPLICABLE, "Неприменимо: сидячая компоновка не имеет обычных купе") if pref.require_same_compartment else None
-            return replace(base, status=AvailabilityStatus.UNAVAILABLE, seats_confirmed=False, passengers_supported=False,
-                seat_preferences_status=AvailabilityStatus.UNAVAILABLE, lower_berths_check=lower,
+            rejected_status = AvailabilityStatus.UNAVAILABLE if pref.strict_preferences else AvailabilityStatus.PARTIALLY_CONFIRMED
+            return replace(base, status=rejected_status, seats_confirmed=False, passengers_supported=False,
+                seat_preferences_status=rejected_status, lower_berths_check=lower,
                 same_compartment_check=compartment, reasons=tuple(dict.fromkeys((*base.reasons, "Для сидячего поезда требования к спальным местам неприменимы"))),
                 metadata={**base.metadata, "lower_berths_confirmed": False, "same_compartment_confirmed": False})
 
@@ -522,6 +523,10 @@ class MultimodalJourneyPlanner:
             exclude_side_berths=pref.exclude_side_berths,
             gender=GenderRestriction(pref.gender) if pref.gender else None,
         ))
+        if allocation.matches_preferences and pref.berth_preference == "lower_only" and not all(p.berth_position == BerthPosition.LOWER for p in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно явно подтверждённых нижних мест"))
+        if allocation.matches_preferences and pref.berth_preference == "upper_only" and not all(p.berth_position == BerthPosition.UPPER for p in allocation.selected_places):
+            allocation = replace(allocation, matches_preferences=False, reasons=(*allocation.reasons, "Недостаточно явно подтверждённых верхних мест"))
         if allocation.matches_preferences and pref.maximum_compartments is not None:
             compartments = {(p.carriage_number, p.compartment_number) for p in allocation.selected_places if p.compartment_number}
             if len(compartments) > pref.maximum_compartments:

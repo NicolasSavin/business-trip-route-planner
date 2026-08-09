@@ -94,11 +94,12 @@ def test_browser_health_endpoint_reports_runtime_singleton(monkeypatch):
     payload = TestClient(app).get("/api/v1/browser/health").json()
 
     assert payload == {
-        "playwright_installed": True,
-        "browser_running": True,
-        "browser_version": "chromium-fake",
+        "configured": True,
+        "installed": True,
+        "running": True,
+        "healthy_if_running": True,
         "status": "running",
-        "healthy": True,
+        "browser_version": "chromium-fake",
     }
 
 

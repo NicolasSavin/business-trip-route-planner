@@ -91,6 +91,20 @@ def test_mixed_train_bus_search_preserves_explicit_city_code():
     assert {"s-train", "s-bus"} <= set(codes)
 
 
+def test_transfer_search_checks_every_destination_station_before_cartesian_fallback():
+    client = Client()
+    provider = make_provider(client, max_direct_requests_per_search=1, max_transfer_requests_per_search=6)
+    provider.resolver.locations["Санкт-Петербург"] = YandexLocationMatch("c2", "Санкт-Петербург", "city", stations=(
+        YandexStation("s-destination-a", "Вокзал A", "railway_station", ("train",)),
+        YandexStation("s-destination-b", "Вокзал B", "railway_station", ("train",)),
+    ))
+    with pytest.raises(Exception):
+        provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург", max_transfers=1)
+    transfer_destinations = {call["destination_code"] for call in client.calls if call["transfers"]}
+    assert {"c2", "s-destination-a", "s-destination-b"} <= transfer_destinations
+    assert len([call for call in client.calls if call["transfers"]]) <= 6
+
+
 def test_empty_city_response_uses_only_bounded_train_station_fallback():
     client = Client(lambda kwargs: {"segments": [schedule()]} if kwargs["origin_code"] == "s-train-a" else {"segments": []})
     provider = make_provider(client, max_stations_per_city=2, max_direct_requests_per_search=3)

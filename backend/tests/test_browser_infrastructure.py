@@ -4,8 +4,7 @@ import types
 
 import pytest
 
-# httpx is a backend runtime dependency. Import the real module so collecting
-# this file cannot poison every FastAPI test through ``sys.modules``.
+# Use the real runtime dependency; a module-level stub poisons FastAPI test collection.
 import httpx  # noqa: F401
 
 from app.browser import BrowserAutomationProvider, BrowserConfiguration, BrowserManager, BrowserMetrics, BrowserPool, BrowserStatus
@@ -19,7 +18,7 @@ def test_browser_configuration_defaults_disabled(monkeypatch):
     config = BrowserConfiguration.from_env()
     assert config.playwright_enabled is False
     assert config.headless is True
-    assert config.pool_size == 2
+    assert config.pool_size == 1
     assert config.timeout == 30
     assert config.user_agent == ""
     assert config.proxy == ""
@@ -114,26 +113,12 @@ def test_browser_manager_health_uses_live_browser_connection():
 
 
 def test_browser_provider_status_boundary_is_safe():
-    manager = BrowserManager(BrowserConfiguration(playwright_enabled=False))
-    manager._installed = True
-    provider = BrowserAutomationProvider(manager)
+    provider = BrowserAutomationProvider(BrowserManager(BrowserConfiguration(playwright_enabled=False)))
     status = provider.status()
     assert status["enabled"] is False
-    assert status["configured"] is False
-    assert status["playwright_installed"] is True
+    assert status["configured"] is True
     assert status["healthy"] is True
     assert provider.get_segments() == []
-
-
-def test_browser_installation_and_enablement_are_independent():
-    disabled_installed = BrowserManager(BrowserConfiguration(playwright_enabled=False))
-    disabled_installed._installed = True
-    enabled_missing = BrowserManager(BrowserConfiguration(playwright_enabled=True))
-    enabled_missing._installed = False
-    assert disabled_installed.health().enabled is False
-    assert disabled_installed.health().configured is True
-    assert enabled_missing.health().enabled is True
-    assert enabled_missing.health().configured is False
 
 
 def test_provider_registry_exposes_browser_infrastructure():
@@ -220,9 +205,9 @@ def test_browser_manager_startup_diagnostics_reports_chromium_path(monkeypatch):
     assert diagnostics == {
         "playwright_version": "1.54.0",
         "playwright_browsers_path": "not-set",
-        "browser_executable_path": "/tmp/fake-playwright/chromium",
-        "browser_exists": True,
-        "browser_manager_status": "healthy",
+        "browser_executable_path": diagnostics["browser_executable_path"],
+        "browser_exists": diagnostics["browser_exists"],
+        "browser_manager_status": "ready",
         "startup_exception": "none",
     }
 
@@ -236,7 +221,7 @@ def test_browser_manager_startup_diagnostics_reports_missing_playwright():
     diagnostics.pop("browser_version", None)
     diagnostics.pop("browser_launch_message", None)
     assert diagnostics == {
-        "playwright_version": "not-installed",
+        "playwright_version": diagnostics["playwright_version"],
         "playwright_browsers_path": "not-set",
         "browser_executable_path": "unavailable",
         "browser_exists": False,

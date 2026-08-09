@@ -85,9 +85,13 @@ class SeatAllocationService:
             occupied = {(p.carriage_number, p.compartment_number) for p in places if not p.is_available and p.compartment_number is not None}
             candidates = [p for p in candidates if p.compartment_number is not None and (p.carriage_number, p.compartment_number) not in occupied]
         if preferences.prefer_lower:
-            candidates = [p for p in candidates if p.berth_position == BerthPosition.LOWER]
+            lower = [p for p in candidates if p.berth_position == BerthPosition.LOWER]
+            if len(lower) >= preferences.passengers:
+                candidates = lower
         if preferences.prefer_upper:
-            candidates = [p for p in candidates if p.berth_position == BerthPosition.UPPER]
+            upper = [p for p in candidates if p.berth_position == BerthPosition.UPPER]
+            if len(upper) >= preferences.passengers:
+                candidates = upper
         # Group only after all per-place evidence filters. Otherwise an
         # incompatible large group can hide a smaller valid group.
         if preferences.require_same_carriage:

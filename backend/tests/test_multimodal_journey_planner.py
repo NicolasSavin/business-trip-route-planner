@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from app.availability.journey import AvailabilityStatus, SegmentAvailabilityCache, SegmentAvailabilityResult
+from app.availability.seats import BerthPosition, RailwayPlace, SeatAllocationService, SeatPreferences
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment, TransportType
 from app.models.routes import RouteSearchRequest, SeatPreferencesRequest
 from app.providers.yandex.mapper import YandexRaspMapper
@@ -145,6 +146,29 @@ def test_seated_sapsan_requirements_are_not_applicable():
     assert result.status == AvailabilityStatus.UNAVAILABLE
     assert result.lower_berths_check.status.value == "not_applicable"
     assert result.same_compartment_check.status.value == "not_applicable"
+
+
+def test_non_strict_seated_sapsan_is_partial_but_requirements_stay_not_applicable():
+    segment = seg("sap", "A", "C", dt(8), dt(12), klass=TransportClass.SEATED, number="Сапсан")
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(
+        berth_preference="lower_only", require_same_compartment=True, strict_preferences=False)),
+        SegmentAvailabilityResult(segment_id="sap", provider="rzd", status=AvailabilityStatus.CONFIRMED, available_places_count=10))
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.seat_preferences_status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.lower_berths_check.status.value == "not_applicable"
+    assert result.same_compartment_check.status.value == "not_applicable"
+
+
+def test_general_allocator_keeps_lower_and_upper_preferences_advisory_when_inventory_is_insufficient():
+    places = [
+        RailwayPlace("rzd", "1", "1", TransportClass.COUPE, berth_position=BerthPosition.LOWER),
+        RailwayPlace("rzd", "2", "1", TransportClass.COUPE, berth_position=BerthPosition.UPPER),
+    ]
+    lower = SeatAllocationService().match(places, SeatPreferences(passengers=2, prefer_lower=True))
+    upper = SeatAllocationService().match(places, SeatPreferences(passengers=2, prefer_upper=True))
+    assert lower.matches_preferences and {p.place_number for p in lower.selected_places} == {"1", "2"}
+    assert upper.matches_preferences and {p.place_number for p in upper.selected_places} == {"1", "2"}
 
 
 def placement_result(places, passengers=2, provider="rzd", lower=True, compartment=True, **preference_overrides):

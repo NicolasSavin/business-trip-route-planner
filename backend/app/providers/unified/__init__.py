@@ -121,10 +121,10 @@ def build_default_registry() -> ProviderRegistry:
             **browser_status,
             "status_label": "Browser diagnostics",
             "infrastructure": "Инфраструктура готова",
-            "playwright_installed": browser_status["playwright_installed"],
+            "playwright_installed": browser_status["configured"],
             "browser_running": browser_status["status"] == "running",
             "browser_version": browser_status["version"],
-            "real_browser_requests_enabled": browser_status["enabled"],
+            "real_browser_requests_enabled": True,
         },
     )
 

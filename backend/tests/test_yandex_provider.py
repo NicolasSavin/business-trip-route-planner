@@ -90,7 +90,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     assert "origin_station='Москва'" in segment_message
     assert "destination_station='Санкт-Петербург'" in segment_message
     assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
-    assert "route_search.yandex_segments_total count=4" in messages
+    assert "route_search.yandex_segments_total count=7" in messages
     assert any(message.startswith("route_search.yandex_provider_output total_count=1 direct_count=1") for message in messages)
     assert any(message.startswith("route_search.yandex_response") for message in messages)
     assert any(message.startswith("route_search.yandex_direct_schedules") for message in messages)

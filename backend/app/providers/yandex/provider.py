@@ -83,11 +83,16 @@ class YandexRaspProvider(TransportProvider):
                 # Transfer schedules are useful only when the caller permits them.
                 # Keep their independent budget hard-bounded as well.
                 if max_transfers > 0:
-                    # A single destination city code with bounded origin-station
-                    # fallbacks covers transfer discovery without a cartesian
-                    # station explosion.
-                    transfer_pairs = ([primary_pair, *((o, primary_pair[1]) for o in origin_codes[1:])]
-                        if set(allowed_transport) == {TransportType.TRAIN} else [primary_pair, *fallback_pairs])
+                    # Cover every valid destination before expanding the rest
+                    # of the station cartesian product, while retaining the
+                    # configured hard request budget.
+                    prioritized_transfer_pairs = [
+                        primary_pair,
+                        *((primary_pair[0], destination) for destination in destination_codes[1:]),
+                        *((origin, primary_pair[1]) for origin in origin_codes[1:]),
+                        *fallback_pairs,
+                    ]
+                    transfer_pairs = list(dict.fromkeys(prioritized_transfer_pairs))
                     if len(transfer_pairs) > self.config.max_transfer_requests_per_search:
                         fanout_limited = True
                     request_pairs += [
