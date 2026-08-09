@@ -56,6 +56,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(url, {
       ...init,
+      credentials: "include",
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch (error) {
@@ -90,6 +91,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       cause: error,
     });
   }
+}
+
+export type Hotel = {
+  id: number; name: string; report_amount: number; actual_price: number | null;
+  city: string; address: string; phone: string; website: string; photo_url: string; notes: string;
+};
+export type SessionUser = { username: string; is_admin: boolean };
+export type HotelUpdate = Omit<Hotel, "id">;
+
+export function login(username: string, password: string) {
+  return request<SessionUser>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
+}
+export function logout() { return request<void>("/api/v1/auth/logout", { method: "POST" }); }
+export function currentUser() { return request<SessionUser>("/api/v1/auth/me"); }
+export function listHotels(search = "") {
+  return request<Hotel[]>(`/api/v1/hotels?search=${encodeURIComponent(search)}`);
+}
+export function updateHotel(id: number, hotel: HotelUpdate) {
+  return request<Hotel>(`/api/v1/hotels/${id}`, { method: "PUT", body: JSON.stringify(hotel) });
 }
 
 export function searchRoutes(payload: RouteSearchPayload) {
