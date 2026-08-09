@@ -11,6 +11,7 @@ from app.browser.runtime import browser_manager
 from app.providers.unified import registry as provider_registry
 from app.providers.rzd_availability.config import RZDAvailabilityConfig
 from app.providers.yandex.location_service import yandex_location_resolver
+from app.providers.yandex.resolver import YANDEX_STATIONS_AUTO_SYNC, YANDEX_STATIONS_LAZY_LOAD
 from app.memory import log_memory
 
 app = FastAPI(title="Business Trip Route Planner API")
@@ -69,6 +70,10 @@ async def log_browser_startup_diagnostics() -> None:
     logger.info("Yandex locations cache ready: %s", yandex_location_resolver.stats())
     log_memory("after Yandex indexes")
     startup_network_enabled = os.getenv("YANDEX_STATIONS_STARTUP_NETWORK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    # AUTO_SYNC is the production switch.  LAZY_LOAD=false means operators
+    # explicitly request an eager startup refresh, while HTTP requests remain
+    # non-blocking in either mode.
+    startup_network_enabled = startup_network_enabled and (YANDEX_STATIONS_AUTO_SYNC or not YANDEX_STATIONS_LAZY_LOAD)
     yandex_location_resolver.startup_refresh_background(network_enabled=startup_network_enabled)
     try:
         log_memory("before Playwright probe")

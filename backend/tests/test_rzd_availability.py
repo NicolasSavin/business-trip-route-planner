@@ -87,7 +87,7 @@ class FakeRZD:
 
     def find_stations(self, query):
         self.station_calls += 1
-        return [SDKStation("2000000" if query == "Москва" else "2004000", query)]
+        return [SDKStation("2000000" if query in {"Москва", "Origin"} else "2004000", query)]
 
     def search_tickets(self, origin, destination, departure_date, **kwargs):
         self.search_calls += 1

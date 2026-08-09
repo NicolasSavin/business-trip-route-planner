@@ -95,4 +95,6 @@ class ProviderRegistry:
             self._consecutive_network_errors[provider_id] = count
             return ProviderHealth.OFFLINE if count >= 3 else ProviderHealth.DEGRADED
         self._consecutive_network_errors[provider_id] = 0
-        return ProviderHealth.DEGRADED
+        # An unexpected provider exception means the provider cannot currently
+        # satisfy its contract; keep it out of subsequent fan-out attempts.
+        return ProviderHealth.OFFLINE

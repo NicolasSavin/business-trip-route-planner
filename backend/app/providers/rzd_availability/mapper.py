@@ -83,10 +83,10 @@ def map_train(raw: dict[str, Any]) -> RZDTrainAvailability:
                 number = str(seat.get("number") or seat.get("place") or seat.get("placeNumber") or seat.get("place_number") or "")
                 berth = str(seat.get("berth_position") or seat.get("berthPosition") or seat.get("placeType") or "unknown").lower()
                 compartment = str(seat.get("compartment") or seat.get("compartmentNumber") or seat.get("compartment_number") or "") or None
-                # A selectable place is evidence only when RZD explicitly sent
-                # all fields required by the placement policy.  Never derive
-                # berth or compartment from the numeric place identifier.
-                if not number or not car_number or not compartment or berth not in {"lower", "upper"}:
+                # Preserve an explicit berth even if RZD omitted the compartment:
+                # it can confirm lower/upper independently, but cannot confirm a
+                # physical compartment. Never derive either value from parity.
+                if not number or not car_number or berth not in {"lower", "upper"}:
                     continue
                 seats.append(
                     RZDSeat(
@@ -191,7 +191,7 @@ def to_segment_result(
             "travel_date": segment.departure_datetime.date().isoformat(),
             "origin_station_id": segment.origin_station.id,
             "destination_station_id": segment.destination_station.id,
-            "places": [seat.__dict__ for seat in train.seats],
+            "places": [{**seat.__dict__, "explicitly_confirmed": True, "source": "rzd_explicit_place_details"} for seat in train.seats],
             "seat_evidence": [
                 {
                     "carriage_number": seat.carriage_number,

@@ -14,7 +14,9 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 _rzd_exceptions = importlib.import_module("rzd_api.exceptions") if importlib.util.find_spec("rzd_api") else None
-RzdError = getattr(_rzd_exceptions, "RzdError", Exception)
+class _UnavailableRzdSdkError(Exception):
+    pass
+RzdError = getattr(_rzd_exceptions, "RzdError", _UnavailableRzdSdkError)
 from starlette.responses import JSONResponse, Response
 
 from app.providers.rzd_availability import RZDClient

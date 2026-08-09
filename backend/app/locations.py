@@ -117,9 +117,9 @@ class LocationRepository:
         cached = self.cache.get(key)
         if cached is not None:
             return cached
-        ranked: list[tuple[int, int, str, LocationRecord]] = []
+        ranked: list[tuple[int, int, int, LocationRecord]] = []
         type_rank = {"city": 0, "settlement": 1, "railway_station": 2, "bus_station": 3, "station": 4}
-        for record in self.records:
+        for record_index, record in enumerate(self.records):
             best: int | None = None
             for text in record.searchable:
                 words = text.split()
@@ -135,7 +135,7 @@ class LocationRepository:
                     continue
                 best = score if best is None else min(best, score)
             if best is not None:
-                ranked.append((best, type_rank[record.type], record.display_name, record))
+                ranked.append((best, type_rank[record.type], record_index, record))
         result = [record.to_suggestion() for *_ignore, record in sorted(ranked)[:limit]]
         self.cache.set(key, result)
         return result
