@@ -29,3 +29,6 @@ data/saved-searches.json
 data/*.tmp
 data/*.sqlite3*
 frontend/tsconfig.tsbuildinfo
+
+# Frontend test build output
+.frontend-test-dist/

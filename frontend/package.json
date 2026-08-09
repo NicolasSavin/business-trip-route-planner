@@ -4,7 +4,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:api": "rm -rf .test-dist && tsc -p tsconfig.api-test.json && node .test-dist/api.test.js"
+    "test:api": "rm -rf .test-dist && tsc -p tsconfig.api-test.json && node .test-dist/api.test.js",
+    "test:frontend": "rm -rf .frontend-test-dist && tsc -p tsconfig.frontend-test.json && node --test .frontend-test-dist/locationAutocompleteModel.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@types/node": "20.14.10",
