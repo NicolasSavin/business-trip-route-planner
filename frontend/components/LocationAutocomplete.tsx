@@ -158,6 +158,7 @@ export function LocationAutocomplete({ label, value, selected, onChange, onSelec
       <label htmlFor={`${baseId}-input`}>{label}</label>
       <div className="relative">
         <input ref={inputRef} id={`${baseId}-input`} className="w-full rounded-2xl border border-line bg-cloud px-4 py-3 pr-10 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10" value={value}
+          data-selected-provider-code={selected?.provider_code ?? ""}
           onChange={(event) => { onChange(event.target.value); if (selected) onSelect(null, event.target.value); }}
           onFocus={() => { focusedRef.current = true; if (canSuggest) setOpen(true); }}
           onBlur={(event) => { focusedRef.current = false; if (!dropdownRef.current?.contains(event.relatedTarget as Node)) window.setTimeout(() => setOpen(false), 0); }}

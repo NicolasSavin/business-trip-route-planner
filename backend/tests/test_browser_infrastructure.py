@@ -4,8 +4,9 @@ import types
 
 import pytest
 
-httpx_stub = types.SimpleNamespace(Client=object, TimeoutException=TimeoutError)
-sys.modules.setdefault("httpx", httpx_stub)
+# httpx is a backend runtime dependency. Import the real module so collecting
+# this file cannot poison every FastAPI test through ``sys.modules``.
+import httpx  # noqa: F401
 
 from app.browser import BrowserAutomationProvider, BrowserConfiguration, BrowserManager, BrowserMetrics, BrowserPool, BrowserStatus
 from app.browser.exceptions import BrowserPoolExhaustedError

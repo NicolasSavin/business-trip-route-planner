@@ -574,7 +574,8 @@ class YandexLocationResolver:
                 ranked.append((score, 0 if m.type == "city" else 1, m.title, m))
         return self._dedupe([m for *_ignore, m in sorted(ranked)])
     def _fallback_repository(self, query):
-        matches=[]
+        key = normalize(query)
+        matches=[item for item in LOCAL_POINTS if key and (normalize(item.title).startswith(key) or key in {normalize(alias) for alias in item.aliases_used})]
         for item in self._repository.suggest(query, 10):
             if item.provider_code:
                 pt: YandexPointType = "city" if item.type in {"city", "settlement"} else "station"

@@ -49,6 +49,7 @@ class RailwayPlace:
     is_side: bool = False
     gender_restriction: GenderRestriction = GenderRestriction.UNKNOWN
     is_available: bool = True
+    explicitly_confirmed: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
