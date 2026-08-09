@@ -116,10 +116,30 @@ def test_two_explicit_lower_places_in_one_rzd_compartment_are_confirmed_with_evi
     assert result.selected_places == ("11", "13")
     assert result.selected_carriages == ("07",)
     assert result.selected_compartments == ("3",)
-    assert result.metadata["selected_place_evidence"] == (
-        {"carriage_number": "07", "compartment_number": "3", "place_number": "11", "berth_position": "lower", "source": "rzd_explicit_place_details"},
-        {"carriage_number": "07", "compartment_number": "3", "place_number": "13", "berth_position": "lower", "source": "rzd_explicit_place_details"},
-    )
+    assert [item["place_number"] for item in result.metadata["selected_place_evidence"]] == ["11", "13"]
+    assert all(item["train_number"] == "ac" and item["explicitly_confirmed"] for item in result.metadata["selected_place_evidence"])
+    assert result.lower_berths_check.status.value == "confirmed"
+    assert result.same_compartment_check.status.value == "confirmed"
+
+
+def test_missing_compartment_is_unknown_not_confirmed():
+    segment = seg("ac", "A", "C", dt(8), dt(12), places=[
+        {"place_number": "1", "carriage_number": "07", "berth_position": "lower"},
+        {"place_number": "3", "carriage_number": "07", "berth_position": "lower"},
+    ])
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), SegmentAvailabilityResult(segment_id="ac", provider="rzd", status=AvailabilityStatus.PARTIALLY_CONFIRMED, metadata=segment.metadata))
+    assert result.status == AvailabilityStatus.PARTIALLY_CONFIRMED
+    assert result.same_compartment_check.status.value == "unknown"
+
+
+def test_seated_sapsan_requirements_are_not_applicable():
+    segment = seg("sap", "A", "C", dt(8), dt(12), klass=TransportClass.SEATED, number="Сапсан")
+    planner = MultimodalJourneyPlanner(Provider([segment]))
+    result = planner._apply_railway_preferences(segment, req(max_transfers=0, seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), SegmentAvailabilityResult(segment_id="sap", provider="rzd", status=AvailabilityStatus.CONFIRMED, available_places_count=10))
+    assert result.status == AvailabilityStatus.UNAVAILABLE
+    assert result.lower_berths_check.status.value == "not_applicable"
+    assert result.same_compartment_check.status.value == "not_applicable"
 
 
 def test_aggregate_lower_quantity_cannot_confirm_same_compartment():

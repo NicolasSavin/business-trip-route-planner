@@ -22,7 +22,8 @@ YandexPointType = Literal["city", "station"]
 CACHE_TTL_SECONDS = int(os.getenv("YANDEX_STATIONS_CACHE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 CACHE_PATH = Path(os.getenv("YANDEX_STATIONS_CACHE_PATH", "/tmp/business-trip-route-planner/yandex_stations_list.json"))
 SQLITE_PATH = Path(os.getenv("YANDEX_STATIONS_SQLITE_PATH", "/tmp/business-trip-route-planner/yandex_stations.sqlite3"))
-YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "false").lower() in {"1", "true", "yes", "on"}
+YANDEX_STATIONS_LAZY_LOAD = os.getenv("YANDEX_STATIONS_LAZY_LOAD", "true").lower() in {"1", "true", "yes", "on"}
+YANDEX_STATIONS_AUTO_SYNC = os.getenv("YANDEX_STATIONS_AUTO_SYNC", "true").lower() in {"1", "true", "yes", "on"}
 SYNC_RETRY_COOLDOWN_SECONDS = int(os.getenv("YANDEX_STATIONS_SYNC_RETRY_COOLDOWN_SECONDS", "300"))
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"),), region="Алтайский край", settlement="Бийск"),
     YandexLocationMatch("c54", "Екатеринбург", "city", ("train", "bus"), region="Свердловская область", settlement="Екатеринбург"),
     YandexLocationMatch("c65", "Новосибирск", "city", ("train", "bus"), (YandexStation("s9610189", "Новосибирск-главный", "railway_station", ("train",), settlement="Новосибирск"),), region="Новосибирская область", settlement="Новосибирск"),
+    YandexLocationMatch("c43", "Казань", "city", ("train", "bus"), (YandexStation("s9602195", "Казань-Пасс.", "railway_station", ("train",), settlement="Казань"),), region="Республика Татарстан", settlement="Казань"),
 )
 
 class YandexStationsRepository:
@@ -340,10 +342,25 @@ class YandexLocationResolver:
         title = fallback_title or code
         return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
-        ready = self.ensure_index_ready()
+        """Resolve only from local state; this method deliberately never syncs.
+
+        Building ``stations_list`` is a lifecycle/background concern.  Keeping it
+        out of this path is what guarantees that a cold autocomplete request does
+        not inherit the provider's (often ten second) latency.
+        """
+        ready = False
+        try:
+            ready = self._stations_repository.cache_info().get("locations", 0) > 0
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
         self._initialized=True; key=normalize(query)
         if key in self._cache: return [self._with_cache_hit(m) for m in self._cache[key]]
-        matches=self._stations_repository.resolve(query) if ready else self._fallback_repository(query)
+        try:
+            matches=self._stations_repository.resolve(query) if ready else self._fallback_repository(query)
+        except sqlite3.DatabaseError as exc:
+            self.mark_index_failed(exc)
+            ready = False
+            matches = self._fallback_repository(query)
         self._cache[key]=matches; self._last_diag={"source": self._directory_cache.last_source, "selected_codes":[m.code for m in matches],"ambiguous":len(matches)>1, "index_ready": ready}
         return matches
     def diagnostic(self, query): return {"query":query,"normalized_query":normalize(query),"matches":[m.to_dict() for m in self.resolve_all(query)],"diagnostics":self._last_diag}
@@ -502,7 +519,7 @@ class YandexLocationResolver:
         except sqlite3.DatabaseError as exc:
             self.mark_index_failed(exc)
             info = {"storage": "sqlite", "locations": 0, "error": str(exc) or exc.__class__.__name__}
-        return info | {"lazy_load": True, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
+        return info | {"lazy_load": YANDEX_STATIONS_LAZY_LOAD, "auto_sync": YANDEX_STATIONS_AUTO_SYNC}
     def startup_diagnostics(self) -> dict[str, Any]:
         """Expose a deliberately small, credential-free startup failure summary."""
         loader_owner = getattr(self._directory_cache.loader, "__self__", None)

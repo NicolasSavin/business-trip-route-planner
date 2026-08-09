@@ -25,6 +25,21 @@ class SeatPolicyScope(StrEnum):
     ANY_RAIL_SEGMENT = "any_rail_segment"
 
 
+class RequirementStatus(StrEnum):
+    """Outcome of an individual, evidence-based placement requirement."""
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+@dataclass(frozen=True)
+class RequirementCheck:
+    status: RequirementStatus
+    message: str
+    evidence: tuple[dict[str, Any], ...] = ()
+
+
 @dataclass(frozen=True)
 class SegmentAvailabilityResult:
     segment_id: str
@@ -38,6 +53,8 @@ class SegmentAvailabilityResult:
     selected_places: tuple[str, ...] = ()
     selected_carriages: tuple[str, ...] = ()
     selected_compartments: tuple[str, ...] = ()
+    lower_berths_check: RequirementCheck | None = None
+    same_compartment_check: RequirementCheck | None = None
     checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_stale: bool = False
     reasons: tuple[str, ...] = ()
