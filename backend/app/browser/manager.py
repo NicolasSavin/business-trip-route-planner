@@ -47,7 +47,15 @@ class BrowserManager:
         executable_path, startup_exception = self._chromium_executable_probe()
         launched = False
         browser_version = None
-        status = self.health().status.value
+        if self._installed:
+            try:
+                from playwright.async_api import async_playwright
+                runtime = await async_playwright().start()
+                executable_path = runtime.chromium.executable_path
+                await runtime.stop()
+            except Exception as exc:
+                startup_exception = str(exc) or type(exc).__name__
+        status = "healthy" if executable_path and os.path.exists(executable_path) else self.health().status.value
         return {
             "playwright_version": self._playwright_package_version(),
             "playwright_browsers_path": os.getenv("PLAYWRIGHT_BROWSERS_PATH", "not-set"),
@@ -61,6 +69,8 @@ class BrowserManager:
         }
 
     def _playwright_package_version(self) -> str:
+        if not self._installed:
+            return "not-installed"
         try:
             return package_version("playwright")
         except PackageNotFoundError:
@@ -172,7 +182,7 @@ class BrowserManager:
 
     def health(self) -> BrowserHealth:
         if not self.config.playwright_enabled:
-            return BrowserHealth(False, self._installed, True, BrowserStatus.DISABLED, "Playwright disabled", version=self.version())
+            return BrowserHealth(False, False, True, BrowserStatus.DISABLED, "Playwright disabled", version=self.version())
         if not self._installed:
             return BrowserHealth(True, False, False, BrowserStatus.DEGRADED, "Playwright package is not installed", version=self.version())
         if self._unavailable_reason:

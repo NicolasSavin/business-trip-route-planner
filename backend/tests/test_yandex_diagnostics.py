@@ -164,9 +164,12 @@ def test_yandex_diagnostics_binary_body_has_no_string_preview(monkeypatch):
 
 
 def test_yandex_diagnostics_gzip_and_br_body_have_no_string_preview(monkeypatch):
+    import brotli
+    import gzip
     monkeypatch.setenv("YANDEX_DIAGNOSTICS_VERBOSE", "true")
     for encoding in ("gzip", "br"):
-        provider = run_provider(client_for_response(httpx.Response(200, content=b"compressed-payload", headers={"content-type": "application/json", "content-encoding": encoding})))
+        content = gzip.compress(b"compressed-payload") if encoding == "gzip" else brotli.compress(b"compressed-payload")
+        provider = run_provider(client_for_response(httpx.Response(200, content=content, headers={"content-type": "application/json", "content-encoding": encoding})))
         details = provider.last_error_payload["details"]
         assert details["content_encoding"] == encoding
         assert details["raw_body_preview"] is None

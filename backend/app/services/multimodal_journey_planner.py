@@ -544,7 +544,10 @@ class MultimodalJourneyPlanner:
                 "same_compartment_confirmed": bool(compartment_check and compartment_check.status == RequirementStatus.CONFIRMED)})
 
     def _place_from_dict(self, provider: str, item: dict, fallback_class: TransportClass | None) -> RailwayPlace:
-        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number") or ""), carriage_number=str(item.get("carriage_number") or item.get("carriage") or ""), transport_class=TransportClass(item.get("transport_class") or fallback_class or TransportClass.SEATED), place_type=str(item.get("place_type") or "unknown"), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)), explicitly_confirmed=bool(item.get("explicitly_confirmed", False)), metadata={"service_class": item.get("service_class"), "source": item.get("source")})
+        raw_class = str(item.get("transport_class") or item.get("carriage_type") or "").casefold()
+        class_by_provider_value = {"coupe": TransportClass.COUPE, "купе": TransportClass.COUPE, "platzkart": TransportClass.PLATZKART, "плацкарт": TransportClass.PLATZKART, "sleeper": TransportClass.SLEEPER, "св": TransportClass.SLEEPER, "seated": TransportClass.SEATED, "сидячий": TransportClass.SEATED}
+        transport_class = class_by_provider_value.get(raw_class, fallback_class or TransportClass.SEATED)
+        return RailwayPlace(provider=provider, place_number=str(item.get("place_number") or item.get("number") or ""), carriage_number=str(item.get("carriage_number") or item.get("carriage") or ""), transport_class=transport_class, place_type=str(item.get("place_type") or "unknown"), berth_position=BerthPosition(item.get("berth_position") or BerthPosition.UNKNOWN), compartment_number=item.get("compartment_number"), is_side=bool(item.get("is_side", False)), is_available=bool(item.get("is_available", True)), explicitly_confirmed=bool(item.get("explicitly_confirmed", False)), metadata={"service_class": item.get("service_class"), "source": item.get("source")})
 
     def _preferred_classes(self, request: RouteSearchRequest):
         if request.seat_preferences and request.seat_preferences.preferred_classes:

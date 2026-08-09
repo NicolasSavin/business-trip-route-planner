@@ -99,7 +99,7 @@ def test_suggest_does_not_wait_for_background_catalogue(tmp_path):
     thread = resolver.startup_refresh_background()
     assert started.wait(1)
     before = time.monotonic()
-    assert resolver.resolve("Казань").code == "c43"
+    assert resolver.lookup_cached("Казань")[0].code == "c43"
     assert time.monotonic() - before < .2
     assert resolver.startup_refresh_background() is None
     release.set()

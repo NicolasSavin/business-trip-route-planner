@@ -203,6 +203,23 @@ def test_arbitrary_metadata_and_non_rzd_places_are_not_explicit_evidence():
     assert other.metadata["selected_place_evidence"] == ()
 
 
+def test_yandex_schedule_enriched_by_rzd_confirms_coupe_lower_group():
+    from app.providers.rzd_availability.mapper import map_train, to_segment_result
+    schedule = yandex_moscow_petersburg_schedule()
+    train = map_train({"number": "022А", "carriages": [{"number": "07", "type": "coupe", "places": [
+        {"number": "11", "berthPosition": "lower", "compartmentNumber": "3"},
+        {"number": "13", "berthPosition": "lower", "compartmentNumber": "3"},
+    ]}]})
+    base = to_segment_result(schedule, train, passengers=2, preferences_requested=True)
+    planner = MultimodalJourneyPlanner(Provider([schedule]))
+    result = planner._apply_railway_preferences(schedule, req(
+        origin="Москва", destination="Санкт-Петербург", max_transfers=0, passengers=2,
+        seat_preferences=SeatPreferencesRequest(berth_preference="lower_only", require_same_compartment=True)), base)
+    assert result.lower_berths_check.status.value == "confirmed"
+    assert result.same_compartment_check.status.value == "confirmed"
+    assert {item["carriage_type"] for item in result.metadata["selected_place_evidence"]} == {"coupe"}
+
+
 def test_aggregate_lower_quantity_cannot_confirm_same_compartment():
     segment = seg("ac", "A", "C", dt(8), dt(12), seats=None)
     planner = MultimodalJourneyPlanner(Provider([segment]))

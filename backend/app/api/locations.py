@@ -26,7 +26,7 @@ def suggest_locations(q: str = Query(default="", min_length=0), limit: int = Que
     matches = []
     if len(q.strip()) >= 2:
         try:
-            matches = yandex_location_resolver.resolve_all(q)[:limit]
+            matches = yandex_location_resolver.lookup_cached(q)[:limit]
             index_ready = bool(yandex_location_resolver._last_diag.get("index_ready"))
         except sqlite3.DatabaseError as exc:
             index_error = str(exc) or exc.__class__.__name__

@@ -115,7 +115,7 @@ LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c213", "Москва", "city", ("train", "bus"), (YandexStation("s2000003", "Москва Казанская", "railway_station", ("train",), settlement="Москва"), YandexStation("s2006004", "Москва Ленинградская", "railway_station", ("train",), settlement="Москва")), aliases_used=("мск", "moscow"), region="Москва", settlement="Москва"),
     YandexLocationMatch("c2", "Санкт-Петербург", "city", ("train", "bus"), (YandexStation("s9602494", "Санкт-Петербург-Главн.", "railway_station", ("train",), settlement="Санкт-Петербург"),), aliases_used=("спб", "питер", "санкт петербург", "санкт-петербург"), region="Санкт-Петербург", settlement="Санкт-Петербург"),
     YandexLocationMatch("c42", "Сарапул", "city", ("train", "bus"), (YandexStation("s9612363", "Сарапул", "railway_station", ("train",), settlement="Сарапул"), YandexStation("s9635668", "Автовокзал Сарапул", "bus_station", ("bus",), settlement="Сарапул")), region="Удмуртия", settlement="Сарапул"),
-    YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"),), region="Алтайский край", settlement="Бийск"),
+    YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"), YandexStation("s9657040", "Автовокзал Бийск", "bus_station", ("bus",), settlement="Бийск")), region="Алтайский край", settlement="Бийск"),
     YandexLocationMatch("c54", "Екатеринбург", "city", ("train", "bus"), region="Свердловская область", settlement="Екатеринбург"),
     YandexLocationMatch("c65", "Новосибирск", "city", ("train", "bus"), (YandexStation("s9610189", "Новосибирск-главный", "railway_station", ("train",), settlement="Новосибирск"),), region="Новосибирская область", settlement="Новосибирск"),
     YandexLocationMatch("c43", "Казань", "city", ("train", "bus"), (YandexStation("s9602195", "Казань-Пасс.", "railway_station", ("train",), settlement="Казань"),), region="Республика Татарстан", settlement="Казань"),
@@ -331,10 +331,10 @@ class YandexLocationResolver:
         self.ensure_index_ready()
         match = self._stations_repository.get_by_code(code)
         if match:
-            return match
+            return YandexLocationMatch(**{**match.__dict__, "source": "provider_code"})
         for item in LOCAL_POINTS:
             if item.code == code:
-                return item
+                return YandexLocationMatch(**{**item.__dict__, "source": "provider_code"})
             for station in item.stations:
                 if station.code == code:
                     return YandexLocationMatch(station.code, station.title, "station", station.transport_types, (station,), station.latitude, station.longitude, country=station.country, region=station.region, settlement=station.settlement, station_type=station.type)
@@ -342,6 +342,12 @@ class YandexLocationResolver:
         title = fallback_title or code
         return YandexLocationMatch(code, title, point_type, settlement=title if point_type == "city" else None, source="provider_code")
     def resolve_all(self, query: str) -> list[YandexLocationMatch]:
+        """Resolve for lifecycle/provider callers, ensuring the full index first."""
+        if self._directory_cache.loader is not None:
+            self.ensure_index_ready()
+        return self.lookup_cached(query)
+
+    def lookup_cached(self, query: str) -> list[YandexLocationMatch]:
         """Resolve only from local state; this method deliberately never syncs.
 
         Building ``stations_list`` is a lifecycle/background concern.  Keeping it
