@@ -8,6 +8,10 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeployTrigger: commit
+    disk:
+      name: hotels-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
@@ -34,6 +38,22 @@ services:
         value: true
       - key: YANDEX_RASP_API_KEY
         sync: false
+      - key: AUTH_SESSION_SECRET
+        sync: false
+      - key: HOTELS_ADMIN_USERNAME
+        sync: false
+      - key: HOTELS_ADMIN_PASSWORD
+        sync: false
+      - key: HOTELS_USER_USERNAME
+        sync: false
+      - key: HOTELS_USER_PASSWORD
+        sync: false
+      - key: HOTELS_DATABASE
+        value: /var/data/hotels.sqlite3
+      - key: COOKIE_SECURE
+        value: true
+      - key: COOKIE_SAMESITE
+        value: none
       - key: YANDEX_RASP_BASE_URL
         value: https://api.rasp.yandex-net.ru/v3.0/
       - key: MAX_PROVIDER_CONCURRENCY
