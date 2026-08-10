@@ -10,7 +10,7 @@ function placesInCarriages(carriages: CarriageAvailability[] | undefined): numbe
 
 export function availableSeatsForSegment(route: RouteOption, segment: RouteSegment): number | null {
   const availability = route.availability?.segment_results.find((item) => item.segment_id === segment.id);
-  const carriageCount = placesInCarriages(segment.carriages) ?? placesInCarriages(availability?.carriages);
+  const carriageCount = placesInCarriages(segment.carriages);
   const confirmedCount = availability?.available_seats;
   const candidates = [segment.available_seats, confirmedCount, carriageCount]
     .filter((count): count is number => typeof count === "number");
@@ -40,10 +40,12 @@ export function selectedSeatEvidenceLabel(segment: RouteSegment): string {
 }
 
 export function routesVisibleForStrictState(data: RouteSearchResponse, strictAvailability: boolean): RouteOption[] {
-  if (!strictAvailability && data.routes.length === 0 && (data.partially_confirmed_routes?.length ?? 0) > 0) {
-    return data.partially_confirmed_routes ?? [];
-  }
-  return data.routes;
+  if (strictAvailability) return data.routes;
+  const byId = new Map<string, RouteOption>();
+  [...data.routes, ...(data.partially_confirmed_routes ?? [])].forEach((route) => {
+    if (!byId.has(route.id)) byId.set(route.id, route);
+  });
+  return Array.from(byId.values());
 }
 
 export function hasHiddenUnconfirmedRoutes(data: RouteSearchResponse, strictAvailability: boolean): boolean {

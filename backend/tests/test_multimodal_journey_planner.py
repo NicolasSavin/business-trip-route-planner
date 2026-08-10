@@ -378,12 +378,12 @@ def test_yandex_schedule_only_unknown_seats_is_unconfirmed_not_rejected_when_not
 
     routes, partial, rejected, summary = planner.search(request)
 
-    assert routes == partial
-    assert len(routes) == 1
+    assert routes == []
+    assert len(partial) == 1
     assert rejected == []
-    assert routes[0].availability.status == AvailabilityStatus.UNCONFIRMED
-    assert routes[0].availability.segment_results[0].available_places_count is None
-    assert "Источник расписаний не подтверждает наличие и расположение мест" in routes[0].availability.warnings
+    assert partial[0].availability.status == AvailabilityStatus.UNCONFIRMED
+    assert partial[0].availability.segment_results[0].available_places_count is None
+    assert "Источник расписаний не подтверждает наличие и расположение мест" in partial[0].availability.warnings
     assert summary.partially_confirmed_routes == 1
     assert summary.rejected_routes == 0
 
@@ -428,10 +428,10 @@ def test_api_preserves_direct_yandex_unknown_availability_when_not_confirmed_onl
         strict_availability=False, allowed_transport=["train"],
     ))
 
-    assert len(response.routes) == 1
-    assert response.routes[0].transfers_count == 0
-    assert response.routes[0].segments[0].number == "022А"
-    assert response.routes[0].availability.is_available is None
+    assert response.routes == []
+    assert response.partially_confirmed_routes[0].transfers_count == 0
+    assert response.partially_confirmed_routes[0].segments[0].number == "022А"
+    assert response.partially_confirmed_routes[0].availability.is_available is None
 
 
 def test_api_confirmed_only_hides_direct_yandex_unknown_availability():
@@ -470,14 +470,14 @@ def test_tutu_provider_error_preserves_yandex_route_and_summary_error():
 
     routes, partial, rejected, summary = planner.search(req(max_transfers=0, strict_availability=False))
 
-    assert routes == partial
-    assert len(routes) == 1
+    assert routes == []
+    assert len(partial) == 1
     assert rejected == []
-    assert routes[0].availability.status == AvailabilityStatus.PARTIALLY_CONFIRMED or routes[0].availability.status == AvailabilityStatus.UNCONFIRMED
+    assert partial[0].availability.status in {AvailabilityStatus.PARTIALLY_CONFIRMED, AvailabilityStatus.UNCONFIRMED}
     assert "tutu_playwright" in summary.provider_errors
     assert summary.provider_errors["tutu_playwright"]["errors"][0]["message"] == "Location suggestion not found: Рязань"
     assert "yandex_rasp" not in summary.provider_errors
-    assert "Недостаточно мест" not in routes[0].explanation
+    assert "Недостаточно мест" not in partial[0].explanation
 
 
 def test_multiple_tutu_segment_errors_are_not_overwritten_and_warnings_deduped():
@@ -494,7 +494,7 @@ def test_multiple_tutu_segment_errors_are_not_overwritten_and_warnings_deduped()
 
     errors = summary.provider_errors["tutu_playwright"]["errors"]
     assert [e["message"] for e in errors] == ["first", "second"]
-    assert len(routes[0].warnings) == len(set(routes[0].warnings))
+    assert len(partial[0].warnings) == len(set(partial[0].warnings))
 
 from app.availability.journey import SegmentAvailabilityResult, aggregate_journey_availability
 from app.domain import Route, RouteOption
@@ -689,8 +689,8 @@ def test_unknown_availability_does_not_emit_not_enough_seats_warning():
 
     routes, partial, rejected, _ = planner.search(req(max_transfers=0, strict_availability=False))
 
-    assert routes == partial
-    text = " ".join((*routes[0].warnings, routes[0].explanation, *routes[0].availability.warnings, *routes[0].availability.reasons))
+    assert routes == []
+    text = " ".join((*partial[0].warnings, partial[0].explanation, *partial[0].availability.warnings, *partial[0].availability.reasons))
     assert "Недостаточно мест" not in text
 
 

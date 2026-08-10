@@ -122,7 +122,10 @@ class MultimodalJourneyPlanner:
         }
         partial = [o for o in checked if o.availability and o.availability.status in visible_statuses - {AvailabilityStatus.CONFIRMED}]
         rejected = [o for o in checked if not o.availability or o.availability.status not in visible_statuses]
-        routes = confirmed if request.strict_availability else confirmed + partial
+        # The public response keeps confirmed and partial routes in disjoint
+        # collections. Presentation policy belongs to the client and must not
+        # make a partial route appear in both response arrays.
+        routes = confirmed
         direct_before = [o for o in checked if o.route.transfers_count == 0]
         direct_after = [o for o in routes if o.route.transfers_count == 0]
         direct_availability = [

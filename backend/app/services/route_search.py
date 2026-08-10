@@ -2,8 +2,8 @@ import logging
 
 from app.domain import RouteOption as DomainRouteOption
 from app.engine import RouteEngine
-from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult
-from app.models.routes import RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability
+from app.availability.journey import AvailabilityStatus, JourneyAvailabilityResult, RequirementCheck
+from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteOption, RouteSearchRequest, RouteSearchResponse, RouteSegment, SegmentAvailability
 from app.providers.base import TransportProvider
 from app.services.multimodal_journey_planner import MultimodalJourneyPlanner
 
@@ -18,7 +18,8 @@ class RouteSearchService:
 
     def search(self, request: RouteSearchRequest, include_unavailable: bool = False) -> list[RouteOption]:
         response = self.search_response(request, include_unavailable=include_unavailable)
-        return response.routes + (response.partially_confirmed_routes if include_unavailable else []) + (response.rejected_routes if include_unavailable else [])
+        include_partial = include_unavailable or not request.strict_availability
+        return response.routes + (response.partially_confirmed_routes if include_partial else []) + (response.rejected_routes if include_unavailable else [])
 
     async def search_response_async(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
         routes, partial, rejected, summary = await self.planner.search_async(request)
@@ -55,6 +56,69 @@ class RouteSearchService:
             logger.exception("JourneyResponse serialization failed")
             raise
 
+    @staticmethod
+    def _to_requirement_check_response(check: RequirementCheck | None) -> RequirementCheckResponse | None:
+        if check is None:
+            return None
+        return RequirementCheckResponse(
+            status=check.status.value,
+            message=check.message,
+            evidence=list(check.evidence),
+        )
+
+    @staticmethod
+    def _sanitize_carriages(carriages: object) -> list[dict]:
+        """Return the small, provider-agnostic carriage shape exposed by the API."""
+        if not isinstance(carriages, (list, tuple)):
+            return []
+
+        def first_value(item: dict, *keys: str):
+            return next((item[key] for key in keys if item.get(key) is not None), None)
+
+        def safe_scalar(value):
+            return value if isinstance(value, (str, int, float)) and not isinstance(value, bool) else None
+
+        sanitized = []
+        for carriage in carriages:
+            if not isinstance(carriage, dict):
+                continue
+            public = {
+                "carriage_number": first_value(carriage, "carriage_number", "number", "carNumber"),
+                "carriage_type": first_value(carriage, "carriage_type", "type", "carType"),
+                "car_type": carriage.get("car_type"),
+                "service_class": first_value(carriage, "service_class", "serviceClass"),
+                "min_price": first_value(carriage, "min_price", "minPrice", "minimum_price"),
+                "available_places": first_value(
+                    carriage,
+                    "available_places",
+                    "availablePlaces",
+                    "availableSeats",
+                    "freeSeats",
+                    "placeQuantity",
+                    "place_quantity",
+                ),
+            }
+            explicit_places = []
+            places = first_value(carriage, "places", "seats", "freePlaces")
+            if isinstance(places, list):
+                for place in places:
+                    if not isinstance(place, dict) or place.get("explicitly_confirmed") is not True:
+                        continue
+                    evidence = {
+                        "place_number": safe_scalar(first_value(place, "place_number", "number", "placeNumber")),
+                        "compartment_number": safe_scalar(first_value(place, "compartment_number", "compartment", "compartmentNumber")),
+                        "berth_position": safe_scalar(first_value(place, "berth_position", "berthPosition")),
+                        "explicitly_confirmed": True,
+                    }
+                    explicit_places.append({key: value for key, value in evidence.items() if value is not None})
+            public = {key: safe_scalar(value) for key, value in public.items()}
+            public = {key: value for key, value in public.items() if value is not None}
+            if explicit_places:
+                public["places"] = explicit_places
+            if public:
+                sanitized.append(public)
+        return sanitized
+
     def _to_api_route(self, option: DomainRouteOption, passengers: int) -> RouteOption:
         route = option.route
         segments = [
@@ -85,6 +149,8 @@ class RouteSearchService:
                 segment_results = []
                 for result in option.availability.segment_results:
                     segment_availability_by_id[result.segment_id] = result
+                    lower_berths_check = self._to_requirement_check_response(result.lower_berths_check)
+                    same_compartment_check = self._to_requirement_check_response(result.same_compartment_check)
                     segment_results.append(
                         SegmentAvailability(
                             segment_id=result.segment_id,
@@ -94,13 +160,12 @@ class RouteSearchService:
                             transport_class=None,
                             checked_at=result.checked_at,
                             source=result.provider,
-                            carriages=list(result.metadata.get("carriages") or []),
                             selected_places=list(result.selected_places),
                             selected_carriages=list(result.selected_carriages),
                             selected_compartments=list(result.selected_compartments),
                             selected_place_evidence=list(result.metadata.get("selected_place_evidence") or []),
-                            lower_berths_check=result.lower_berths_check,
-                            same_compartment_check=result.same_compartment_check,
+                            lower_berths_check=lower_berths_check,
+                            same_compartment_check=same_compartment_check,
                             seat_preferences_status=result.seat_preferences_status.value,
                             lower_berths_confirmed=bool(result.metadata.get("lower_berths_confirmed")),
                             same_compartment_confirmed=bool(result.metadata.get("same_compartment_confirmed")),
@@ -121,7 +186,6 @@ class RouteSearchService:
                     warnings=list(dict.fromkeys(option.availability.warnings)),
                     is_stale=option.availability.status == AvailabilityStatus.STALE,
                 )
-                availability.segments = availability.segment_results
             else:
                 availability = RouteAvailability(
                     is_available=option.availability.is_available,
@@ -149,7 +213,6 @@ class RouteSearchService:
                     stale_after_seconds=option.availability.stale_after_seconds,
                     is_stale=option.availability.is_stale,
                 )
-                availability.segments = availability.segment_results
 
         api_segments = []
         for item in segments:
@@ -160,13 +223,16 @@ class RouteSearchService:
                 item.selected_places = list(result.selected_places)
                 item.selected_carriages = list(result.selected_carriages)
                 item.selected_compartments = list(result.selected_compartments)
-                item.selected_place_evidence = list(result.metadata.get("selected_place_evidence") or [])
-                item.lower_berths_check = result.lower_berths_check
-                item.same_compartment_check = result.same_compartment_check
+                item.selected_place_evidence = [
+                    PlaceEvidence.model_validate(evidence)
+                    for evidence in result.metadata.get("selected_place_evidence") or []
+                ]
+                item.lower_berths_check = self._to_requirement_check_response(result.lower_berths_check)
+                item.same_compartment_check = self._to_requirement_check_response(result.same_compartment_check)
                 item.seat_preferences_status = result.seat_preferences_status.value
                 item.lower_berths_confirmed = bool(result.metadata.get("lower_berths_confirmed"))
                 item.same_compartment_confirmed = bool(result.metadata.get("same_compartment_confirmed"))
-                item.carriages = list(result.metadata.get("carriages") or [])
+                item.carriages = self._sanitize_carriages(result.metadata.get("carriages"))
                 item.min_price = result.metadata.get("min_price")
                 item.price_semantics = result.metadata.get("price_semantics") if item.min_price is not None else None
                 item.availability_message = {

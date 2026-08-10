@@ -264,6 +264,21 @@ test("turning strict availability off reuses already loaded partial routes", () 
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
 });
 
+test("non-strict presentation merges confirmed and partial routes exactly once", () => {
+  const confirmed = { ...partialRoute, id: "route-confirmed", is_available_for_group: true };
+  const duplicatePartial = { ...partialRoute, id: confirmed.id };
+  const response: RouteSearchResponse = {
+    routes: [confirmed],
+    partially_confirmed_routes: [partialRoute, duplicatePartial],
+  };
+
+  assert.deepEqual(
+    routesVisibleForStrictState(response, false).map((route) => route.id),
+    ["route-confirmed", "route-partial"],
+  );
+  assert.deepEqual(routesVisibleForStrictState(response, true), [confirmed]);
+});
+
 test("unconfirmed route remains visible when strict availability is off", () => {
   const response: RouteSearchResponse = { routes: [partialRoute] };
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
@@ -272,7 +287,14 @@ test("unconfirmed route remains visible when strict availability is off", () => 
 test("positive RZD carriage availability is not lost when legacy available_seats is zero", () => {
   const route: RouteOption = {
     ...partialRoute,
-    segments: [{ ...partialRoute.segments[0], available_seats: 0 }],
+    segments: [{
+      ...partialRoute.segments[0],
+      available_seats: 0,
+      carriages: [
+        { car_type: "Купе", min_price: 4200, available_places: 3 },
+        { car_type: "Плацкарт", min_price: 2800, available_places: 4 },
+      ],
+    }],
     availability: {
       is_available: true,
       requested_passengers: 2,
@@ -281,10 +303,6 @@ test("positive RZD carriage availability is not lost when legacy available_seats
         segment_id: "seg-partial",
         is_available: true,
         available_seats: 0,
-        carriages: [
-          { car_type: "Купе", min_price: 4200, available_places: 3 },
-          { car_type: "Плацкарт", min_price: 2800, available_places: 4 },
-        ],
       }],
     },
   };

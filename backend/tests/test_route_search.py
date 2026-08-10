@@ -1,12 +1,13 @@
+from dataclasses import replace
 from datetime import date, datetime
 
 from fastapi.testclient import TestClient
 
 from app.api import routes as routes_api
-from app.availability.journey import AvailabilityStatus, SegmentAvailabilityResult
+from app.availability.journey import AvailabilityStatus, RequirementCheck, RequirementStatus, SegmentAvailabilityResult
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment
 from app.main import app
-from app.models.routes import RouteAvailability, RouteSearchRequest, SegmentAvailability, TransportType
+from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteSearchRequest, RouteSearchResponse, SearchSummary, SegmentAvailability, TransportType
 from app.providers.mock import MockTransportProvider
 from app.services.route_search import RouteSearchService
 
@@ -73,21 +74,114 @@ def test_route_search_serializes_availability_block():
     payload = route.model_dump()
     assert payload["availability"]["is_available"] is True
     assert payload["availability"]["requested_passengers"] == 2
-    assert payload["availability"]["segments"]
+    assert payload["availability"]["segment_results"]
+    assert "segments" not in payload["availability"]
 
 
-def test_route_search_exposes_rzd_carriages_and_their_availability():
+def test_confirmed_and_partial_route_collections_are_disjoint():
+    response = RouteSearchService(MockTransportProvider()).search_response(
+        make_request(strict_availability=False)
+    )
+
+    confirmed_ids = {route.id for route in response.routes}
+    partial_ids = {route.id for route in response.partially_confirmed_routes}
+    assert confirmed_ids.isdisjoint(partial_ids)
+    assert all(route.availability and route.availability.is_available is True for route in response.routes)
+    assert all(route.availability and route.availability.is_available is not True for route in response.partially_confirmed_routes)
+
+
+def test_post_search_omits_internal_diagnostics_and_stays_under_150_kb_for_30_routes(monkeypatch):
+    service = RouteSearchService(MockTransportProvider())
+    option = service.planner.search(make_request())[0][0]
+    option.availability.segment_results[0].metadata["carriages"] = [{
+        "number": "07",
+        "type": "coupe",
+        "serviceClass": "2К",
+        "minPrice": 4200,
+        "availableSeats": 12,
+        "raw": {"provider_response": "x" * 200_000},
+        "diagnostics": {"request": "x" * 100_000},
+        "unknown_provider_field": "x" * 100_000,
+        "places": [
+            {"number": "11", "compartmentNumber": "3", "berthPosition": "lower", "explicitly_confirmed": True, "raw": "x" * 100_000},
+            {"number": "12", "raw": "x" * 100_000},
+        ],
+    }]
+    route = service._to_api_route(option, 2)
+    routes = [route.model_copy(update={"id": f"route-{index}"}) for index in range(30)]
+    summary = SearchSummary(
+        segments_loaded=30,
+        candidate_journeys=30,
+        availability_checks=30,
+        confirmed_routes=30,
+        provider_diagnostics={"yandex_rasp": {"raw_provider_payload": "x" * 200_000}},
+        raw_direct_candidates=[{"raw": "x" * 10_000}],
+        filtered_direct_candidates=[{"filtered": "x" * 10_000}],
+        direct_match_decisions=[{"decision": "x" * 10_000}],
+        ranked_candidates=[{"ranked": "x" * 10_000}],
+    )
+    api_response = RouteSearchResponse(routes=routes, search_summary=summary)
+
+    async def search_response_async(_request):
+        return api_response
+
+    monkeypatch.setattr(service, "search_response_async", search_response_async)
+    monkeypatch.setattr(routes_api, "service", service)
+    response = TestClient(app).post("/api/v1/routes/search", json={
+        "origin": "Москва",
+        "destination": "Екатеринбург",
+        "departure_date": "2026-08-10",
+        "passengers": 2,
+    })
+    parsed = response.json()
+
+    assert response.status_code == 200
+    assert len(response.content) < 150 * 1024
+    for returned_route in parsed["routes"]:
+        segment = returned_route["segments"][0]
+        availability = returned_route["availability"]["segment_results"][0]
+        assert segment["carriages"] == [{
+            "carriage_number": "07",
+            "carriage_type": "coupe",
+            "service_class": "2К",
+            "min_price": 4200,
+            "available_places": 12,
+            "places": [{
+                "place_number": "11",
+                "compartment_number": "3",
+                "berth_position": "lower",
+                "explicitly_confirmed": True,
+            }],
+        }]
+        assert "carriages" not in availability
+    for key in (
+        "raw_direct_candidates",
+        "filtered_direct_candidates",
+        "direct_match_decisions",
+        "ranked_candidates",
+        "provider_diagnostics",
+    ):
+        assert key not in parsed["search_summary"]
+    assert b"raw_provider_payload" not in response.content
+    assert b'"raw"' not in response.content
+    assert b"unknown_provider_field" not in response.content
+
+
+def test_route_search_exposes_sanitized_rzd_carriages_once():
     service = RouteSearchService(MockTransportProvider())
     option = service.planner.search(make_request())[0][0]
     result = option.availability.segment_results[0]
     result.metadata["carriages"] = [
-        {"car_type": "coupe", "min_price": 4200, "available_places": 3}
+        {"car_type": "coupe", "min_price": 4200, "available_places": 3, "raw": {"secret": True}, "unknown": "hidden"}
     ]
 
     payload = service._to_api_route(option, 2).model_dump()
 
     assert payload["segments"][0]["carriages"][0]["available_places"] == 3
-    assert payload["availability"]["segment_results"][0]["carriages"][0]["min_price"] == 4200
+    assert payload["segments"][0]["carriages"][0]["min_price"] == 4200
+    assert "raw" not in payload["segments"][0]["carriages"][0]
+    assert "unknown" not in payload["segments"][0]["carriages"][0]
+    assert "carriages" not in payload["availability"]["segment_results"][0]
 
 
 def test_rzd_min_prices_are_exposed_and_unknown_price_is_not_zero():
@@ -172,6 +266,137 @@ def post_search_with_service(monkeypatch, service):
     )
 
 
+def test_requirement_check_response_serializes_place_evidence():
+    evidence = {
+        "train_number": "008С",
+        "departure_datetime": "2026-08-10T08:00:00",
+        "carriage_number": "07",
+        "carriage_type": "coupe",
+        "place_number": "11",
+        "berth_position": "lower",
+        "compartment_number": "3",
+        "source": "rzd_explicit_place_details",
+    }
+
+    response = RouteSearchService._to_requirement_check_response(
+        RequirementCheck(RequirementStatus.CONFIRMED, "Подтверждено", (evidence,))
+    )
+
+    assert isinstance(response, RequirementCheckResponse)
+    assert isinstance(response.evidence[0], PlaceEvidence)
+    assert response.model_dump(mode="json") == {
+        **{"status": "confirmed", "message": "Подтверждено"},
+        "evidence": [{
+            **evidence,
+            "service_class": None,
+            "place_type": None,
+            "explicitly_confirmed": True,
+        }],
+    }
+
+
+def _post_seat_requirement_search(monkeypatch, preferences, *, places=(), transport_class=TransportClass.COUPE, title=None):
+    direct = segment("008С", "A", "C", dt(8), dt(12))
+    direct = replace(
+        direct,
+        transport_class=transport_class,
+        metadata={**direct.metadata, **({"train_title": title} if title else {})},
+    )
+    service = RouteSearchService(Provider([direct]))
+    service.planner.tutu_playwright = TutuClient({
+        direct.id: SegmentAvailabilityResult(
+            segment_id=direct.id,
+            provider="rzd",
+            status=AvailabilityStatus.CONFIRMED,
+            schedule_confirmed=True,
+            seats_confirmed=True,
+            passengers_supported=True,
+            available_places_count=2,
+            seat_preferences_status=AvailabilityStatus.CONFIRMED,
+            metadata={"places": list(places)},
+        )
+    })
+    monkeypatch.setattr(routes_api, "service", service)
+    return TestClient(app, raise_server_exceptions=False).post("/api/v1/routes/search", json={
+        "origin": "A",
+        "destination": "C",
+        "departure_date": DAY.isoformat(),
+        "passengers": 2,
+        "allowed_transport": ["train"],
+        "max_transfers": 0,
+        "strict_availability": False,
+        "seat_preferences": preferences,
+    })
+
+
+def _explicit_places():
+    return [
+        {"place_number": number, "carriage_number": "07", "transport_class": "coupe",
+         "berth_position": "lower", "compartment_number": "3", "is_available": True,
+         "explicitly_confirmed": True, "source": "rzd_explicit_place_details"}
+        for number in ("11", "13")
+    ]
+
+
+def test_api_search_serializes_lower_only_requirement(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"berth_preference": "lower_only"}, places=_explicit_places()
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    for check in (route["segments"][0]["lower_berths_check"], route["availability"]["segment_results"][0]["lower_berths_check"]):
+        assert check["status"] == "confirmed"
+        assert check["evidence"][0]["place_number"] == "11"
+
+
+def test_api_search_serializes_same_compartment_requirement(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"require_same_compartment": True}, places=_explicit_places()
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    assert route["segments"][0]["same_compartment_check"]["status"] == "confirmed"
+    assert route["availability"]["segment_results"][0]["same_compartment_check"]["evidence"][0]["compartment_number"] == "3"
+
+
+def test_api_search_serializes_both_seat_requirements(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch,
+        {"berth_preference": "lower_only", "require_same_compartment": True},
+        places=_explicit_places(),
+    )
+    assert response.status_code == 200
+    route = response.json()["routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "confirmed"
+        assert container["same_compartment_check"]["status"] == "confirmed"
+
+
+def test_api_search_serializes_not_applicable_for_sapsan(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch,
+        {"berth_preference": "lower_only", "require_same_compartment": True, "strict_preferences": False},
+        transport_class=TransportClass.EXPRESS,
+        title="Сапсан",
+    )
+    assert response.status_code == 200
+    route = response.json()["partially_confirmed_routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "not_applicable"
+        assert container["same_compartment_check"]["status"] == "not_applicable"
+
+
+def test_api_search_serializes_unknown_without_explicit_place_numbers(monkeypatch):
+    response = _post_seat_requirement_search(
+        monkeypatch, {"berth_preference": "lower_only", "require_same_compartment": True}
+    )
+    assert response.status_code == 200
+    route = response.json()["partially_confirmed_routes"][0]
+    for container in (route["segments"][0], route["availability"]["segment_results"][0]):
+        assert container["lower_berths_check"]["status"] == "unknown"
+        assert container["same_compartment_check"]["status"] == "unknown"
+
+
 def test_route_availability_allows_unknown_and_api_serializes_null(monkeypatch):
     model = RouteAvailability(
         is_available=None,
@@ -211,7 +436,7 @@ def test_route_availability_allows_unknown_and_api_serializes_null(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    route = body["routes"][0]
+    route = body["partially_confirmed_routes"][0]
     assert route["availability"]["is_available"] is None
     assert route["availability"]["segment_results"][0]["is_available"] is None
     assert route["is_available_for_group"] is None
@@ -299,7 +524,9 @@ def test_api_keeps_direct_yandex_timetable_when_seats_are_inconclusive(monkeypat
     )
 
     assert response.status_code == 200
-    routes = response.json()["routes"]
+    body = response.json()
+    assert body["routes"] == []
+    routes = body["partially_confirmed_routes"]
     assert [route["transfers_count"] for route in routes] == [0, 1]
     assert routes[0]["segments"][0]["id"] == "direct"
     assert routes[0]["availability"]["is_available"] is None

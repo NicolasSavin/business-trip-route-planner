@@ -117,7 +117,6 @@ class SegmentAvailability(BaseModel):
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False
     availability_message: str | None = None
-    carriages: list[dict[str, Any]] = Field(default_factory=list)
     requested_passengers: int
     transport_class: TransportClass | None
     checked_at: datetime
@@ -134,7 +133,6 @@ class RouteAvailability(BaseModel):
     minimum_available_seats: int | None
     checked_at: datetime
     segment_results: list[SegmentAvailability]
-    segments: list[SegmentAvailability] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     stale_after_seconds: int | None = None
@@ -187,22 +185,22 @@ class SearchSummary(BaseModel):
     providers_failed: list[str] = Field(default_factory=list)
     provider_errors: dict[str, str | dict] = Field(default_factory=dict)
     segments_by_provider: dict[str, int] = Field(default_factory=dict)
-    provider_diagnostics: dict[str, object] = Field(default_factory=dict)
+    provider_diagnostics: dict[str, object] = Field(default_factory=dict, exclude=True)
     warnings: list[str] = Field(default_factory=list)
-    raw_direct_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    filtered_direct_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    rejection_reasons: list[dict[str, Any]] = Field(default_factory=list)
-    ranked_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    resolved_origin_cities: list[str] = Field(default_factory=list)
-    resolved_destination_cities: list[str] = Field(default_factory=list)
-    direct_match_decisions: list[dict[str, Any]] = Field(default_factory=list)
-    yandex_requests_made: int = 0
-    yandex_direct_requests_made: int = 0
-    yandex_transfer_requests_made: int = 0
-    yandex_candidate_origin_codes: list[str] = Field(default_factory=list)
-    yandex_candidate_destination_codes: list[str] = Field(default_factory=list)
-    yandex_fanout_limited: bool = False
-    yandex_search_deadline_exceeded: bool = False
+    raw_direct_candidates: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    filtered_direct_candidates: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    rejection_reasons: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    ranked_candidates: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    resolved_origin_cities: list[str] = Field(default_factory=list, exclude=True)
+    resolved_destination_cities: list[str] = Field(default_factory=list, exclude=True)
+    direct_match_decisions: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    yandex_requests_made: int = Field(default=0, exclude=True)
+    yandex_direct_requests_made: int = Field(default=0, exclude=True)
+    yandex_transfer_requests_made: int = Field(default=0, exclude=True)
+    yandex_candidate_origin_codes: list[str] = Field(default_factory=list, exclude=True)
+    yandex_candidate_destination_codes: list[str] = Field(default_factory=list, exclude=True)
+    yandex_fanout_limited: bool = Field(default=False, exclude=True)
+    yandex_search_deadline_exceeded: bool = Field(default=False, exclude=True)
 
 
 class RouteSearchResponse(BaseModel):
