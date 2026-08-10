@@ -90,7 +90,7 @@ def test_yandex_search_logs_direct_segment_diagnostics(caplog):
     assert "origin_station='Москва'" in segment_message
     assert "destination_station='Санкт-Петербург'" in segment_message
     assert "departure_time=2026-08-10T08:00:00+03:00" in segment_message
-    assert "route_search.yandex_segments_total count=7" in messages
+    assert "route_search.yandex_segments_total count=12" in messages
     assert any(message.startswith("route_search.yandex_provider_output total_count=1 direct_count=1") for message in messages)
     assert any(message.startswith("route_search.yandex_response") for message in messages)
     assert any(message.startswith("route_search.yandex_direct_schedules") for message in messages)
@@ -271,6 +271,23 @@ def test_yandex_resolver_returns_multiple_station_codes_for_city():
     assert match.type == "city"
 
 
+def test_kazan_fallback_maps_both_railway_terminals_to_city_c43():
+    match = YandexLocationResolver().resolve_code("c43", "Казань")
+
+    assert match.code == "c43"
+    assert {station.code for station in match.stations} == {"s9602195", "s9602196"}
+    assert {station.settlement for station in match.stations} == {"Казань"}
+
+
+def test_city_provider_code_keeps_city_and_all_kazan_train_stations():
+    provider, _ = provider_with_payload({"segments": []})
+    match = provider.resolver.resolve_code("c43", "Казань")
+
+    assert provider._codes_for_transport(match, [TransportType.TRAIN]) == (
+        "c43", "s9602196", "s9602195",
+    )
+
+
 def test_yandex_resolver_unknown_city():
     try:
         YandexLocationResolver().resolve("Неизвестныйгород")
@@ -355,6 +372,39 @@ def test_yandex_pair_failure_does_not_abort_all_pairs_and_deduplicates():
     segments = provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург")
     assert len(segments) == 1
     assert provider.last_diagnostics["attempts"][0]["error"]["code"] == "invalid_provider_response"
+
+
+def test_moscow_kazan_404_city_pair_continues_to_successful_station_pair():
+    class Client:
+        last_status_code = 200
+        calls = []
+
+        def stations_list(self):
+            return {}
+
+        def search(self, **kwargs):
+            self.calls.append((kwargs["origin_code"], kwargs["destination_code"]))
+            if self.calls[0] == self.calls[-1]:
+                raise YandexRaspInvalidResponseError("404 from schedule pair")
+            if kwargs["destination_code"] == "s9602196":
+                return {"segments": [segment(destination="Казань")]}
+            return {"segments": []}
+
+    client = Client()
+    provider = YandexRaspProvider(
+        YandexRaspConfiguration("key", enabled=True), client=client,
+        resolver=YandexLocationResolver(),
+    )
+
+    segments = provider.get_segments(
+        date(2026, 9, 28), [TransportType.TRAIN], origin="Москва",
+        destination="Казань", origin_provider_code="c213",
+        destination_provider_code="c43", max_transfers=0,
+    )
+
+    assert segments
+    assert client.calls[0] == ("c213", "c43")
+    assert any(destination == "s9602196" for _, destination in client.calls[1:])
 
 
 def test_yandex_resolver_diagnostic_empty_matches():

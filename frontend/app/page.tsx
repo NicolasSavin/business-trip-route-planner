@@ -776,7 +776,14 @@ export default function Home() {
                 </button>
               </div>
             )}
-            {!loading && sortedRoutes.length === 0 && !hasHiddenUnconfirmedRoutes(lastRouteResponse ?? { routes: [] }, formState.strict_availability) && (
+            {!loading && sortedRoutes.length === 0 && !hasHiddenUnconfirmedRoutes(lastRouteResponse ?? { routes: [] }, formState.strict_availability) && notice.kind === "error" && (
+              <div className="rounded-[2rem] border border-rose-200 bg-rose-50 p-10 text-center shadow-soft" role="alert">
+                <Milestone className="mx-auto mb-4 text-rose-600" />
+                <h3 className="text-xl font-semibold text-ink">Не удалось получить расписание</h3>
+                <p className="mt-2 text-muted">Источник маршрутов временно недоступен. Повторите поиск позже.</p>
+              </div>
+            )}
+            {!loading && sortedRoutes.length === 0 && !hasHiddenUnconfirmedRoutes(lastRouteResponse ?? { routes: [] }, formState.strict_availability) && notice.kind !== "error" && (
               <div className="rounded-[2rem] border border-line bg-white p-10 text-center shadow-soft">
                 <Milestone className="mx-auto mb-4 text-muted" />
                 <h3 className="text-xl font-semibold">Нет маршрутов</h3>
