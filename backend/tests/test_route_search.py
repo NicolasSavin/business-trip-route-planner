@@ -92,7 +92,22 @@ def test_confirmed_and_partial_route_collections_are_disjoint():
 
 def test_post_search_omits_internal_diagnostics_and_stays_under_150_kb_for_30_routes(monkeypatch):
     service = RouteSearchService(MockTransportProvider())
-    route = service.search_response(make_request()).routes[0]
+    option = service.planner.search(make_request())[0][0]
+    option.availability.segment_results[0].metadata["carriages"] = [{
+        "number": "07",
+        "type": "coupe",
+        "serviceClass": "2К",
+        "minPrice": 4200,
+        "availableSeats": 12,
+        "raw": {"provider_response": "x" * 200_000},
+        "diagnostics": {"request": "x" * 100_000},
+        "unknown_provider_field": "x" * 100_000,
+        "places": [
+            {"number": "11", "compartmentNumber": "3", "berthPosition": "lower", "explicitly_confirmed": True, "raw": "x" * 100_000},
+            {"number": "12", "raw": "x" * 100_000},
+        ],
+    }]
+    route = service._to_api_route(option, 2)
     routes = [route.model_copy(update={"id": f"route-{index}"}) for index in range(30)]
     summary = SearchSummary(
         segments_loaded=30,
@@ -122,6 +137,23 @@ def test_post_search_omits_internal_diagnostics_and_stays_under_150_kb_for_30_ro
 
     assert response.status_code == 200
     assert len(response.content) < 150 * 1024
+    for returned_route in parsed["routes"]:
+        segment = returned_route["segments"][0]
+        availability = returned_route["availability"]["segment_results"][0]
+        assert segment["carriages"] == [{
+            "carriage_number": "07",
+            "carriage_type": "coupe",
+            "service_class": "2К",
+            "min_price": 4200,
+            "available_places": 12,
+            "places": [{
+                "place_number": "11",
+                "compartment_number": "3",
+                "berth_position": "lower",
+                "explicitly_confirmed": True,
+            }],
+        }]
+        assert "carriages" not in availability
     for key in (
         "raw_direct_candidates",
         "filtered_direct_candidates",
@@ -131,20 +163,25 @@ def test_post_search_omits_internal_diagnostics_and_stays_under_150_kb_for_30_ro
     ):
         assert key not in parsed["search_summary"]
     assert b"raw_provider_payload" not in response.content
+    assert b'"raw"' not in response.content
+    assert b"unknown_provider_field" not in response.content
 
 
-def test_route_search_exposes_rzd_carriages_and_their_availability():
+def test_route_search_exposes_sanitized_rzd_carriages_once():
     service = RouteSearchService(MockTransportProvider())
     option = service.planner.search(make_request())[0][0]
     result = option.availability.segment_results[0]
     result.metadata["carriages"] = [
-        {"car_type": "coupe", "min_price": 4200, "available_places": 3}
+        {"car_type": "coupe", "min_price": 4200, "available_places": 3, "raw": {"secret": True}, "unknown": "hidden"}
     ]
 
     payload = service._to_api_route(option, 2).model_dump()
 
     assert payload["segments"][0]["carriages"][0]["available_places"] == 3
-    assert payload["availability"]["segment_results"][0]["carriages"][0]["min_price"] == 4200
+    assert payload["segments"][0]["carriages"][0]["min_price"] == 4200
+    assert "raw" not in payload["segments"][0]["carriages"][0]
+    assert "unknown" not in payload["segments"][0]["carriages"][0]
+    assert "carriages" not in payload["availability"]["segment_results"][0]
 
 
 def test_rzd_min_prices_are_exposed_and_unknown_price_is_not_zero():

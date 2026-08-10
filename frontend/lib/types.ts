@@ -70,7 +70,6 @@ export type SegmentAvailability = {
   available_seats: number | null;
   availability_status?: string | null;
   availability_message?: string | null;
-  carriages?: CarriageAvailability[];
   selected_places?: string[];
   selected_carriages?: string[];
   selected_compartments?: string[];

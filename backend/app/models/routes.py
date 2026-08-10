@@ -117,7 +117,6 @@ class SegmentAvailability(BaseModel):
     lower_berths_confirmed: bool = False
     same_compartment_confirmed: bool = False
     availability_message: str | None = None
-    carriages: list[dict[str, Any]] = Field(default_factory=list)
     requested_passengers: int
     transport_class: TransportClass | None
     checked_at: datetime

@@ -10,7 +10,7 @@ function placesInCarriages(carriages: CarriageAvailability[] | undefined): numbe
 
 export function availableSeatsForSegment(route: RouteOption, segment: RouteSegment): number | null {
   const availability = route.availability?.segment_results.find((item) => item.segment_id === segment.id);
-  const carriageCount = placesInCarriages(segment.carriages) ?? placesInCarriages(availability?.carriages);
+  const carriageCount = placesInCarriages(segment.carriages);
   const confirmedCount = availability?.available_seats;
   const candidates = [segment.available_seats, confirmedCount, carriageCount]
     .filter((count): count is number => typeof count === "number");

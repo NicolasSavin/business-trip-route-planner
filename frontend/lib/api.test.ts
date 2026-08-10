@@ -287,7 +287,14 @@ test("unconfirmed route remains visible when strict availability is off", () => 
 test("positive RZD carriage availability is not lost when legacy available_seats is zero", () => {
   const route: RouteOption = {
     ...partialRoute,
-    segments: [{ ...partialRoute.segments[0], available_seats: 0 }],
+    segments: [{
+      ...partialRoute.segments[0],
+      available_seats: 0,
+      carriages: [
+        { car_type: "Купе", min_price: 4200, available_places: 3 },
+        { car_type: "Плацкарт", min_price: 2800, available_places: 4 },
+      ],
+    }],
     availability: {
       is_available: true,
       requested_passengers: 2,
@@ -296,10 +303,6 @@ test("positive RZD carriage availability is not lost when legacy available_seats
         segment_id: "seg-partial",
         is_available: true,
         available_seats: 0,
-        carriages: [
-          { car_type: "Купе", min_price: 4200, available_places: 3 },
-          { car_type: "Плацкарт", min_price: 2800, available_places: 4 },
-        ],
       }],
     },
   };
