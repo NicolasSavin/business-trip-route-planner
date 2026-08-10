@@ -277,8 +277,8 @@ export default function Home() {
 
 
   function disableStrictAvailabilityWithLoadedRoutes() {
-    if (lastRouteResponse?.partially_confirmed_routes?.length && routes.length === 0) {
-      setRoutes(lastRouteResponse.partially_confirmed_routes);
+    if (lastRouteResponse?.partially_confirmed_routes?.length) {
+      setRoutes(routesVisibleForStrictState(lastRouteResponse, false));
       setDecisionByRoute({});
       setCompareIds([]);
       setComparison(null);

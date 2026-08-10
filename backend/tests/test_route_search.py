@@ -7,7 +7,7 @@ from app.api import routes as routes_api
 from app.availability.journey import AvailabilityStatus, RequirementCheck, RequirementStatus, SegmentAvailabilityResult
 from app.domain import Carrier, City, Station, TransportClass, TransportSegment
 from app.main import app
-from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteSearchRequest, SegmentAvailability, TransportType
+from app.models.routes import PlaceEvidence, RequirementCheckResponse, RouteAvailability, RouteSearchRequest, RouteSearchResponse, SearchSummary, SegmentAvailability, TransportType
 from app.providers.mock import MockTransportProvider
 from app.services.route_search import RouteSearchService
 
@@ -74,7 +74,63 @@ def test_route_search_serializes_availability_block():
     payload = route.model_dump()
     assert payload["availability"]["is_available"] is True
     assert payload["availability"]["requested_passengers"] == 2
-    assert payload["availability"]["segments"]
+    assert payload["availability"]["segment_results"]
+    assert "segments" not in payload["availability"]
+
+
+def test_confirmed_and_partial_route_collections_are_disjoint():
+    response = RouteSearchService(MockTransportProvider()).search_response(
+        make_request(strict_availability=False)
+    )
+
+    confirmed_ids = {route.id for route in response.routes}
+    partial_ids = {route.id for route in response.partially_confirmed_routes}
+    assert confirmed_ids.isdisjoint(partial_ids)
+    assert all(route.availability and route.availability.is_available is True for route in response.routes)
+    assert all(route.availability and route.availability.is_available is not True for route in response.partially_confirmed_routes)
+
+
+def test_post_search_omits_internal_diagnostics_and_stays_under_150_kb_for_30_routes(monkeypatch):
+    service = RouteSearchService(MockTransportProvider())
+    route = service.search_response(make_request()).routes[0]
+    routes = [route.model_copy(update={"id": f"route-{index}"}) for index in range(30)]
+    summary = SearchSummary(
+        segments_loaded=30,
+        candidate_journeys=30,
+        availability_checks=30,
+        confirmed_routes=30,
+        provider_diagnostics={"yandex_rasp": {"raw_provider_payload": "x" * 200_000}},
+        raw_direct_candidates=[{"raw": "x" * 10_000}],
+        filtered_direct_candidates=[{"filtered": "x" * 10_000}],
+        direct_match_decisions=[{"decision": "x" * 10_000}],
+        ranked_candidates=[{"ranked": "x" * 10_000}],
+    )
+    api_response = RouteSearchResponse(routes=routes, search_summary=summary)
+
+    async def search_response_async(_request):
+        return api_response
+
+    monkeypatch.setattr(service, "search_response_async", search_response_async)
+    monkeypatch.setattr(routes_api, "service", service)
+    response = TestClient(app).post("/api/v1/routes/search", json={
+        "origin": "Москва",
+        "destination": "Екатеринбург",
+        "departure_date": "2026-08-10",
+        "passengers": 2,
+    })
+    parsed = response.json()
+
+    assert response.status_code == 200
+    assert len(response.content) < 150 * 1024
+    for key in (
+        "raw_direct_candidates",
+        "filtered_direct_candidates",
+        "direct_match_decisions",
+        "ranked_candidates",
+        "provider_diagnostics",
+    ):
+        assert key not in parsed["search_summary"]
+    assert b"raw_provider_payload" not in response.content
 
 
 def test_route_search_exposes_rzd_carriages_and_their_availability():
@@ -343,7 +399,7 @@ def test_route_availability_allows_unknown_and_api_serializes_null(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    route = body["routes"][0]
+    route = body["partially_confirmed_routes"][0]
     assert route["availability"]["is_available"] is None
     assert route["availability"]["segment_results"][0]["is_available"] is None
     assert route["is_available_for_group"] is None
@@ -431,7 +487,9 @@ def test_api_keeps_direct_yandex_timetable_when_seats_are_inconclusive(monkeypat
     )
 
     assert response.status_code == 200
-    routes = response.json()["routes"]
+    body = response.json()
+    assert body["routes"] == []
+    routes = body["partially_confirmed_routes"]
     assert [route["transfers_count"] for route in routes] == [0, 1]
     assert routes[0]["segments"][0]["id"] == "direct"
     assert routes[0]["availability"]["is_available"] is None

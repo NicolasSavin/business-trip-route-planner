@@ -264,6 +264,21 @@ test("turning strict availability off reuses already loaded partial routes", () 
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
 });
 
+test("non-strict presentation merges confirmed and partial routes exactly once", () => {
+  const confirmed = { ...partialRoute, id: "route-confirmed", is_available_for_group: true };
+  const duplicatePartial = { ...partialRoute, id: confirmed.id };
+  const response: RouteSearchResponse = {
+    routes: [confirmed],
+    partially_confirmed_routes: [partialRoute, duplicatePartial],
+  };
+
+  assert.deepEqual(
+    routesVisibleForStrictState(response, false).map((route) => route.id),
+    ["route-confirmed", "route-partial"],
+  );
+  assert.deepEqual(routesVisibleForStrictState(response, true), [confirmed]);
+});
+
 test("unconfirmed route remains visible when strict availability is off", () => {
   const response: RouteSearchResponse = { routes: [partialRoute] };
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);

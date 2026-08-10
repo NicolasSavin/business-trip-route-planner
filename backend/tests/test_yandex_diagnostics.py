@@ -313,9 +313,10 @@ def test_yandex_direct_segment_survives_aggregation_and_api_alongside_transfer(m
 
     assert response.status_code == 200
     body = response.json()
-    direct = next(route for route in body["routes"] if route["segments"][0]["number"] == "754А")
+    visible_routes = [*body["routes"], *body["partially_confirmed_routes"]]
+    direct = next(route for route in visible_routes if route["segments"][0]["number"] == "754А")
     assert direct["transfers_count"] == 0
-    assert any(route["transfers_count"] == 1 for route in body["routes"])
+    assert any(route["transfers_count"] == 1 for route in visible_routes)
     assert {segment.id for segment in received_route_engine_segments} == {segment.id for segment in aggregated}
     assert any(
         segment.provider == "yandex_rasp" and segment.vehicle_number == "754А"

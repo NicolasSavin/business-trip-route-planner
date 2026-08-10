@@ -18,7 +18,8 @@ class RouteSearchService:
 
     def search(self, request: RouteSearchRequest, include_unavailable: bool = False) -> list[RouteOption]:
         response = self.search_response(request, include_unavailable=include_unavailable)
-        return response.routes + (response.partially_confirmed_routes if include_unavailable else []) + (response.rejected_routes if include_unavailable else [])
+        include_partial = include_unavailable or not request.strict_availability
+        return response.routes + (response.partially_confirmed_routes if include_partial else []) + (response.rejected_routes if include_unavailable else [])
 
     async def search_response_async(self, request: RouteSearchRequest, include_unavailable: bool = False) -> RouteSearchResponse:
         routes, partial, rejected, summary = await self.planner.search_async(request)
@@ -133,7 +134,6 @@ class RouteSearchService:
                     warnings=list(dict.fromkeys(option.availability.warnings)),
                     is_stale=option.availability.status == AvailabilityStatus.STALE,
                 )
-                availability.segments = availability.segment_results
             else:
                 availability = RouteAvailability(
                     is_available=option.availability.is_available,
@@ -161,7 +161,6 @@ class RouteSearchService:
                     stale_after_seconds=option.availability.stale_after_seconds,
                     is_stale=option.availability.is_stale,
                 )
-                availability.segments = availability.segment_results
 
         api_segments = []
         for item in segments:
