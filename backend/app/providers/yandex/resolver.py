@@ -118,7 +118,13 @@ LOCAL_POINTS: tuple[YandexLocationMatch, ...] = (
     YandexLocationMatch("c197", "Бийск", "city", ("train", "bus"), (YandexStation("s9610404", "Бийск", "railway_station", ("train",), settlement="Бийск"), YandexStation("s9657040", "Автовокзал Бийск", "bus_station", ("bus",), settlement="Бийск")), region="Алтайский край", settlement="Бийск"),
     YandexLocationMatch("c54", "Екатеринбург", "city", ("train", "bus"), region="Свердловская область", settlement="Екатеринбург"),
     YandexLocationMatch("c65", "Новосибирск", "city", ("train", "bus"), (YandexStation("s9610189", "Новосибирск-главный", "railway_station", ("train",), settlement="Новосибирск"),), region="Новосибирская область", settlement="Новосибирск"),
-    YandexLocationMatch("c43", "Казань", "city", ("train", "bus"), (YandexStation("s9602195", "Казань-Пасс.", "railway_station", ("train",), settlement="Казань"),), region="Республика Татарстан", settlement="Казань"),
+    # Keep the principal and northern terminals in the emergency
+    # catalogue.  Route search must remain useful while stations_list is stale
+    # or its background refresh is unavailable.
+    YandexLocationMatch("c43", "Казань", "city", ("train", "bus"), (
+        YandexStation("s9602195", "Казань-Пасс.", "railway_station", ("train",), settlement="Казань"),
+        YandexStation("s9602196", "Казань-2 (Восстание-Пасс.)", "railway_station", ("train",), settlement="Казань", aliases=("Восстание-Пасс.", "Казань-2")),
+    ), region="Республика Татарстан", settlement="Казань"),
 )
 
 class YandexStationsRepository:

@@ -60,14 +60,17 @@ def make_provider(client, **limits):
     return YandexRaspProvider(config, client=client, resolver=Resolver())
 
 
-def test_city_direct_train_uses_city_codes_once_and_stops():
+def test_city_direct_train_fans_out_across_city_and_known_stations():
     client = Client(lambda _: {"segments": [schedule()]})
     provider = make_provider(client)
 
     provider.get_segments(DAY, [TransportType.TRAIN], origin="Москва", destination="Санкт-Петербург", max_transfers=0)
 
-    assert [(call["origin_code"], call["destination_code"]) for call in client.calls] == [("c213", "c2")]
-    assert provider.last_diagnostics["yandex_direct_requests_made"] == 1
+    pairs = [(call["origin_code"], call["destination_code"]) for call in client.calls]
+    assert pairs[0] == ("c213", "c2")
+    assert {"c213", "s-train-a", "s-train-b"} <= {origin for origin, _ in pairs}
+    assert {"c2", "s-train-c"} <= {destination for _, destination in pairs}
+    assert provider.last_diagnostics["yandex_direct_requests_made"] == len(pairs)
 
 
 def test_explicit_stations_are_used_directly_first():

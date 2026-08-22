@@ -99,10 +99,7 @@ class YandexRaspProvider(TransportProvider):
                         (o, d, True)
                         for o, d in transfer_pairs[:self.config.max_transfer_requests_per_search]
                     ]
-                city_direct_satisfied = False
                 for origin_code, destination_code, transfers in request_pairs:
-                    if city_direct_satisfied and not transfers and (origin_code, destination_code) != primary_pair:
-                        continue
                     if monotonic() >= deadline:
                         deadline_exceeded = True
                         diagnostics.setdefault("warnings", []).append(
@@ -171,15 +168,6 @@ class YandexRaspProvider(TransportProvider):
                             direct_candidate_count += len(mapped_segments)
                             direct_candidate_ids.update(segment.id for segment in mapped_segments)
                             diagnostics["raw_direct_candidates"].extend(self._describe_direct(segment) for segment in mapped_segments)
-                            usable_direct = any(
-                                segment.transport_type in allowed_transport
-                                for segment in mapped_segments
-                            ) and any(
-                                isinstance(item, dict) and not item.get("has_transfers")
-                                for item in raw_segments
-                            )
-                            if (origin_code, destination_code) == primary_pair and usable_direct:
-                                city_direct_satisfied = True
                             for segment in mapped_segments:
                                 if self._is_moscow_to_saint_petersburg(segment):
                                     logger.info(
@@ -377,15 +365,11 @@ class YandexRaspProvider(TransportProvider):
         if train_only:
             stations = [station for station in stations if set(station.transport_types) <= {"train", "suburban"}]
         stations.sort(key=self._station_rank)
-        # For rail searches a city code is not an Express/station code. Prefer
-        # concrete station codes and fall back to the city only when the
-        # catalogue genuinely has no station mapping.
         station_codes = [station.code for station in stations[:self.config.max_stations_per_city]]
-        # Mixed train+bus searches must retain the settlement code: it is valid
-        # for Yandex's multimodal search and may cover bus endpoints not present
-        # in the railway station subset. Explicit city codes are expanded to
-        # station-only values only for a train-only request.
-        codes = station_codes if match.source == "provider_code" and train_only and station_codes else [match.code, *station_codes]
+        # Yandex accepts both settlement and station point codes, but coverage
+        # differs by route.  Never discard the city merely because stations are
+        # known (including matches created from an explicit provider_code).
+        codes = [match.code, *station_codes]
         return tuple(dict.fromkeys(code for code in codes if code))
 
     @staticmethod

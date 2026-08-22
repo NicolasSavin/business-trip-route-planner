@@ -264,6 +264,18 @@ test("turning strict availability off reuses already loaded partial routes", () 
   assert.deepEqual(routesVisibleForStrictState(response, false), [partialRoute]);
 });
 
+test("empty routes with provider errors report source failure", () => {
+  const response: RouteSearchResponse = {
+    routes: [],
+    provider_errors: { yandex_rasp: { code: "invalid_provider_response", message: "404" } },
+  };
+
+  assert.deepEqual(routeSearchNotice(response, false), {
+    kind: "error",
+    text: "Источник расписаний временно недоступен. Попробуйте повторить поиск позже.",
+  });
+});
+
 test("non-strict presentation merges confirmed and partial routes exactly once", () => {
   const confirmed = { ...partialRoute, id: "route-confirmed", is_available_for_group: true };
   const duplicatePartial = { ...partialRoute, id: confirmed.id };
